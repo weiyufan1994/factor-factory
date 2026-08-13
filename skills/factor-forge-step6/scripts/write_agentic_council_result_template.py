@@ -68,7 +68,34 @@ def main() -> int:
             "source_task_packet_sha256": task.get("task_packet_sha256"),
             "route_fingerprint": packet.get("route_fingerprint"),
             "blind_context_hash": packet.get("blind_context_hash"),
+            "evo_v2_task_identity_sha256": (
+                (packet.get("evo_v2_task_identity") or {}).get("identity_sha256")
+                if isinstance(packet.get("evo_v2_task_identity"), dict)
+                else None
+            ),
         },
+        "evo_v2_task_identity": packet.get("evo_v2_task_identity"),
+        "evo_v2": (
+            {
+                "feedback_ledger": (
+                    packet.get("evo_v2_task_identity") or {}
+                ).get("canonical_feedback_ref"),
+                "intake_gate": {
+                    "contradiction_id": (
+                        packet.get("evo_v2_task_identity") or {}
+                    ).get("contradiction_id"),
+                    "source_state": (
+                        packet.get("evo_v2_task_identity") or {}
+                    ).get("lifecycle_state"),
+                    "validity_quarantine": {},
+                },
+                "authority": {},
+                "derivation_outcome": {},
+                "proposal_law_binding": None,
+            }
+            if packet.get("evo_v2_required") is True
+            else None
+        ),
         "measurement_program_binding": packet.get(
             "measurement_program_binding"
         )

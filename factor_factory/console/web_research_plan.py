@@ -26,8 +26,13 @@ from factor_factory.console.conversation_ledger import (
     write_planned_checkpoints,
 )
 from factor_factory.console.web_factor_proof import (
+    BEHAVIORAL_PROOF_SOURCE_CONTROL_COLUMNS,
     RISK_PROOF_CONTROL_COLUMNS,
-    validate_web_factor_proof_preregistration,
+    validate_web_factor_proof_preregistration_structural,
+    web_factor_proof_oos_recovery_state,
+)
+from factor_factory.child_materialization import (
+    validate_child_materialization_readback,
 )
 from factor_factory.catalog_policy import project_information_policy_attestation
 from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
@@ -55,6 +60,7 @@ from factor_factory.knowledge_reference import (
 )
 from factor_factory.research_conjecture import (
     PROTOCOL_VERSION,
+    epistemic_evolution_policy_v2,
     validate_approach_registry,
     validate_research_conjecture,
     validate_research_state,
@@ -1585,6 +1591,37 @@ def summarize_catalogs(
                 entry.get("uri") or entry.get("materialized_root")
             )
             qa_verdict = entry.get("qa_verdict") or metadata.get("qa_verdict")
+            host_qa_attestation = (
+                deepcopy(metadata.get("host_qa_attestation"))
+                if isinstance(metadata.get("host_qa_attestation"), dict)
+                else None
+            )
+            host_qa_valid = bool(
+                host_qa_attestation
+                and host_qa_attestation.get("contract_version")
+                == "factorforge_host_catalog_qa_attestation_v1"
+                and host_qa_attestation.get("verdict") == "ACCEPT"
+                and host_qa_attestation.get("uri") == materialized_uri
+                and host_qa_attestation.get("attestation_sha256")
+                == stable_json_hash(
+                    {
+                        key: value
+                        for key, value in host_qa_attestation.items()
+                        if key != "attestation_sha256"
+                    }
+                )
+                and not any(
+                    int(value) != 0
+                    for value in (
+                        host_qa_attestation.get("required_field_null_counts") or {}
+                    ).values()
+                )
+            )
+            if host_qa_attestation is not None and not host_qa_valid:
+                raise WebResearchPlanError(
+                    BLOCK_PLAN_CATALOG_INVALID,
+                    [f"invalid host QA attestation:{name}"],
+                )
             evidence_refs = _catalog_evidence_refs(entry, metadata)
             information_policy = {
                 "contract": deepcopy(metadata.get("information_policy_contract") or {}),
@@ -1617,6 +1654,7 @@ def summarize_catalogs(
                     "start_date": entry.get("start_date") or metadata.get("start_date"),
                     "end_date": entry.get("end_date") or metadata.get("end_date"),
                     "qa_verdict": qa_verdict,
+                    "host_qa_attestation": host_qa_attestation,
                     "materialized_uri": materialized_uri,
                     "storage_scheme": materialized_uri.split(":", 1)[0],
                     "format": str(entry.get("format") or ""),
@@ -1635,7 +1673,7 @@ def summarize_catalogs(
                     "evidence_refs": evidence_refs,
                     "formal_execution_evidence": {
                         "qa_verdict": qa_verdict,
-                        "qa_reference_present": any(
+                        "qa_reference_present": host_qa_valid or any(
                             item["kind"] == "qa_summary" for item in evidence_refs
                         ),
                         "worker_read_smoke_reference_present": any(
@@ -1818,6 +1856,12 @@ def required_web_resume_start_step(
     report_id: str,
 ) -> str | None:
     """Return the only legal resume step for an existing web Ultimate proof."""
+    oos_recovery = web_factor_proof_oos_recovery_state(workspace, report_id)
+    if oos_recovery["recovery_required"]:
+        # This check intentionally precedes the wrapper proof.  Deleting the
+        # proof or another Web marker cannot turn a partially published OOS
+        # workspace back into a legacy/Agent-executable run.
+        return "6"
     proof_path = (
         Path(workspace)
         / "objects"
@@ -1861,6 +1905,12 @@ def write_web_research_packet(
     preserve_existing_plan: bool = False,
     trusted_resume_start_step: str | None = None,
 ) -> None:
+    job_id = str(request.get("job_id") or "")
+    if re.fullmatch(r"job_[a-f0-9]{10}", job_id) is None:
+        raise WebResearchPlanError(
+            BLOCK_PLAN_IDENTITY_INVALID,
+            ["request.job_id"],
+        )
     identity = workspace / "identity"
     if CONVERSATION_LEDGER_REFERENCE_FIELD not in request:
         if preserve_existing_plan:
@@ -1884,7 +1934,7 @@ def write_web_research_packet(
         request = deepcopy(request)
         reference, planned = plan_conversation_checkpoints(
             workspace,
-            job_id=str(request.get("job_id") or ""),
+            job_id=job_id,
             messages=snapshot["messages"],
             existing_request=None,
         )
@@ -2123,6 +2173,8 @@ def validate_plan(
     plan: dict[str, Any],
     *,
     workspace: Path,
+    _authorized_child_report_id: str | None = None,
+    _authorized_child_formula: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any]]:
     reasons: list[str] = []
     if plan.get("version") != PLAN_VERSION:
@@ -2166,7 +2218,10 @@ def validate_plan(
         "job_id": str(request.get("job_id") or ""),
         "factor_id": str(manifest.get("factor_id") or ""),
         "research_id": str(manifest.get("research_id") or ""),
-        "report_id": str(manifest.get("root_report_id") or ""),
+        "report_id": (
+            _authorized_child_report_id
+            or str(manifest.get("root_report_id") or "")
+        ),
     }
     for field, expected in expected_identity.items():
         if str(identity.get(field) or "") != expected:
@@ -2187,7 +2242,10 @@ def validate_plan(
     if research.get("source_type") != "natural_language_hypothesis":
         reasons.append("research_object.source_type")
     for field in ("title", "hypothesis"):
-        if str(research.get(field) or "") != str(request.get(field) or ""):
+        if (
+            _authorized_child_report_id is None
+            and str(research.get(field) or "") != str(request.get(field) or "")
+        ):
             reasons.append(f"research_object.{field}_request_mismatch")
     if str(research.get("factor_name") or "") != expected_identity["factor_id"]:
         reasons.append("research_object.factor_name_identity_mismatch")
@@ -2236,8 +2294,13 @@ def validate_plan(
             BLOCK_SOURCE_SEMANTICS_UNRESOLVED
             + ":legacy_v1_requires_explicit_v2_authority"
         )
+    expected_formula = (
+        _authorized_child_formula
+        if _authorized_child_report_id is not None
+        else str(expected_formula_seed.get("canonical_formula") or "")
+    )
     if expected_formula_seed and str(research.get("formula_or_law") or "") != str(
-        expected_formula_seed.get("canonical_formula") or ""
+        expected_formula or ""
     ):
         reasons.append("research_object.submitted_formula_changed")
     expected_knowledge_query = web_knowledge_query_text(
@@ -2408,6 +2471,25 @@ def validate_plan(
         reasons.append(
             "data_plan.daily_fields_not_in_clean_daily_bar:"
             + ",".join(missing_daily_fields)
+        )
+    claim_class_for_controls = str(
+        (plan.get("economic_mechanism") or {}).get("claim_class") or ""
+    )
+    required_proof_controls = (
+        set(RISK_PROOF_CONTROL_COLUMNS)
+        if claim_class_for_controls == "risk_premium"
+        else (
+            set(BEHAVIORAL_PROOF_SOURCE_CONTROL_COLUMNS)
+            if claim_class_for_controls
+            and claim_class_for_controls != "unknown"
+            else set()
+        )
+    )
+    missing_proof_controls = sorted(required_proof_controls - daily_columns)
+    if missing_proof_controls:
+        reasons.append(
+            "evidence_policy.proof_controls_not_in_clean_daily_bar:"
+            + ",".join(missing_proof_controls)
         )
 
     formula_ir = parse_formula(
@@ -2636,6 +2718,73 @@ def validate_plan(
                         reasons.append(
                             "measurement_program.implementation.full_formula_input_fields_mismatch"
                         )
+                    def signed_additive_terms(node: Any, sign: int = 1) -> list[Any]:
+                        if not isinstance(node, dict):
+                            return []
+                        if node.get("type") == "operator" and node.get("operator") == "plus":
+                            terms: list[Any] = []
+                            for argument in node.get("args") or []:
+                                terms.extend(signed_additive_terms(argument, sign))
+                            return terms
+                        if (
+                            node.get("type") == "operator"
+                            and node.get("operator") == "minus"
+                            and len(node.get("args") or []) == 2
+                        ):
+                            left, right = node["args"]
+                            return signed_additive_terms(left, sign) + signed_additive_terms(right, -sign)
+                        if sign < 0:
+                            return [{"type": "operator", "operator": "negate", "args": [node]}]
+                        return [node]
+
+                    def component_expression_root(node: Any) -> Any:
+                        if not isinstance(node, dict):
+                            return node
+                        if node.get("type") == "operator" and node.get("operator") == "cs_zscore":
+                            arguments = node.get("args") or []
+                            return arguments[0] if arguments else node
+                        if (
+                            node.get("type") == "operator"
+                            and node.get("operator") in {"plus", "minus"}
+                        ):
+                            return node
+                        for argument in node.get("args") or []:
+                            candidate = component_expression_root(argument)
+                            if (
+                                isinstance(candidate, dict)
+                                and candidate.get("type") == "operator"
+                                and candidate.get("operator") in {"plus", "minus"}
+                            ):
+                                return candidate
+                        return node
+
+                    formula_terms = signed_additive_terms(
+                        component_expression_root(formula_ir.get("root"))
+                    )
+                    if len(formula_terms) >= 3:
+                        component_roots: list[Any] = []
+                        for component in implementation_components:
+                            if component.get("binding_role") == "full_formula":
+                                continue
+                            component_ir = parse_formula(
+                                str(component.get("implementation_binding") or ""),
+                                available_columns=[str(item) for item in daily_fields],
+                                source_dialect_contract=expected_formula_seed.get(
+                                    "source_contract"
+                                ),
+                            )
+                            if component_ir.get("parse_status") != "success":
+                                reasons.append(
+                                    "measurement_program.implementation.component_binding_invalid"
+                                )
+                                continue
+                            component_roots.append(component_ir.get("root"))
+                        if sorted(stable_json_hash(item) for item in component_roots) != sorted(
+                            stable_json_hash(item) for item in formula_terms
+                        ):
+                            reasons.append(
+                                "measurement_program.implementation.additive_component_coverage"
+                            )
         model_selection = measurement_program.get("model_selection")
         if isinstance(model_selection, dict):
             for index, candidate in enumerate(
@@ -2759,6 +2908,141 @@ def validate_plan(
                 reasons.append(
                     "measurement_program.observation_and_estimation.estimand_mismatch"
                 )
+            executable_projection = parse_formula(
+                str(
+                    observation_program.get("executable_formula_projection")
+                    or ""
+                ),
+                available_columns=[str(item) for item in daily_fields],
+                source_dialect_contract=expected_formula_seed.get(
+                    "source_contract"
+                ),
+            )
+            if (
+                executable_projection.get("parse_status") != "success"
+                or executable_projection.get("root") != formula_ir.get("root")
+                or executable_projection.get("resolved_fields")
+                != formula_ir.get("resolved_fields")
+            ):
+                reasons.append(
+                    "measurement_program.observation_and_estimation."
+                    "executable_formula_projection_mismatch"
+                )
+        search_policy = measurement_program.get("search_policy")
+        if isinstance(search_policy, dict):
+            diagnostics = [
+                item
+                for item in search_policy.get("registered_diagnostic_trials") or []
+                if isinstance(item, dict)
+            ]
+            evidence_budget = (
+                plan.get("evidence_policy", {}).get("trial_budget")
+                if isinstance(plan.get("evidence_policy"), dict)
+                else 0
+            )
+            if 1 + len(diagnostics) > int(evidence_budget or 0):
+                reasons.append(
+                    "measurement_program.search_policy.diagnostics_exceed_trial_budget"
+                )
+            trial_ids = [str(item.get("trial_id") or "") for item in diagnostics]
+            if len(trial_ids) != len(set(trial_ids)):
+                reasons.append(
+                    "measurement_program.search_policy.duplicate_diagnostic_trial_id"
+                )
+            if any(
+                re.fullmatch(r"[a-z][a-z0-9_]{0,63}", trial_id) is None
+                for trial_id in trial_ids
+            ):
+                reasons.append(
+                    "measurement_program.search_policy.invalid_diagnostic_trial_id"
+                )
+            for index, diagnostic in enumerate(diagnostics):
+                diagnostic_ir = parse_formula(
+                    str(diagnostic.get("formula_or_law") or ""),
+                    available_columns=[str(item) for item in daily_fields],
+                    source_dialect_contract=expected_formula_seed.get(
+                        "source_contract"
+                    ),
+                )
+                if diagnostic_ir.get("parse_status") != "success":
+                    reasons.append(
+                        "measurement_program.search_policy."
+                        f"registered_diagnostic_trials[{index}].formula_or_law"
+                    )
+            component_ids = {
+                str(item.get("component_id") or "")
+                for item in (
+                    (measurement_program.get("implementation") or {}).get(
+                        "components"
+                    )
+                    or []
+                )
+                if isinstance(item, dict)
+                and item.get("binding_role") != "full_formula"
+            }
+            if component_ids:
+                standalone_ids = {
+                    str(item.get("component_id") or "")
+                    for item in diagnostics
+                    if item.get("role") == "standalone_component"
+                }
+                leave_one_out_ids = {
+                    str(item.get("component_id") or "")
+                    for item in diagnostics
+                    if item.get("role") == "leave_one_out"
+                }
+                if standalone_ids != component_ids:
+                    reasons.append(
+                        "measurement_program.search_policy."
+                        "standalone_component_obligations_incomplete"
+                    )
+                if leave_one_out_ids != component_ids:
+                    reasons.append(
+                        "measurement_program.search_policy."
+                        "leave_one_out_obligations_incomplete"
+                    )
+                sign_oracles = [
+                    item
+                    for item in diagnostics
+                    if item.get("role") == "sign_oracle"
+                    and item.get("component_id") == "full_formula"
+                ]
+                if len(sign_oracles) != 1:
+                    reasons.append(
+                        "measurement_program.search_policy.sign_oracle_missing"
+                    )
+            source_contract = (
+                (plan.get("submitted_input_contract") or {}).get(
+                    "source_formula_contract"
+                )
+                if isinstance(plan.get("submitted_input_contract"), dict)
+                else {}
+            )
+            variant_set = (
+                source_contract.get("implementation_variant_set")
+                if isinstance(source_contract, dict)
+                else {}
+            )
+            variant_count = (
+                variant_set.get("implemented_variant_count")
+                if isinstance(variant_set, dict)
+                else None
+            )
+            if isinstance(variant_count, int) and variant_count > 1:
+                sensitivity_ids = [
+                    str(item.get("sensitivity_id") or "")
+                    for item in search_policy.get("quarantined_sensitivities")
+                    or []
+                    if isinstance(item, dict)
+                ]
+                if (
+                    len(sensitivity_ids) != variant_count - 1
+                    or len(sensitivity_ids) != len(set(sensitivity_ids))
+                ):
+                    reasons.append(
+                        "measurement_program.search_policy."
+                        "source_semantic_variant_quarantine_incomplete"
+                    )
 
     hypotheses = _dict_list(plan.get("hypotheses"), minimum=3)
     if {item.get("kind") for item in hypotheses} != {"preferred", "null", "alternative"}:
@@ -2809,9 +3093,13 @@ def validate_plan(
         request_end = date.fromisoformat(str(request.get("sample_end") or ""))
         plan_start = date.fromisoformat(str(evidence.get("is_start") or ""))
         plan_end = date.fromisoformat(str(evidence.get("oos_end") or ""))
-        if plan_start < request_start or plan_end > request_end:
+        if _authorized_child_report_id is None and (
+            plan_start < request_start or plan_end > request_end
+        ):
             reasons.append("evidence_policy.outside_submitted_sample")
-        if plan_start != request_start or plan_end != request_end:
+        if _authorized_child_report_id is None and (
+            plan_start != request_start or plan_end != request_end
+        ):
             reasons.append("evidence_policy.submitted_outer_bounds_mismatch")
     except ValueError:
         reasons.append("evidence_policy.submitted_sample_invalid")
@@ -2886,7 +3174,195 @@ def validate_plan(
     return manifest, formula_ir
 
 
-def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
+def validate_authorized_evo_child_web_research_plan(
+    *,
+    workspace: Path,
+    parent_plan: Mapping[str, Any],
+    child_plan: Mapping[str, Any],
+    parent_report_id: str,
+    child_report_id: str,
+    research_conjecture: Mapping[str, Any],
+    approach_registry: Mapping[str, Any],
+    fresh_oos_allocation: Mapping[str, Any],
+    selected_formula: str,
+    selected_formula_hash: str,
+) -> dict[str, Any]:
+    """Validate an Agent-authored EVO child plan without granting authority.
+
+    The parent Web plan remains the immutable source/constitutional anchor.
+    Child semantics must be authored in the child plan and agree exactly with
+    the independently authored conjecture/approach artifacts.  This function
+    performs no writes and does not validate the external Host signature; the
+    preregistration authority layer must do that before publishing its output.
+    """
+
+    root = Path(workspace).expanduser().resolve(strict=True)
+    parent = deepcopy(dict(parent_plan))
+    child = deepcopy(dict(child_plan))
+    conjecture = dict(research_conjecture)
+    approaches = dict(approach_registry)
+    allocation = dict(fresh_oos_allocation)
+    reasons: list[str] = []
+    try:
+        validate_plan(parent, workspace=root)
+    except WebResearchPlanError as exc:
+        reasons.extend(f"parent_plan:{reason}" for reason in exc.reasons)
+    try:
+        _manifest, formula_ir = validate_plan(
+            child,
+            workspace=root,
+            _authorized_child_report_id=child_report_id,
+            _authorized_child_formula=selected_formula,
+        )
+    except WebResearchPlanError as exc:
+        reasons.extend(f"child_plan:{reason}" for reason in exc.reasons)
+        formula_ir = {}
+
+    parent_identity = parent.get("identity")
+    child_identity = child.get("identity")
+    parent_identity = parent_identity if isinstance(parent_identity, dict) else {}
+    child_identity = child_identity if isinstance(child_identity, dict) else {}
+    if (
+        parent_identity.get("report_id") != parent_report_id
+        or child_identity.get("report_id") != child_report_id
+        or any(
+            child_identity.get(field) != parent_identity.get(field)
+            for field in ("job_id", "factor_id", "research_id")
+        )
+    ):
+        reasons.append("child_identity_parent_binding")
+    if set(child) != set(parent):
+        reasons.append("child_plan_top_level_shape")
+    for field in ("version", "submitted_input_contract", "authoring_contract"):
+        if child.get(field) != parent.get(field):
+            reasons.append(f"child_plan_parent_protected:{field}")
+    if child.get("data_plan") != parent.get("data_plan"):
+        reasons.append("child_plan_parent_protected:data_plan")
+    parent_implementation = parent.get("implementation")
+    child_implementation = child.get("implementation")
+    if (
+        not isinstance(parent_implementation, dict)
+        or not isinstance(child_implementation, dict)
+        or child_implementation.get("mode") != parent_implementation.get("mode")
+        or child_implementation.get("entrypoint")
+        != parent_implementation.get("entrypoint")
+        or {
+            str(item).strip().lower().removesuffix("()")
+            for item in (child_implementation.get("operators") or [])
+        }
+        != set(formula_ir.get("operator_set") or [])
+    ):
+        reasons.append("child_plan_implementation_binding")
+
+    research = child.get("research_object")
+    research = research if isinstance(research, dict) else {}
+    if (
+        research.get("formula_or_law") != selected_formula
+        or formula_ir.get("formula_hash") != selected_formula_hash
+        or ((conjecture.get("identity") or {}).get("formula_hash"))
+        != selected_formula_hash
+    ):
+        reasons.append("child_plan_selected_formula_binding")
+    if (
+        conjecture.get("report_id") != child_report_id
+        or conjecture.get("factor_id") != child_identity.get("factor_id")
+        or ((conjecture.get("identity") or {}).get("research_id"))
+        != child_identity.get("research_id")
+    ):
+        reasons.append("child_plan_conjecture_identity")
+    if child.get("hypotheses") != conjecture.get("hypotheses"):
+        reasons.append("child_plan_conjecture_hypotheses")
+    preferred = [
+        item
+        for item in child.get("hypotheses") or []
+        if isinstance(item, dict) and item.get("kind") == "preferred"
+    ]
+    if len(preferred) != 1 or research.get("hypothesis") != preferred[0].get("claim"):
+        reasons.append("child_plan_preferred_hypothesis")
+    economic = child.get("economic_mechanism")
+    if (
+        not isinstance(economic, dict)
+        or economic.get("claim_class") != conjecture.get("claim_class")
+    ):
+        reasons.append("child_plan_claim_class")
+    if build_web_evaluation_contract(child) != conjecture.get("evaluation_contract"):
+        reasons.append("child_plan_evaluation_contract")
+
+    child_evidence = child.get("evidence_policy")
+    parent_evidence = parent.get("evidence_policy")
+    conjecture_evidence = conjecture.get("evidence_policy")
+    if not all(
+        isinstance(item, dict)
+        for item in (child_evidence, parent_evidence, conjecture_evidence)
+    ):
+        reasons.append("child_plan_evidence_policy")
+    else:
+        if set(child_evidence) != set(parent_evidence):
+            reasons.append("child_plan_evidence_shape")
+        for field in parent_evidence:
+            if field not in {"oos_start", "oos_end"} and (
+                child_evidence.get(field) != parent_evidence.get(field)
+            ):
+                reasons.append(f"child_plan_parent_protected:evidence_policy.{field}")
+        allocation_window = allocation.get("oos_window")
+        allocation_window = (
+            allocation_window if isinstance(allocation_window, dict) else {}
+        )
+        if (
+            allocation.get("report_id") != child_report_id
+            or child_evidence.get("oos_start") != allocation_window.get("start")
+            or child_evidence.get("oos_end") != allocation_window.get("end")
+            or conjecture_evidence.get("oos_start") != allocation_window.get("start")
+            or conjecture_evidence.get("oos_end") != allocation_window.get("end")
+            or conjecture_evidence.get("sealed_oos_token_hash")
+            != allocation.get("sealed_token_sha256")
+        ):
+            reasons.append("child_plan_fresh_oos_binding")
+
+    registry_routes = {
+        str(item.get("route_id") or ""): item
+        for item in approaches.get("routes") or []
+        if isinstance(item, dict)
+    }
+    plan_routes = {
+        str(item.get("route_id") or ""): item
+        for item in child.get("routes") or []
+        if isinstance(item, dict)
+    }
+    route_semantic_fields = (
+        "route_id",
+        "route_family",
+        "agent_identity",
+        "favored_thesis_visible",
+        "research_question",
+        "core_hypothesis",
+        "distinct_from_other_routes",
+        "proof_obligation_ids",
+        "exact_gap",
+    )
+    if set(plan_routes) != set(registry_routes):
+        reasons.append("child_plan_approach_route_ids")
+    else:
+        for route_id, route in plan_routes.items():
+            registered = registry_routes[route_id]
+            if any(route.get(field) != registered.get(field) for field in route_semantic_fields):
+                reasons.append(f"child_plan_approach_route:{route_id}")
+
+    if reasons:
+        raise WebResearchPlanError(BLOCK_PLAN_INVALID, reasons)
+    return {
+        "status": "PASS",
+        "parent_report_id": parent_report_id,
+        "child_report_id": child_report_id,
+        "formula_hash": str(formula_ir["formula_hash"]),
+        "web_research_plan_sha256": stable_json_hash(child),
+        "evaluation_contract_hash": stable_json_hash(
+            build_web_evaluation_contract(child)
+        ),
+    }
+
+
+def _validate_materialized_parent_web_research(workspace: Path) -> dict[str, str]:
     workspace = Path(workspace).expanduser().resolve(strict=True)
     reasons: list[str] = []
 
@@ -2987,6 +3463,24 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
         reasons.append("bootstrap.verdict")
     if bootstrap.get("trusted_codegen_only") is not True:
         reasons.append("bootstrap.trusted_codegen_only")
+    organization_plan_path = workspace / "identity" / "research_organization_plan.json"
+    runtime_authority = bootstrap.get("research_organization_runtime")
+    if organization_plan_path.is_file() and not organization_plan_path.is_symlink():
+        if not isinstance(runtime_authority, dict):
+            reasons.append("bootstrap.research_organization_runtime")
+        elif runtime_authority.get("materialization_authority") not in {
+            "signed_formal_runtime_complete",
+            "contract_smoke_only",
+        }:
+            reasons.append("bootstrap.research_organization_runtime.authority")
+        elif (
+            runtime_authority.get("materialization_authority")
+            == "signed_formal_runtime_complete"
+            and runtime_authority.get("formal_independence_verified") is not True
+        ):
+            reasons.append(
+                "bootstrap.research_organization_runtime.formal_independence_verified"
+            )
     if str(bootstrap.get("agent_authored_plan_sha256") or "") != plan_hash:
         reasons.append("bootstrap.agent_authored_plan_sha256")
     if str(bootstrap.get("agent_authored_formula_hash") or "") != formula_hash:
@@ -3104,7 +3598,7 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
         reasons.append("step2.agent_factor_custom_code_forbidden")
     proof_preregistration: dict[str, Any] = {}
     try:
-        proof_preregistration = validate_web_factor_proof_preregistration(
+        proof_preregistration = validate_web_factor_proof_preregistration_structural(
             workspace,
             plan,
         )
@@ -3124,15 +3618,550 @@ def validate_materialized_web_research(workspace: Path) -> dict[str, str]:
     }
 
 
+def resolve_report_scoped_web_research_plan(
+    workspace: Path,
+    *,
+    report_id: str,
+    expected_host_trust_manifest_sha256: str | None = None,
+    plan_path: Path | None = None,
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    _incident_guard: object | None = None,
+    current_authority: bool = False,
+) -> dict[str, Any]:
+    """Resolve the immutable parent plan or a receipt-authorized child plan.
+
+    A child plan is never selected by merely finding a report-shaped JSON file.
+    Its preregistration receipt and the external Host trust pin are replayed by
+    the EVO child authority before the raw Agent-authored plan is returned.
+    """
+
+    root = Path(workspace).expanduser().resolve(strict=True)
+    manifest_path = root / "manifest.json"
+    if not manifest_path.is_file() or manifest_path.is_symlink():
+        raise WebResearchPlanError(
+            BLOCK_PLAN_IDENTITY_INVALID,
+            ["workspace manifest missing or unsafe"],
+        )
+    manifest = load_workspace_manifest(manifest_path)
+    manifest_reasons = validate_workspace_manifest(manifest)
+    if manifest_reasons:
+        raise WebResearchPlanError(BLOCK_PLAN_IDENTITY_INVALID, manifest_reasons)
+    parent_report_id = str(manifest.get("root_report_id") or "")
+    if not report_id or not parent_report_id:
+        raise WebResearchPlanError(
+            BLOCK_PLAN_IDENTITY_INVALID,
+            ["report-scoped plan identity is empty"],
+        )
+
+    if report_id == parent_report_id:
+        resolved_path = root / "identity" / "web_research_plan.json"
+        if not resolved_path.is_file() or resolved_path.is_symlink():
+            raise WebResearchPlanError(
+                BLOCK_PLAN_IDENTITY_INVALID,
+                ["canonical parent web research plan missing or unsafe"],
+            )
+        raw_plan = json.loads(resolved_path.read_text(encoding="utf-8"))
+        if not isinstance(raw_plan, dict):
+            raise WebResearchPlanError(
+                BLOCK_PLAN_IDENTITY_INVALID,
+                ["canonical parent web research plan is not an object"],
+            )
+        validate_plan(raw_plan, workspace=root)
+        if str((raw_plan.get("identity") or {}).get("report_id") or "") != report_id:
+            raise WebResearchPlanError(
+                BLOCK_PLAN_IDENTITY_INVALID,
+                ["canonical parent web research plan identity mismatch"],
+            )
+        authority: dict[str, Any] = {
+            "authority": "canonical_parent_web_research_plan",
+            "writes_performed": False,
+        }
+        allocation = None
+    else:
+        if not re.fullmatch(
+            r"[0-9a-f]{64}", str(expected_host_trust_manifest_sha256 or "")
+        ):
+            raise WebResearchPlanError(
+                BLOCK_PLAN_IDENTITY_INVALID,
+                ["child web research plan requires an external Host trust pin"],
+            )
+        from factor_factory.evo_child_preregistration import (
+            child_web_research_plan_path,
+            validate_and_resolve_evo_child_web_research_plan,
+            validate_and_resolve_evo_child_web_research_plan_structural,
+        )
+
+        try:
+            if current_authority:
+                authority = validate_and_resolve_evo_child_web_research_plan(
+                    workspace_root=root,
+                    parent_report_id=parent_report_id,
+                    child_report_id=report_id,
+                    expected_host_trust_manifest_sha256=str(
+                        expected_host_trust_manifest_sha256
+                    ),
+                    incident_trust_root=incident_trust_root,
+                    incident_installation_id=incident_installation_id,
+                    _incident_guard=_incident_guard,
+                )
+            else:
+                authority = (
+                    validate_and_resolve_evo_child_web_research_plan_structural(
+                        workspace_root=root,
+                        parent_report_id=parent_report_id,
+                        child_report_id=report_id,
+                        expected_host_trust_manifest_sha256=str(
+                            expected_host_trust_manifest_sha256
+                        ),
+                    )
+                )
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise WebResearchPlanError(
+                BLOCK_PLAN_IDENTITY_INVALID,
+                [f"child web research plan authority replay failed:{exc}"],
+            ) from exc
+        resolved_path = Path(authority.get("plan_path") or "").resolve(strict=False)
+        raw_plan = authority.get("raw_plan")
+        allocation = authority.get("allocation")
+        expected_child_path = child_web_research_plan_path(
+            root,
+            report_id,
+        ).resolve(strict=False)
+        if (
+            resolved_path != expected_child_path
+            or not resolved_path.is_file()
+            or resolved_path.is_symlink()
+            or not isinstance(raw_plan, dict)
+            or str((raw_plan.get("identity") or {}).get("report_id") or "")
+            != report_id
+            or not isinstance(allocation, dict)
+            or str(allocation.get("report_id") or "") != report_id
+        ):
+            raise WebResearchPlanError(
+                BLOCK_PLAN_IDENTITY_INVALID,
+                ["resolved child web research plan identity mismatch"],
+            )
+
+    if plan_path is not None:
+        requested_path = Path(plan_path).expanduser()
+        if not requested_path.is_absolute():
+            requested_path = root / requested_path
+        if requested_path.resolve(strict=False) != resolved_path.resolve(strict=False):
+            raise WebResearchPlanError(
+                BLOCK_PLAN_IDENTITY_INVALID,
+                ["explicit web research plan path does not match report authority"],
+            )
+    return {
+        "status": "PASS",
+        "report_id": report_id,
+        "parent_report_id": parent_report_id,
+        "is_evo_child": report_id != parent_report_id,
+        "plan_path": resolved_path,
+        "plan": raw_plan,
+        "plan_sha256": sha256_file(resolved_path),
+        "allocation": allocation,
+        "authority": authority,
+    }
+
+
+def _validate_materialized_child_web_research(
+    workspace: Path,
+    *,
+    resolved: dict[str, Any],
+) -> dict[str, str]:
+    """Replay the child Step3B projection against its frozen Web plan."""
+
+    root = Path(workspace).expanduser().resolve(strict=True)
+    report_id = str(resolved["report_id"])
+    parent_report_id = str(resolved["parent_report_id"])
+    plan = dict(resolved["plan"])
+    allocation = dict(resolved["allocation"])
+    _validate_materialized_parent_web_research(root)
+    _, formula_ir = validate_plan(
+        plan,
+        workspace=root,
+        _authorized_child_report_id=report_id,
+        _authorized_child_formula=str(plan["research_object"]["formula_or_law"]),
+    )
+    expected_plan_ref = Path(resolved["plan_path"]).relative_to(root).as_posix()
+    expected_plan_hash = stable_json_hash(plan)
+    expected_evaluation = build_web_evaluation_contract(plan)
+    expected_formula_hash = str(formula_ir.get("formula_hash") or "")
+    expected_oos = {
+        "start": str((allocation.get("oos_window") or {}).get("start") or ""),
+        "end": str((allocation.get("oos_window") or {}).get("end") or ""),
+    }
+    reasons: list[str] = []
+
+    def read_child(relative: str) -> tuple[Path, dict[str, Any]]:
+        path = root / relative
+        if not path.is_file() or path.is_symlink():
+            raise WebResearchPlanError(
+                BLOCK_PLAN_IMPLEMENTATION_INVALID,
+                [f"child materialized artifact missing or unsafe:{relative}"],
+            )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise WebResearchPlanError(
+                BLOCK_PLAN_IMPLEMENTATION_INVALID,
+                [f"child materialized artifact is not an object:{relative}"],
+            )
+        return path, payload
+
+    spec_path, spec = read_child(
+        f"objects/factor_spec_master/factor_spec_master__{report_id}.json"
+    )
+    _data_path, data_prep = read_child(
+        f"objects/data_prep_master/data_prep_master__{report_id}.json"
+    )
+    _handoff_path, handoff = read_child(
+        f"objects/handoff/handoff_to_step4__{report_id}.json"
+    )
+    _revision_path, revision = read_child(
+        f"objects/research_iteration_master/executable_revision_spec__{report_id}.json"
+    )
+    materialization_digest = hashlib.sha256(
+        f"{parent_report_id}\0{report_id}".encode()
+    ).hexdigest()[:16]
+    materialization_name = (
+        "child_revision_materialization__"
+        f"{parent_report_id[:40].rstrip('_')}__"
+        f"{report_id[:40].rstrip('_')}__{materialization_digest}.json"
+    )
+    _report_path, materialization = read_child(
+        f"objects/runtime_context/{materialization_name}"
+    )
+    parent_handoff_path = (
+        root
+        / "objects"
+        / "handoff"
+        / f"handoff_to_step3b__{parent_report_id}.json"
+    )
+    if not parent_handoff_path.is_file() or parent_handoff_path.is_symlink():
+        reasons.append("child_materialization.parent_handoff_missing_or_unsafe")
+    else:
+        required_targets = {
+            "alpha_idea_master",
+            "factor_spec_master",
+            "data_prep_master",
+            "executable_revision_spec",
+            "handoff_to_step4",
+        }
+        for key in (
+            "daily_df_parquet",
+            "daily_df_csv",
+            "daily_df_csv_sample",
+            "evaluation_daily_df_parquet",
+            "evaluation_daily_df_csv",
+            "signal_daily_df_parquet",
+            "signal_daily_df_csv",
+        ):
+            if isinstance(data_prep.get("local_input_paths"), dict) and (
+                data_prep["local_input_paths"].get(key)
+            ):
+                required_targets.add(f"child_daily_input_{key}")
+        reasons.extend(
+            validate_child_materialization_readback(
+                workspace_root=root,
+                report_path=_report_path,
+                parent_report_id=parent_report_id,
+                child_report_id=report_id,
+                source_handoff_sha256=sha256_file(parent_handoff_path),
+                required_target_kinds=required_targets,
+            )
+        )
+    canonical = spec.get("canonical_spec")
+    spec_formula_ir = (
+        canonical.get("formula_ir") if isinstance(canonical, dict) else None
+    )
+    if (
+        not isinstance(spec_formula_ir, dict)
+        or str(spec_formula_ir.get("formula_hash") or "") != expected_formula_hash
+        or str(revision.get("child_formula_hash") or "") != expected_formula_hash
+    ):
+        reasons.append("child factor formula identity")
+    for label, payload in (
+        ("factor_spec_master", spec),
+        ("data_prep_master", data_prep),
+        ("handoff_to_step4", handoff),
+    ):
+        if payload.get("evaluation_contract") != expected_evaluation:
+            reasons.append(f"{label}.evaluation_contract")
+        if payload.get("web_research_plan_ref") != expected_plan_ref:
+            reasons.append(f"{label}.web_research_plan_ref")
+        if payload.get("web_research_plan_sha256") != expected_plan_hash:
+            reasons.append(f"{label}.web_research_plan_sha256")
+    if data_prep.get("research_windows") != {
+        "is_start": plan["evidence_policy"]["is_start"],
+        "is_end": plan["evidence_policy"]["is_end"],
+        "oos_start": expected_oos["start"],
+        "oos_end": expected_oos["end"],
+        "purge_days": plan["evidence_policy"]["purge_days"],
+        "embargo_days": plan["evidence_policy"]["embargo_days"],
+    }:
+        reasons.append("data_prep_master.research_windows")
+    expected_is_end = str(plan["evidence_policy"]["is_end"]).replace("-", "")
+    expected_is_start = str(plan["evidence_policy"]["is_start"]).replace("-", "")
+    expected_local_root = (
+        root / "runs" / report_id / "step3a_local_inputs"
+    ).resolve(strict=False)
+    data_local = (
+        data_prep.get("local_input_paths")
+        if isinstance(data_prep.get("local_input_paths"), dict)
+        else {}
+    )
+    handoff_local = (
+        handoff.get("local_input_paths")
+        if isinstance(handoff.get("local_input_paths"), dict)
+        else {}
+    )
+    daily_path_keys = (
+        "daily_df_parquet",
+        "daily_df_csv",
+        "daily_df_csv_sample",
+        "evaluation_daily_df_parquet",
+        "evaluation_daily_df_csv",
+        "signal_daily_df_parquet",
+        "signal_daily_df_csv",
+    )
+    allowed_local_input_keys = {
+        *daily_path_keys,
+        "input_mode",
+        "formula_input_dataset",
+        "preferred_daily_format",
+        "audit_daily_format",
+        "sort_contract",
+        "daily_io_contract",
+    }
+    for label, local_inputs in (
+        ("data_prep_master", data_local),
+        ("handoff_to_step4", handoff_local),
+    ):
+        unknown = sorted(set(local_inputs) - allowed_local_input_keys)
+        if unknown:
+            reasons.append(
+                f"{label}.local_input_paths.unknown:{','.join(unknown)}"
+            )
+        daily_io = local_inputs.get("daily_io_contract")
+        allowed_daily_io_keys = {
+            "version",
+            "formal_evidence_format",
+            "performance_path",
+            "audit_path",
+            "csv_output_policy",
+            "csv_rows_written",
+            "parquet_rows_written",
+            "csv_sample_strategy",
+            "full_csv_available",
+            "schema_parity_required",
+            "value_parity_required",
+            "csv_required_for_audit",
+            "sample_schema_parity",
+            "full_csv_absent_validated",
+            "full_csv_absence_reason",
+            "csv_path",
+            "csv_sample_path",
+            "sort_contract",
+        }
+        if not isinstance(daily_io, dict):
+            reasons.append(f"{label}.local_input_paths.daily_io_contract")
+        else:
+            nested_unknown = sorted(set(daily_io) - allowed_daily_io_keys)
+            if nested_unknown:
+                reasons.append(
+                    f"{label}.local_input_paths.daily_io_contract.unknown:"
+                    + ",".join(nested_unknown)
+                )
+            if (
+                daily_io.get("csv_path") != local_inputs.get("daily_df_csv")
+                or daily_io.get("csv_sample_path")
+                != local_inputs.get("daily_df_csv_sample")
+            ):
+                reasons.append(
+                    f"{label}.local_input_paths.daily_io_contract.path_binding"
+                )
+        serialized_local = json.dumps(local_inputs, sort_keys=True).lower()
+        if "://" in serialized_local or "s3:" in serialized_local:
+            reasons.append(f"{label}.local_input_paths.uri_forbidden")
+    for key in daily_path_keys:
+        raw_path = data_local.get(key)
+        if handoff_local.get(key) != raw_path:
+            reasons.append(f"handoff_to_step4.local_input_paths.{key}")
+        if not raw_path:
+            continue
+        candidate = Path(str(raw_path)).expanduser()
+        if not candidate.is_absolute():
+            candidate = root / candidate
+        candidate = candidate.resolve(strict=False)
+        if (
+            expected_local_root not in candidate.parents
+            or not candidate.is_file()
+            or candidate.is_symlink()
+        ):
+            reasons.append(f"data_prep_master.local_input_paths.{key}.scope")
+            continue
+        try:
+            import pandas as pd
+
+            frame = (
+                pd.read_parquet(candidate, columns=["trade_date"])
+                if candidate.suffix.lower() == ".parquet"
+                else pd.read_csv(candidate, usecols=["trade_date"])
+            )
+            observed = (
+                frame["trade_date"]
+                .astype(str)
+                .str.replace("-", "", regex=False)
+                .str.slice(0, 8)
+            )
+            if frame.empty or observed.max() > expected_is_end:
+                reasons.append(f"data_prep_master.local_input_paths.{key}.window")
+        except (OSError, ValueError, KeyError, ImportError) as exc:
+            reasons.append(
+                f"data_prep_master.local_input_paths.{key}.read:{type(exc).__name__}"
+            )
+        allowed_input_modes = {
+            "daily_only",
+            "alternative_daily_plus_clean_daily",
+        }
+        if data_local.get("input_mode") not in allowed_input_modes or handoff_local.get(
+            "input_mode"
+        ) not in allowed_input_modes:
+            reasons.append("child_pre_release.input_mode")
+        if data_local.get("input_mode") != handoff_local.get("input_mode"):
+            reasons.append("child_pre_release.input_mode_binding")
+    for label, payload in (("data_prep_master", data_prep), ("handoff_to_step4", handoff)):
+        sample_window = payload.get("sample_window")
+        if not isinstance(sample_window, dict) or (
+            str(sample_window.get("start") or "").replace("-", "")
+            != expected_is_start
+            or str(sample_window.get("end") or "").replace("-", "")
+            != expected_is_end
+        ):
+            reasons.append(f"{label}.sample_window")
+        contract = payload.get("step4_data_contract")
+        if not isinstance(contract, dict):
+            reasons.append(f"{label}.step4_data_contract")
+            continue
+        if contract.get("minute_derived_state_requirements"):
+            reasons.append(f"{label}.minute_derived_state_requirements")
+        for query_set in ("full_queries", "sample_queries"):
+            queries = contract.get(query_set)
+            if queries is None:
+                continue
+            if not isinstance(queries, dict):
+                reasons.append(f"{label}.step4_data_contract.{query_set}")
+                continue
+            for dataset, query in queries.items():
+                if dataset not in {"clean_daily_bar", "daily_basic", "moneyflow"}:
+                    reasons.append(
+                        f"{label}.step4_data_contract.{query_set}.{dataset}.forbidden"
+                    )
+                    continue
+                if not isinstance(query, dict) or (
+                    str(query.get("dataset") or dataset) != dataset
+                    or str(query.get("end_date") or "").replace("-", "")
+                    != expected_is_end
+                ):
+                    reasons.append(
+                        f"{label}.step4_data_contract.{query_set}.{dataset}.window"
+                    )
+    expected_report_binding = {
+        "path": expected_plan_ref,
+        "sha256": expected_plan_hash,
+        "evaluation_contract_sha256": stable_json_hash(expected_evaluation),
+    }
+    if materialization.get("child_web_research_plan") != expected_report_binding:
+        reasons.append("child_materialization.child_web_research_plan")
+    try:
+        proof_preregistration = validate_web_factor_proof_preregistration_structural(
+            root,
+            plan,
+            oos_release_token_hash=str(allocation.get("sealed_token_sha256") or ""),
+        )
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError, ValueError) as exc:
+        reasons.append(f"factor_proof_preregistration:{exc}")
+        proof_preregistration = {}
+    if reasons:
+        raise WebResearchPlanError(BLOCK_PLAN_IMPLEMENTATION_INVALID, reasons)
+    return {
+        "plan_sha256": str(resolved["plan_sha256"]),
+        "formula_hash": expected_formula_hash,
+        "catalog_sha256": str(
+            ((spec.get("canonical_spec") or {}).get("data_catalog_snapshot_sha256"))
+            or ""
+        ),
+        "bootstrap_sha256": "",
+        "factor_spec_sha256": sha256_file(spec_path),
+        "factor_proof_preregistration_sha256": str(
+            proof_preregistration.get("preregistration_sha256") or ""
+        ),
+    }
+
+
+def validate_materialized_web_research(
+    workspace: Path,
+    *,
+    plan_path: Path | None = None,
+    report_id: str | None = None,
+    expected_host_trust_manifest_sha256: str | None = None,
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    _incident_guard: object | None = None,
+    current_authority: bool = False,
+) -> dict[str, str]:
+    root = Path(workspace).expanduser().resolve(strict=True)
+    manifest = load_workspace_manifest(root / "manifest.json")
+    selected_report_id = str(report_id or manifest.get("root_report_id") or "")
+    resolved = resolve_report_scoped_web_research_plan(
+        root,
+        report_id=selected_report_id,
+        expected_host_trust_manifest_sha256=expected_host_trust_manifest_sha256,
+        plan_path=plan_path,
+        incident_trust_root=incident_trust_root,
+        incident_installation_id=incident_installation_id,
+        _incident_guard=_incident_guard,
+        current_authority=current_authority,
+    )
+    if resolved["is_evo_child"]:
+        return _validate_materialized_child_web_research(root, resolved=resolved)
+    return _validate_materialized_parent_web_research(root)
+
+
 def build_web_evaluation_contract(plan: dict[str, Any]) -> dict[str, Any]:
     research = plan["research_object"]
     data_plan = plan["data_plan"]
     evidence = plan["evidence_policy"]
+    claim_class = plan["economic_mechanism"]["claim_class"]
     proof_control_columns = (
         list(RISK_PROOF_CONTROL_COLUMNS)
-        if plan["economic_mechanism"]["claim_class"] == "risk_premium"
-        else []
+        if claim_class == "risk_premium"
+        else (
+            list(BEHAVIORAL_PROOF_SOURCE_CONTROL_COLUMNS)
+            if claim_class != "unknown"
+            else []
+        )
     )
+    measurement_program = plan.get("measurement_program")
+    search_policy = (
+        measurement_program.get("search_policy")
+        if isinstance(measurement_program, dict)
+        and isinstance(measurement_program.get("search_policy"), dict)
+        else {}
+    )
+    diagnostic_trials = [
+        {
+            "trial_id": str(item["trial_id"]),
+            "role": str(item["role"]),
+            "component_id": str(item["component_id"]),
+            "formula_or_law": str(item["formula_or_law"]),
+            "signal_column": f"diagnostic__{item['trial_id']}",
+            "affects_acceptance": False,
+        }
+        for item in search_policy.get("registered_diagnostic_trials") or []
+        if isinstance(item, dict)
+    ]
     return {
         "version": "factorforge_web_evaluation_contract_v2",
         "rebalance_frequency": research["rebalance_frequency"],
@@ -3156,6 +4185,7 @@ def build_web_evaluation_contract(plan: dict[str, Any]) -> dict[str, Any]:
         "cost_model_id": evidence["cost_model_id"],
         "cost_formula": "one_way_turnover * 0.003",
         "proof_control_columns": proof_control_columns,
+        "diagnostic_trials": diagnostic_trials,
     }
 
 
@@ -3176,7 +4206,15 @@ def build_step1_payloads(
     evidence = plan["evidence_policy"]
     preferred = next(item for item in plan["hypotheses"] if item["kind"] == "preferred")
     evaluation_contract = build_web_evaluation_contract(plan)
-    required_inputs = list(dict.fromkeys([*data_plan["daily_fields"], *data_plan["minute_fields"]]))
+    required_inputs = list(
+        dict.fromkeys(
+            [
+                *data_plan["daily_fields"],
+                *data_plan["minute_fields"],
+                *evaluation_contract["proof_control_columns"],
+            ]
+        )
+    )
     retrieval_provenance = knowledge_summary["retrieval_provenance"]
     economic_hypothesis = {
         "macro_return_source": economic["return_source_family"],
@@ -3475,6 +4513,7 @@ def build_protocol_payloads(
             "expected_metric_signatures": math["expected_metric_signatures"],
         },
         "evaluation_contract": evaluation_contract,
+        "epistemic_evolution": epistemic_evolution_policy_v2(),
         "evidence_policy": {
             "is_window": f"{evidence['is_start']}/{evidence['is_end']}",
             "oos_sealed_during_search": True,

@@ -22,6 +22,10 @@ from factor_factory.revision_council.schema import (
     COUNCIL_SUMMARY_VERSION,
 )
 from factor_factory.revision_council.validator import validate_revision_council_proposal
+from factor_factory.revision_council.production import (
+    result_evo_outcome_summary,
+    validate_formal_evo_packet,
+)
 from validate_agentic_council_result import (
     expected_manifest_task,
     validate_agentic_result,
@@ -369,6 +373,22 @@ def main() -> None:
 
     packet_path = council_dir / f"revision_council_packet__{rid}.json"
     packet = load_json(packet_path) if packet_path.exists() else {}
+    evo_context = packet.get("evo_v2")
+    packet_reasons = validate_formal_evo_packet(
+        packet,
+        workspace_root=FF,
+        report_id=rid,
+    )
+    if packet_reasons:
+        print(
+            "BLOCK_COUNCIL_EVO_V2_FORMAL_PACKET_INVALID: "
+            + json.dumps(
+                {"report_id": rid, "block_reasons": packet_reasons},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     forbidden = compare_forbidden_writeback_baseline(rid, packet)
     if forbidden:
         diagnostic_path = write_prewrite_block(rid, packet, forbidden)
@@ -412,6 +432,8 @@ def main() -> None:
             "route_family": (result.get("approach_route") or {}).get("route_family"),
             "route_status": result.get("route_status"),
             "result_sha256": result_sha256,
+            "evo_v2_task_identity": result.get("evo_v2_task_identity"),
+            "evo_v2_outcome": result_evo_outcome_summary(result),
         })
         approach_route = result.get("approach_route")
         if isinstance(approach_route, dict) and approach_route:
@@ -437,18 +459,93 @@ def main() -> None:
                     "source_path": str(path),
                 }
             )
-        for law in result.get("candidate_revision_laws") or []:
-            if not isinstance(law, dict) or not law.get("law_id"):
+        outcome_summary = result_evo_outcome_summary(result)
+        if evo_context is None or (
+            isinstance(outcome_summary, dict)
+            and outcome_summary.get("outcome") == "MINIMAL_MECHANISM_DELTA"
+        ):
+            laws = result.get("candidate_revision_laws") or []
+            if evo_context is not None and len(laws) != 1:
+                blocked_agent_results.append(
+                    {
+                        "path": str(path),
+                        "task_id": result.get("task_id"),
+                        "agent_role": result.get("agent_role"),
+                        "block_reasons": [
+                            "BLOCK_COUNCIL_EVO_V2_MERGE_UNBOUND_LAW_CARDINALITY"
+                        ],
+                    }
+                )
+                valid_agent_results.pop()
                 continue
-            candidate_law_index.append(
+            for law in laws:
+                if not isinstance(law, dict) or not law.get("law_id"):
+                    continue
+                law_hash = stable_payload_hash(law)
+                if evo_context is not None and law_hash != outcome_summary.get(
+                    "law_sha256"
+                ):
+                    blocked_agent_results.append(
+                        {
+                            "path": str(path),
+                            "task_id": result.get("task_id"),
+                            "agent_role": result.get("agent_role"),
+                            "block_reasons": [
+                                "BLOCK_COUNCIL_EVO_V2_MERGE_UNBOUND_LAW"
+                            ],
+                        }
+                    )
+                    valid_agent_results.pop()
+                    break
+                candidate_law_index.append(
+                    {
+                        "law_id": law.get("law_id"),
+                        "route_id": (result.get("approach_route") or {}).get("route_id"),
+                        "source_result_sha256": result_sha256,
+                        "law_hash": law_hash,
+                        "evo_v2_task_identity_sha256": (
+                            outcome_summary.get("evo_v2_task_identity_sha256")
+                            if isinstance(outcome_summary, dict)
+                            else None
+                        ),
+                        "mechanism_delta_sha256": (
+                            outcome_summary.get("mechanism_delta_sha256")
+                            if isinstance(outcome_summary, dict)
+                            else None
+                        ),
+                        "economic_backprojection_sha256": (
+                            outcome_summary.get("economic_backprojection_sha256")
+                            if isinstance(outcome_summary, dict)
+                            else None
+                        ),
+                        "delta_id": (
+                            outcome_summary.get("delta_id")
+                            if isinstance(outcome_summary, dict)
+                            else None
+                        ),
+                    }
+                )
+        elif not isinstance(outcome_summary, dict) or outcome_summary.get(
+            "outcome"
+        ) != "NO_DERIVED_LAW":
+            blocked_agent_results.append(
                 {
-                    "law_id": law.get("law_id"),
-                    "route_id": (result.get("approach_route") or {}).get("route_id"),
-                    "source_result_sha256": result_sha256,
-                    "law_hash": stable_payload_hash(law),
+                    "path": str(path),
+                    "task_id": result.get("task_id"),
+                    "agent_role": result.get("agent_role"),
+                    "block_reasons": ["BLOCK_COUNCIL_EVO_V2_MERGE_OUTCOME_INVALID"],
                 }
             )
-        branch = branch_from_agent_result(result)
+            valid_agent_results.pop()
+            continue
+        if (
+            evo_context is not None
+            and isinstance(outcome_summary, dict)
+            and outcome_summary.get("outcome") == "NO_DERIVED_LAW"
+        ):
+            branch = None
+        else:
+            branch = branch_from_agent_result(result)
         if branch:
             if branch.get("blocked_reason"):
                 blocked_agent_results.append({"path": str(path), "task_id": result.get("task_id"), "agent_role": result.get("agent_role"), "block_reasons": [branch["blocked_reason"]]})
@@ -496,6 +593,8 @@ def main() -> None:
             measurement_program=packet.get(
                 "mechanism_conditioned_measurement_program"
             ),
+            evo_v2_required=evo_context is not None,
+            workspace_root=FF,
         )
         if proposal.get("proposal_status") == "blocked":
             reasons = list(dict.fromkeys(reasons + (proposal.get("block_reasons") or [])))
@@ -528,6 +627,7 @@ def main() -> None:
     summary = {
         "contract_version": COUNCIL_SUMMARY_VERSION,
         "report_id": rid,
+        "evo_v2": evo_context,
         "candidate_proposals": candidate_proposals,
         "blocked_proposals": blocked_proposals,
         "valid_agent_results": valid_agent_results,

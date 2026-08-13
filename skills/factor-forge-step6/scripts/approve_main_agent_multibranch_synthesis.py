@@ -18,6 +18,10 @@ if str(REPO_ROOT) not in sys.path:
 from factor_factory.formula.parser import parse_formula
 from factor_factory.artifact_identity import stable_hash
 from factor_factory.runtime_context import resolve_factorforge_context
+from factor_factory.research_conjecture import (
+    epistemic_evolution_enabled,
+    research_protocol_paths,
+)
 from factor_factory.ultimate_loop.state import next_child_report_id
 
 APPROVAL_VERSION = "factorforge_main_agent_multibranch_synthesis_approval_v1"
@@ -27,6 +31,16 @@ TOKEN_SOURCE_CHANGED = "BLOCK_FACTORFORGE_MULTIBRANCH_SOURCE_SYNTHESIS_CHANGED"
 TOKEN_APPROVAL_INVALID = "BLOCK_FACTORFORGE_MULTIBRANCH_APPROVAL_INVALID"
 TOKEN_CHILD_COLLISION = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_ID_COLLISION"
 TOKEN_DUP_HASH = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_FORMULA_DUPLICATE"
+TOKEN_EXTERNAL_HUMAN_REQUIRED = "BLOCK_FACTORFORGE_MULTIBRANCH_EXTERNAL_HUMAN_APPROVAL_REQUIRED"
+FORBIDDEN_AUTOMATED_APPROVAL_SOURCES = {
+    "ultimate_loop_auto_bridge",
+    "ultimate_loop_auto_multibranch_bridge",
+    "current_main_agent_orchestration_synthesis",
+    "current_main_agent_default_approval",
+    "automatic",
+    "agent",
+    "runtime",
+}
 
 
 def utc_now() -> str:
@@ -265,6 +279,15 @@ def activate_multibranch_materialization_handoff(root: Path, report_id: str, app
 
 
 def approve(root: Path, report_id: str, *, loop_index: int, approval_source: str) -> dict[str, Any]:
+    if str(approval_source or "").strip().lower() in FORBIDDEN_AUTOMATED_APPROVAL_SOURCES:
+        raise ValueError(f"{TOKEN_EXTERNAL_HUMAN_REQUIRED}: automated or agent issuer forbidden")
+    conjecture_path = research_protocol_paths(root, report_id)["conjecture"]
+    conjecture = load_json(conjecture_path) if conjecture_path.is_file() and not conjecture_path.is_symlink() else {}
+    if epistemic_evolution_enabled(conjecture):
+        raise ValueError(
+            f"{TOKEN_EXTERNAL_HUMAN_REQUIRED}: EVO V2 multibranch execution requires "
+            "a separately signed external-human receipt and fresh sealed OOS allocation for every child"
+        )
     src = synthesis_path(root, report_id)
     md = markdown_path(root, report_id)
     validation = validate_multibranch(root, report_id, src, md)

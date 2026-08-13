@@ -24,12 +24,20 @@ from factor_factory.mechanism_math.formula_specific import (
 from factor_factory.mechanism_math.main_agent_memo import validate_main_agent_mechanism_memo
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract
 from factor_factory.measurement_program import validate_measurement_program
+from factor_factory.research_conjecture import research_protocol_paths
+from factor_factory.revision_council.production import (
+    CouncilEvoProductionError,
+    formal_packet_redactions,
+    load_formal_evo_packet_context,
+    validate_formal_evo_packet,
+)
 
 OBJ = FF / "objects"
 TOKEN_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING_INPUT"
 TOKEN_BRANCH_COMPARISON_MISSING = "BLOCK_FACTORFORGE_BRANCH_COMPARISON_MISSING"
 TOKEN_BRANCH_COMPARISON_SELECTED = "BLOCK_FACTORFORGE_BRANCH_COMPARISON_SELECTED_CHILD_INVALID"
 BASELINE_VERSION = "factorforge_revision_council_forbidden_writeback_baseline_v1"
+TOKEN_EVO_V2 = "BLOCK_COUNCIL_EVO_V2_FORMAL_PACKET_INVALID"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -541,64 +549,115 @@ def main() -> None:
         "factor_spec_master": OBJ / "factor_spec_master" / f"factor_spec_master__{rid}.json",
         "main_agent_mechanism_memo": OBJ / "research_iteration_master" / f"main_agent_mechanism_memo__{rid}.json",
     }
-    required = ["research_iteration_master", "factor_case_master", "factor_evaluation", "factor_run_master"]
+    try:
+        evo_context, evo_feedback = load_formal_evo_packet_context(FF, rid)
+    except CouncilEvoProductionError as exc:
+        print(
+            TOKEN_EVO_V2
+            + ": "
+            + json.dumps({"report_id": rid, "block_reasons": exc.reasons}, ensure_ascii=False),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    required = (
+        ["factor_spec_master"]
+        if evo_context is not None
+        else ["research_iteration_master", "factor_case_master", "factor_evaluation", "factor_run_master"]
+    )
     missing = [str(paths[name]) for name in required if not paths[name].exists()]
     if missing:
         print(TOKEN_MISSING + ": " + json.dumps({"missing": missing}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1)
 
-    iteration = load_json(paths["research_iteration_master"])
-    case = load_json(paths["factor_case_master"])
-    evaluation = load_json(paths["factor_evaluation"])
-    run = load_json(paths["factor_run_master"])
+    iteration = (
+        {}
+        if evo_context is not None
+        else load_json(paths["research_iteration_master"])
+    )
+    case = {} if evo_context is not None else load_json(paths["factor_case_master"])
+    evaluation = {} if evo_context is not None else load_json(paths["factor_evaluation"])
+    run = {} if evo_context is not None else load_json(paths["factor_run_master"])
     handoff = load_json(paths["handoff_to_step6"]) if paths["handoff_to_step6"].exists() else {}
     spec = load_json(paths["factor_spec_master"]) if paths["factor_spec_master"].exists() else {}
-    if not paths["main_agent_mechanism_memo"].exists():
-        print("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MISSING: " + str(paths["main_agent_mechanism_memo"]), file=sys.stderr)
-        raise SystemExit(1)
-    main_agent_memo = load_json(paths["main_agent_mechanism_memo"])
-    memo_failures = validate_main_agent_mechanism_memo(main_agent_memo, spec)
-    if memo_failures:
-        print("BLOCK_MAIN_AGENT_MECHANISM_MEMO_INVALID: " + json.dumps({"failures": memo_failures}, ensure_ascii=False), file=sys.stderr)
-        raise SystemExit(1)
+    main_agent_memo: dict[str, Any] = {}
+    if evo_context is None:
+        if not paths["main_agent_mechanism_memo"].exists():
+            print("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MISSING: " + str(paths["main_agent_mechanism_memo"]), file=sys.stderr)
+            raise SystemExit(1)
+        main_agent_memo = load_json(paths["main_agent_mechanism_memo"])
+        memo_failures = validate_main_agent_mechanism_memo(main_agent_memo, spec)
+        if memo_failures:
+            print("BLOCK_MAIN_AGENT_MECHANISM_MEMO_INVALID: " + json.dumps({"failures": memo_failures}, ensure_ascii=False), file=sys.stderr)
+            raise SystemExit(1)
 
-    memo = nested(iteration, "research_judgment", "research_memo")
+    memo = (
+        {}
+        if evo_context is not None
+        else nested(iteration, "research_judgment", "research_memo")
+    )
     canonical = spec.get("canonical_spec") if isinstance(spec.get("canonical_spec"), dict) else {}
-    metrics = collect_key_metrics(evaluation)
-    revision_memory = prior_revision_memory(rid, spec, metrics)
-    _revision_spec_path, executable_spec = executable_revision_spec_for_packet(spec)
-    try:
-        sibling_memory = sibling_branch_memory(rid, executable_spec)
-    except ValueError as exc:
-        print(str(exc), file=sys.stderr)
-        raise SystemExit(1)
+    if evo_context is not None and evo_feedback is not None:
+        redactions = formal_packet_redactions(evo_feedback)
+        metrics = redactions["metrics"]
+        revision_memory = redactions["prior_revision_memory"]
+        sibling_memory = redactions["sibling_branch_memory"]
+    else:
+        redactions = {}
+        metrics = collect_key_metrics(evaluation)
+        revision_memory = prior_revision_memory(rid, spec, metrics)
+        _revision_spec_path, executable_spec = executable_revision_spec_for_packet(spec)
+        try:
+            sibling_memory = sibling_branch_memory(rid, executable_spec)
+        except ValueError as exc:
+            print(str(exc), file=sys.stderr)
+            raise SystemExit(1)
 
     brief_ref = iteration.get("loop_research_brief") or {}
     brief_json = {}
-    if isinstance(brief_ref, dict) and brief_ref.get("json_path") and Path(brief_ref["json_path"]).exists():
+    if evo_context is None and isinstance(brief_ref, dict) and brief_ref.get("json_path") and Path(brief_ref["json_path"]).exists():
         brief_json = load_json(Path(brief_ref["json_path"]))
     mechanism_analysis = nested(memo, "mechanism_analysis")
-    measurement_program = measurement_program_for_packet(
-        spec,
-        case,
-        handoff,
-        memo,
-    )
-    formula_specific_derivation = mechanism_analysis.get("formula_specific_derivation") if isinstance(mechanism_analysis, dict) else None
-    if not isinstance(formula_specific_derivation, dict) or not formula_specific_derivation:
-        formula_specific_derivation = brief_json.get("formula_specific_derivation") if isinstance(brief_json.get("formula_specific_derivation"), dict) else {}
-    if not formula_specific_derivation:
-        formula_specific_derivation = build_formula_specific_derivation(spec or canonical or {}, mechanism_analysis if isinstance(mechanism_analysis, dict) else {}, metrics)
-    mechanism_formula_consistency = mechanism_analysis.get("mechanism_formula_consistency") if isinstance(mechanism_analysis, dict) else None
-    if not isinstance(mechanism_formula_consistency, dict) or not mechanism_formula_consistency:
-        mechanism_formula_consistency = validate_mechanism_formula_consistency(spec or canonical or {}, mechanism_analysis if isinstance(mechanism_analysis, dict) else {}, formula_specific_derivation)
+    if evo_context is not None:
+        frozen_program_path = (
+            FF / evo_context["frozen_measurement_program_ref"]["path"]
+        ).resolve(strict=True)
+        measurement_program = load_json(frozen_program_path)
+    else:
+        frozen_program_path = None
+        measurement_program = measurement_program_for_packet(
+            spec,
+            case,
+            handoff,
+            memo,
+        )
+    if evo_context is not None:
+        formula_specific_derivation = {}
+        mechanism_formula_consistency = {}
+    else:
+        formula_specific_derivation = mechanism_analysis.get("formula_specific_derivation") if isinstance(mechanism_analysis, dict) else None
+        if not isinstance(formula_specific_derivation, dict) or not formula_specific_derivation:
+            formula_specific_derivation = brief_json.get("formula_specific_derivation") if isinstance(brief_json.get("formula_specific_derivation"), dict) else {}
+        if not formula_specific_derivation:
+            formula_specific_derivation = build_formula_specific_derivation(spec or canonical or {}, mechanism_analysis if isinstance(mechanism_analysis, dict) else {}, metrics)
+        mechanism_formula_consistency = mechanism_analysis.get("mechanism_formula_consistency") if isinstance(mechanism_analysis, dict) else None
+        if not isinstance(mechanism_formula_consistency, dict) or not mechanism_formula_consistency:
+            mechanism_formula_consistency = validate_mechanism_formula_consistency(spec or canonical or {}, mechanism_analysis if isinstance(mechanism_analysis, dict) else {}, formula_specific_derivation)
 
     packet = {
         "contract_version": "factorforge_revision_council_packet_v1",
         "report_id": rid,
-        "artifact_identity": iteration.get("artifact_identity") or case.get("artifact_identity") or run.get("artifact_identity") or {},
+        "artifact_identity": (
+            dict((evo_feedback or {}).get("artifact_identity") or {})
+            if evo_context is not None
+            else iteration.get("artifact_identity") or case.get("artifact_identity") or run.get("artifact_identity") or {}
+        ),
         "factor_formula": canonical.get("formula_text") or spec.get("formula_text") or nested(brief_json, "economic_interpretation").get("formula"),
-        "implementation_mode": (iteration.get("artifact_identity") or {}).get("implementation_mode") or (run.get("artifact_identity") or {}).get("implementation_mode"),
+        "implementation_mode": (
+            (spec.get("artifact_identity") or {}).get("implementation_mode")
+            or (canonical.get("artifact_identity") or {}).get("implementation_mode")
+            or (iteration.get("artifact_identity") or {}).get("implementation_mode")
+            or (run.get("artifact_identity") or {}).get("implementation_mode")
+        ),
         "legacy_mechanism_math_contract": (
             mechanism_math_for_packet(spec, case, handoff, memo)
         ),
@@ -607,7 +666,11 @@ def main() -> None:
         "mechanism_formula_consistency": mechanism_formula_consistency,
         "prior_revision_memory": revision_memory,
         "sibling_branch_memory": sibling_memory,
-        "main_agent_mechanism_memo_ref": relpath(paths["main_agent_mechanism_memo"]),
+        "main_agent_mechanism_memo_ref": (
+            None
+            if evo_context is not None
+            else relpath(paths["main_agent_mechanism_memo"])
+        ),
         "main_agent_formula_component_map": main_agent_memo.get("formula_component_map") or [],
         "main_agent_math_hypothesis": main_agent_memo.get("math_hypothesis") or {},
         "main_agent_evidence_comparison": main_agent_memo.get("evidence_comparison") or {},
@@ -634,10 +697,42 @@ def main() -> None:
         "metrics": metrics,
         "chart_evidence": brief_json.get("chart_evidence") or {},
         "program_search_policy": memo.get("search_policy_decision") or memo.get("program_search_policy") or {},
-        "supplemental_research_context": supplemental_research_context(rid, spec, iteration),
-        "source_paths": {key: str(value) for key, value in paths.items() if value.exists()},
+        "supplemental_research_context": (
+            redactions["supplemental_research_context"]
+            if evo_context is not None
+            else supplemental_research_context(rid, spec, iteration)
+        ),
+        "source_paths": (
+            {
+                "research_conjecture": str(research_protocol_paths(FF, rid)["conjecture"].resolve(strict=True)),
+                "evo_lifecycle": str((FF / evo_context["lifecycle_ref"]["path"]).resolve(strict=True)),
+                "evo_feedback_ledger": str((FF / evo_context["canonical_feedback_ref"]["path"]).resolve(strict=True)),
+                "frozen_measurement_program": str(frozen_program_path),
+            }
+            if evo_context is not None
+            else {key: str(value) for key, value in paths.items() if value.exists()}
+        ),
         "forbidden_writeback_baseline": forbidden_writeback_baseline(rid),
     }
+    if evo_context is not None:
+        packet["evo_v2"] = evo_context
+        packet.update(redactions)
+        packet_reasons = validate_formal_evo_packet(
+            packet,
+            workspace_root=FF,
+            report_id=rid,
+        )
+        if packet_reasons:
+            print(
+                TOKEN_EVO_V2
+                + ": "
+                + json.dumps(
+                    {"report_id": rid, "block_reasons": packet_reasons},
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
 
     out = OBJ / "research_iteration_master" / "revision_council" / rid / f"revision_council_packet__{rid}.json"
     write_json(out, packet)

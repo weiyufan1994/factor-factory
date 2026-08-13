@@ -485,7 +485,9 @@ required-family coverage；不完整规则不会生成 threshold registration。
 python3 scripts/write_factorforge_evaluation_release_chain.py release-oos \
   --workspace-root <factor_workspace> \
   --panel <factor_workspace>/<frozen_oos_panel.parquet> \
-  --spec <metric_verifier_spec.json>
+  --spec <metric_verifier_spec.json> \
+  --host-trust-root <host_private_trust_root> \
+  --installation-id <host_installation_id>
 ```
 
 release 完成后执行确定性 verifier：
@@ -494,7 +496,9 @@ release 完成后执行确定性 verifier：
 python3 scripts/build_factorforge_metric_verifier_reports.py \
   --workspace-root <factor_workspace> \
   --panel <factor_workspace>/<frozen_oos_panel.parquet> \
-  --spec <metric_verifier_spec.json>
+  --spec <metric_verifier_spec.json> \
+  --host-trust-root <host_private_trust_root> \
+  --installation-id <host_installation_id>
 ```
 
 `--identity-only` 仅允许开发 smoke 或诊断，不能作为正式阈值预注册流程。
@@ -534,8 +538,14 @@ panel/spec；因此 bundle 不是仅凭哈希受信的静态声明。
 ```bash
 python3 scripts/validate_factorforge_factor_proof.py \
   --workspace-root <factor_workspace> \
-  --report-id <report_id>
+  --report-id <report_id> \
+  --host-trust-root <host_private_trust_root> \
+  --installation-id <host_installation_id>
 ```
+
+以上正式 CLI 必须使用同一显式 Host context。Agent 的 structural replay 或
+`--identity-only` 诊断不得据此给出当前正式权威，必须保持
+`current_formal_authority_verified=false` 与 `formal_proof_eligible=false`。
 
 最终 Ultimate/Council approval 还会运行：
 

@@ -395,6 +395,90 @@ def test_submit_research_and_api_hide_private_paths(research_console):
     assert "agent_session_key" not in api
 
 
+def test_job_api_endpoints_project_nested_evo_host_private_state(research_console):
+    from factor_factory.console.models import (
+        HOST_PRIVATE_PUBLIC_REDACTION,
+        ResearchRequest,
+    )
+
+    base_url, app = research_console
+    job = app.store.create_job(
+        ResearchRequest(title="EVO public projection", hypothesis="test hypothesis")
+    )
+    state_root = str(app.config.state_root.resolve())
+    trust_root = f"{state_root}/research-org-trust"
+    installation_id = "console-installation-secret"
+    carrier = f"{state_root}/jobs/{job.job_id}/sealed-oos/oos.parquet"
+    admission = f"{state_root}/jobs/{job.job_id}/evo-child-container/admission.json"
+    worktree = f"/srv/factorforge-console/worktrees/{job.job_id}"
+    workspace = f"{worktree}/factor_research/FACTOR/research"
+    private_result = {
+        "evo_v2_child_runtime": {
+            "ready": {
+                "status": "CHILD_EXECUTION_READY",
+                "ultimate_argv": [
+                    "python3",
+                    "ultimate.py",
+                    "--factorforge-root",
+                    worktree,
+                    "--factor-workspace",
+                    workspace,
+                    "--research-org-runtime-trust-root",
+                    trust_root,
+                    "--research-org-runtime-installation-id",
+                    installation_id,
+                    "--sealed-oos-carrier",
+                    carrier,
+                    "--agent-execution-container-admission",
+                    admission,
+                ],
+                "container_admission_path": admission,
+                "nested": [
+                    {"identity": {"installation_id": installation_id}},
+                    {"recovery_admission": {"path": admission}},
+                ],
+            },
+            "execution": {
+                "execution_receipt_path": f"{state_root}/jobs/{job.job_id}/receipt.json"
+            },
+            "phase_checkpoint": {
+                "phase_inflight_path": (
+                    f"{state_root}/jobs/{job.job_id}/evo-child-runtime/phase-inflight.json"
+                ),
+                "phase_receipt_candidate_path": (
+                    f"{state_root}/jobs/{job.job_id}/evo-child-runtime/phase.json"
+                ),
+            },
+        }
+    }
+    app.store.update_job(job.job_id, result=private_result)
+    opener, _html = _login_opener(base_url)
+
+    list_payload = json.loads(opener.open(f"{base_url}/api/jobs", timeout=3).read())
+    detail_payload = json.loads(
+        opener.open(f"{base_url}/api/research/{job.job_id}", timeout=3).read()
+    )
+    list_job = next(
+        item for item in list_payload["jobs"] if item["job_id"] == job.job_id
+    )
+
+    for payload in (list_job, detail_payload):
+        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        assert state_root not in serialized
+        assert trust_root not in serialized
+        assert installation_id not in serialized
+        assert carrier not in serialized
+        assert admission not in serialized
+        assert worktree not in serialized
+        assert workspace not in serialized
+        assert HOST_PRIVATE_PUBLIC_REDACTION in serialized
+        assert payload["result"]["evo_v2_child_runtime"]["ready"]["status"] == (
+            "CHILD_EXECUTION_READY"
+        )
+
+    assert app.store.get_job(job.job_id).result == private_result
+
+
 def test_submit_formula_with_chinese_title_and_generated_factor_id(research_console):
     base_url, app = research_console
     opener, html = _login_opener(base_url)

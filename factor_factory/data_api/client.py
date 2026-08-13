@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 import json
 import os
+from contextlib import contextmanager
 
 import pandas as pd
 
@@ -48,6 +49,38 @@ from factorforge_data_api import DataCatalogNotFound, DataQuery, DataQueryInvali
 
 
 DataApiClient = IndependentDataApiClient
+
+
+@contextmanager
+def _hardened_pyarrow_s3_transport():
+    """Apply bounded, configurable S3 timeouts around independent API reads.
+
+    PyArrow's macOS default socket timeout is typically three seconds, which
+    is too aggressive for large remote parquet range scans.  The independent
+    Data API owns query semantics; this narrow adapter only hardens transport
+    and restores the original constructor immediately after the fetch.
+    """
+    try:
+        import pyarrow.fs as arrow_fs
+    except ImportError:
+        yield
+        return
+    original = arrow_fs.S3FileSystem
+    request_timeout = float(os.getenv("FACTORFORGE_S3_REQUEST_TIMEOUT_SECONDS") or "120")
+    connect_timeout = float(os.getenv("FACTORFORGE_S3_CONNECT_TIMEOUT_SECONDS") or "30")
+    max_attempts = int(os.getenv("FACTORFORGE_S3_MAX_ATTEMPTS") or "10")
+
+    def hardened(*args, **kwargs):
+        kwargs.setdefault("request_timeout", request_timeout)
+        kwargs.setdefault("connect_timeout", connect_timeout)
+        kwargs.setdefault("retry_strategy", arrow_fs.AwsStandardS3RetryStrategy(max_attempts=max_attempts))
+        return original(*args, **kwargs)
+
+    arrow_fs.S3FileSystem = hardened
+    try:
+        yield
+    finally:
+        arrow_fs.S3FileSystem = original
 
 
 class LocalDataApiResult:
@@ -548,7 +581,8 @@ def fetch_data_api_dataset(
         fields or _default_fields(dataset_id),
         frequency or _default_frequency(dataset_id),
     )
-    return IndependentDataApiClient.from_catalog(catalog).fetch(query)
+    with _hardened_pyarrow_s3_transport():
+        return IndependentDataApiClient.from_catalog(catalog).fetch(query)
 
 
 def resolve_data_api_dataset(

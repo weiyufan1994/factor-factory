@@ -30,6 +30,7 @@ from factor_factory.mechanism_math.validator import (
     validate_mechanism_math_contract_v2,
 )
 from factor_factory.measurement_program import validate_measurement_program
+from factor_factory.evo_child_execution import validate_evo_child_execution_gate
 
 OBJ = FF / 'objects'
 ARCH = FF / 'archive'
@@ -146,6 +147,7 @@ def evidence_identity_checks(case: dict, ev: dict, frm: dict):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
+    ap.add_argument('--expected-host-trust-manifest-sha256', default=None)
     a = ap.parse_args()
     rid = a.report_id
 
@@ -177,6 +179,19 @@ if __name__ == '__main__':
         ev = load_json(eval_path)
         frm = load_json(frm_path)
         fsm = load_json(fsm_path)
+        evo_gate_reasons = validate_evo_child_execution_gate(
+            workspace_root=FF,
+            report_id=rid,
+            factor_run_master=frm,
+            expected_host_trust_manifest_sha256=(
+                a.expected_host_trust_manifest_sha256
+            ),
+        )
+        checks.append(check(
+            'evo_child_execution_gate',
+            not evo_gate_reasons,
+            ';'.join(evo_gate_reasons) if evo_gate_reasons else None,
+        ))
         checks.extend(artifact_identity_checks('factor_case_master', case, 'factor_evaluation', ev))
         checks.extend(check_identity_transition('factor_run_master', frm, 'factor_case_master', case, 'factor_case_master'))
         checks.extend(check_identity_transition('factor_run_master', frm, 'factor_evaluation', ev, 'factor_evaluation'))

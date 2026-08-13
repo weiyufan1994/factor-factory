@@ -106,6 +106,11 @@ Result schema summary:
 - model_to_formula_translation: candidate_formula or research_hold/operator_block/no_derived_revision_with_proof disposition, operator_support_status, mapping_from_model_terms_to_formula_components, information_set_legality
 - public_derivation_record: assumptions, mathematical_objects, selected_tools with why_selected, formula_claims, derivation_steps_summary, limiting_cases, falsification_tests, kill_criteria, overclaim_guard
 - candidate_revision_laws: revision_kind, expected_metric_change, falsification_tests, kill_criteria, why_not_portfolio_fix
+- if evo_v2_required: copy evo_v2_task_identity exactly and return exactly one
+  closed outcome: MINIMAL_MECHANISM_DELTA (one law plus mechanism_delta and
+  economic_backprojection) or NO_DERIVED_LAW (zero laws plus complete proof)
+- if evo_v2_required: use only PURGED_IS_ONLY context and do not read or cite
+  sealed or consumed OOS artifacts
 - terminal_control: required if recommending terminal stop; before max loops use revision_branch_only unless validated no-derived-revision, human override, or evidence BLOCK proof exists
 
 Canonical write prohibition:

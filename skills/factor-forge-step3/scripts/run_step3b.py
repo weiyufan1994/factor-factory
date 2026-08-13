@@ -52,6 +52,7 @@ from factor_factory.runtime_context import load_runtime_manifest, manifest_facto
 from factor_factory.factor_laws.moneyflow.registry import resolve_contract as resolve_moneyflow_law_contract
 from factor_factory.step3.high_speed_policy import assert_high_speed_code_policy, build_high_speed_code_profile
 from factor_factory.step3.template_runtime import maybe_reexec_from_template_copy
+from factor_factory.evo_data_boundary import install_agent_execution_isolation
 
 MODE_DECISION_VERSION = 'factorforge_implementation_mode_decision_v1'
 HYBRID_CONTRACT_VERSION = 'factorforge_hybrid_contract_v1'
@@ -2399,6 +2400,8 @@ def main():
     ap.add_argument('--formula-kernel-engine', help='Formula-IR operator kernel engine. Experimental engines require explicit enable gate.')
     ap.add_argument('--trust-step3a-sort-contract', action='store_true', help='Experimental opt-in: trust validated Step3A sort contract to skip full normalize_sort sorting.')
     args = ap.parse_args()
+    if os.getenv('FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY') == 'DENY':
+        install_agent_execution_isolation()
     csv_policy = resolve_csv_policy(args.csv_output_policy)
     formula_engine = resolve_formula_engine(args.formula_engine)
     operator_profile = resolve_operator_profile(args.operator_profile if args.operator_profile else None)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import importlib.util
 import json
 import sys
@@ -19,6 +20,244 @@ def _load_run_step4():
     assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
+
+
+def _load_validate_step4():
+    path = REPO_ROOT / "skills/factor-forge-step4/scripts/validate_step4.py"
+    spec = importlib.util.spec_from_file_location("validate_step4_under_test", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_step4_repo_identity_uses_and_validates_host_admitted_commit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    admitted = "a" * 40
+    monkeypatch.setenv("FACTORFORGE_ADMITTED_ENGINE_COMMIT", admitted)
+    monkeypatch.setenv("FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY", "DENY")
+    assert _load_run_step4().current_repo_sha() == admitted
+
+    validator = _load_validate_step4()
+    issues: list[dict[str, object]] = []
+    validator.validate_acceptance_summary(
+        {
+            "version": "factorforge_production_acceptance_summary_v1",
+            "report_id": "EVO_CHILD",
+            "factor_id": "factor",
+            "run_id": "run",
+            "artifact_root": "/workspace",
+            "repo_sha": "b" * 40,
+            "step4": {
+                "self_quant_status": "success",
+                "qlib_native_status": "not_attempted",
+            },
+            "reuse": {"reuse_gate_status": "recomputed"},
+            "side_effects": {
+                "clean_data_mutated": False,
+                "generated_code_digest_changed": False,
+                "official_record_written": False,
+                "search_worker_started": False,
+            },
+        },
+        issues,
+    )
+    assert "BLOCK_ACCEPTANCE_SUMMARY_REPO_IDENTITY_MISMATCH" in {
+        issue["code"] for issue in issues
+    }
+
+
+def test_evo_agent_import_does_not_require_data_api_and_fetch_is_forbidden(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_import = builtins.__import__
+
+    def forbid_independent_data_api(name, *args, **kwargs):
+        if name == "factorforge_data_api" or name.startswith(
+            "factorforge_data_api."
+        ):
+            raise AssertionError("Agent import must not load the Data API runtime")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", forbid_independent_data_api)
+    run_step4 = _load_run_step4()
+    assert run_step4.fetch_data_api_dataset is None
+    monkeypatch.setenv("FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY", "DENY")
+    with pytest.raises(
+        SystemExit, match="EVO_AGENT_DATA_API_FETCH_FORBIDDEN"
+    ):
+        run_step4._host_fetch_data_api_dataset("clean_daily_bar")
+
+
+def test_evo_host_prefetch_blocks_deferred_minute_query_before_agent_stage(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    run_step4 = _load_run_step4()
+    monkeypatch.setattr(
+        run_step4,
+        "materialize_step4_data_inputs_from_contract",
+        lambda *_args, **_kwargs: (
+            {
+                "input_mode": "price_volume_minute",
+                "daily_df_parquet": str(tmp_path / "daily.parquet"),
+                "minute_streaming_query": {"dataset": "minute_bar"},
+            },
+            {"source": "host_prefetch"},
+        ),
+    )
+    with pytest.raises(
+        SystemExit, match="host_prefetch_did_not_materialize_minute"
+    ):
+        run_step4.materialize_evo_pre_release_data_receipt(
+            report_id="EVO_CHILD",
+            dpm={
+                "research_windows": {
+                    "is_start": "2025-01-01",
+                    "is_end": "2025-12-31",
+                },
+                "step4_data_contract": {
+                    "full_queries": {
+                        "minute_bar": {"dataset": "minute_bar"}
+                    }
+                },
+            },
+            handoff={},
+            run_dir=tmp_path,
+        )
+
+
+@pytest.mark.parametrize(
+    "observed_dates",
+    [
+        ["20250103", "20250106"],
+        ["20250102", "20250106"],
+        ["20250106"],
+    ],
+)
+def test_evo_host_prefetch_rejects_incomplete_calendar_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    observed_dates: list[str],
+) -> None:
+    run_step4 = _load_run_step4()
+    run_dir = tmp_path / "runs/EVO_CHILD"
+    data_dir = run_dir / "step4_data_inputs"
+    data_dir.mkdir(parents=True)
+    daily = data_dir / "daily.parquet"
+    pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": date, "close": 10.0}
+            for date in observed_dates
+        ]
+    ).to_parquet(daily, index=False)
+    contract = {
+        "version": "factorforge_step4_data_contract_v1",
+        "full_queries": {
+            "clean_daily_bar": {
+                "dataset": "clean_daily_bar",
+                "start_date": "20250102",
+                "end_date": "20250106",
+                "fields": ["close"],
+            }
+        },
+    }
+    monkeypatch.setattr(
+        run_step4,
+        "validate_trusted_calendar_snapshot",
+        lambda: {
+            "dates": ["20250102", "20250103", "20250106"],
+            "snapshot_id": "fixture-calendar",
+            "raw_file_sha256": "a" * 64,
+            "open_dates_sha256": "b" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        run_step4,
+        "materialize_step4_data_inputs_from_contract",
+        lambda *_args, **_kwargs: (
+            {"input_mode": "daily_only", "daily_df_parquet": str(daily)},
+            {"source": "host_prefetch", "queries": contract["full_queries"]},
+        ),
+    )
+    with pytest.raises(SystemExit, match="full_contract_input_coverage"):
+        run_step4.materialize_evo_pre_release_data_receipt(
+            report_id="EVO_CHILD",
+            dpm={
+                "research_windows": {
+                    "is_start": "2025-01-02",
+                    "is_end": "2025-01-06",
+                },
+                "step4_data_contract": contract,
+            },
+            handoff={},
+            run_dir=run_dir,
+        )
+
+
+def test_evo_host_prefetch_receipt_binds_complete_calendar_and_required_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_step4 = _load_run_step4()
+    run_dir = tmp_path / "runs/EVO_CHILD"
+    data_dir = run_dir / "step4_data_inputs"
+    data_dir.mkdir(parents=True)
+    daily = data_dir / "daily.parquet"
+    expected_dates = ["20250102", "20250103", "20250106"]
+    pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": date, "close": 10.0}
+            for date in expected_dates
+        ]
+    ).to_parquet(daily, index=False)
+    contract = {
+        "version": "factorforge_step4_data_contract_v1",
+        "full_queries": {
+            "clean_daily_bar": {
+                "dataset": "clean_daily_bar",
+                "start_date": "20250102",
+                "end_date": "20250106",
+                "fields": ["close"],
+            }
+        },
+    }
+    monkeypatch.setattr(
+        run_step4,
+        "validate_trusted_calendar_snapshot",
+        lambda: {
+            "dates": expected_dates,
+            "snapshot_id": "fixture-calendar",
+            "raw_file_sha256": "a" * 64,
+            "open_dates_sha256": "b" * 64,
+        },
+    )
+    monkeypatch.setattr(
+        run_step4,
+        "materialize_step4_data_inputs_from_contract",
+        lambda *_args, **_kwargs: (
+            {"input_mode": "daily_only", "daily_df_parquet": str(daily)},
+            {"source": "host_prefetch", "queries": contract["full_queries"]},
+        ),
+    )
+    receipt = run_step4.materialize_evo_pre_release_data_receipt(
+        report_id="EVO_CHILD",
+        dpm={
+            "research_windows": {
+                "is_start": "2025-01-02",
+                "is_end": "2025-01-06",
+            },
+            "step4_data_contract": contract,
+        },
+        handoff={},
+        run_dir=run_dir,
+    )
+    coverage = receipt["artifacts"][0]["calendar_coverage"]
+    assert receipt["full_contract_input"] is True
+    assert coverage["expected_open_dates"] == expected_dates
+    assert coverage["observed_dates"] == expected_dates
+    assert coverage["coverage_ratio"] == 1.0
+    assert coverage["required_fields"] == ["ts_code", "trade_date", "close"]
 
 
 def _write_catalog(tmp_path: Path) -> Path:
@@ -150,6 +389,45 @@ def test_step4_rejects_backtest_base_cache_with_polluted_daily_basic_controls(tm
 
     cached_path, profile = run_step4._load_backtest_base_cache(contract)
 
+    assert cached_path is None
+    assert profile is None
+
+
+def test_step4_rejects_cache_hash_or_query_window_drift(tmp_path, monkeypatch):
+    run_step4 = _load_run_step4()
+    monkeypatch.setenv(
+        "FACTORFORGE_BACKTEST_BASE_CACHE_ROOT", str(tmp_path / "backtest_base_cache")
+    )
+    contract = {
+        "version": "factorforge_step4_data_contract_v1",
+        "data_api_package": "factorforge_data_api",
+        "full_queries": {
+            "clean_daily_bar": {
+                "dataset": "clean_daily_bar",
+                "start_date": "20200101",
+                "end_date": "20200131",
+            }
+        },
+    }
+    out_of_window = pd.DataFrame(
+        [
+            {"ts_code": "000001.SZ", "trade_date": "20200102", "close": 10.0},
+            {"ts_code": "000001.SZ", "trade_date": "20200203", "close": 11.0},
+        ]
+    )
+    data_path, _profile = run_step4._write_backtest_base_cache(
+        out_of_window, contract, result_metadata={}
+    )
+    cached_path, profile = run_step4._load_backtest_base_cache(contract)
+    assert cached_path is None
+    assert profile is None
+
+    in_window = out_of_window.iloc[:1].copy()
+    data_path, _profile = run_step4._write_backtest_base_cache(
+        in_window, contract, result_metadata={}
+    )
+    data_path.write_bytes(data_path.read_bytes() + b"tamper")
+    cached_path, profile = run_step4._load_backtest_base_cache(contract)
     assert cached_path is None
     assert profile is None
 
@@ -356,6 +634,16 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(
             "return_window": "close_t_plus_1_to_close_t_plus_2",
         },
         "proof_control_columns": ["total_mv", "turnover_rate"],
+        "diagnostic_trials": [
+            {
+                "trial_id": "diag_close",
+                "role": "standalone_component",
+                "component_id": "close_component",
+                "formula_or_law": "-close",
+                "signal_column": "diagnostic__diag_close",
+                "affects_acceptance": False,
+            }
+        ],
     }
 
     context = run_step4.build_shared_evaluation_context(
@@ -385,6 +673,7 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(
     assert float(first_row["label_end_price"]) == pytest.approx(121.0)
     assert float(first_row["total_mv"]) == pytest.approx(10.0)
     assert float(first_row["turnover_rate"]) == pytest.approx(1.0)
+    assert float(first_row["diagnostic__diag_close"]) == pytest.approx(-100.0)
     assert context["version"] == "factorforge_shared_evaluation_context_v2"
     assert context["label_policy"] == contract["label_policy"]
 

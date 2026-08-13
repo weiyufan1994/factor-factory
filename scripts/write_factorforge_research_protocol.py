@@ -13,6 +13,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from factor_factory.research_conjecture import (
     PROTOCOL_VERSION,
+    epistemic_evolution_enabled,
     research_protocol_paths,
     validate_approach_registry,
     validate_counterexample_registry,
@@ -122,7 +123,9 @@ def main() -> int:
             {
                 "verdict": "PASS",
                 "report_id": args.report_id,
-                "written": {name: str(paths[name]) for name in source_payloads},
+                "written": {
+                    **{name: str(paths[name]) for name in source_payloads},
+                },
                 "producer_policy": "agent_authored_no_deterministic_semantic_fallback",
             },
             ensure_ascii=False,

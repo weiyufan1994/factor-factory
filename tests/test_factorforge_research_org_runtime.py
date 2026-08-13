@@ -596,6 +596,13 @@ class SignedFakeSessionRunner(FakeSessionRunner):
                     "adapter_build_sha256": "a" * 64,
                     "container_image_digest": self.container_image_digest,
                     "isolation_profile_sha256": "c" * 64,
+                    "runtime": {
+                        "provider": "deepseek",
+                        "model": "deepseek/deepseek-v4-flash",
+                        "transport": "openclaw_disposable_container",
+                        "isolation_class": "container_staged_context",
+                        "owned_termination_supported": True,
+                    },
                     "parent_session_uid": invocation.parent_session_uid,
                     "lease_epoch": invocation.scheduler_epoch,
                 },

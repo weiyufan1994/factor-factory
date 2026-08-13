@@ -122,6 +122,9 @@ def main() -> None:
                 "measurement_program_binding"
             )
             or {},
+            "evo_v2_required": task.get("evo_v2_required") is True,
+            "evo_v2_packet_context": task.get("evo_v2_packet_context"),
+            "evo_v2_task_identity": task.get("evo_v2_task_identity"),
             "required_outputs": task.get("required_outputs") or [],
             "allowed_tools": task.get("allowed_tools") or [],
             "forbidden_changes": task.get("forbidden_changes") or [],
@@ -133,6 +136,20 @@ def main() -> None:
                 "research_depth_allowed": ["medium", "high"],
                 "identity_binding_required": True,
                 "measurement_program_binding_required": True,
+                "evo_v2_closed_union_required": task.get("evo_v2_required") is True,
+                "evo_v2_allowed_outcomes": (
+                    ["MINIMAL_MECHANISM_DELTA", "NO_DERIVED_LAW"]
+                    if task.get("evo_v2_required") is True
+                    else []
+                ),
+                "candidate_revision_law_cardinality": (
+                    {
+                        "MINIMAL_MECHANISM_DELTA": 1,
+                        "NO_DERIVED_LAW": 0,
+                    }
+                    if task.get("evo_v2_required") is True
+                    else None
+                ),
             },
         }
         write_json(task_packet_path, packet)
@@ -151,6 +168,9 @@ def main() -> None:
                     "measurement_program_binding"
                 )
                 or {},
+                "evo_v2_required": task.get("evo_v2_required") is True,
+                "evo_v2_packet_context": task.get("evo_v2_packet_context"),
+                "evo_v2_task_identity": task.get("evo_v2_task_identity"),
                 "task_packet_sha256": task_packet_sha256,
                 "blind_phase": (
                     (task.get("blind_context_policy") or {}).get("blind_phase")
@@ -176,6 +196,7 @@ def main() -> None:
         "runtime_dispatch_policy": runtime_dispatch_policy,
         "research_protocol_version": taskbook.get("research_protocol_version"),
         "research_protocol_gate": taskbook.get("research_protocol_gate") or {},
+        "evo_v2": taskbook.get("evo_v2"),
         "route_selection_policy": taskbook.get("route_selection_policy") or {},
         "agent_task_count": len(manifest_tasks),
         "agent_tasks": manifest_tasks,

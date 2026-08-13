@@ -15,6 +15,12 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from factor_factory.revision_council.production import (
+    CouncilEvoProductionError,
+    load_formal_evo_packet_context,
+    validate_evo_task_identity,
+)
+
 OBJ = FF / "objects"
 MANIFEST_VERSION = "factorforge_agentic_council_dispatch_manifest_v1"
 TASK_PACKET_VERSION = "factorforge_agentic_council_task_packet_v1"
@@ -44,6 +50,10 @@ PRIOR_REVISION_REQUIRED_OUTPUTS = {
     "repeated_revision_guard",
 }
 PRIOR_REVISION_FORBIDDEN_CHANGE = "repeat a falsified executable revision rule"
+EVO_REQUIRED_OUTPUTS = {
+    "evo_v2_task_identity",
+    "evo_v2_closed_derivation_outcome",
+}
 REQUIRED_FORBIDDEN_TARGET_SUFFIXES = {
     "objects/handoff/handoff_to_step3b__{report_id}.json",
     "generated_code/{report_id}/",
@@ -136,6 +146,18 @@ def validate_manifest(report_id: str, manifest: dict[str, Any], manifest_path: P
     targets = set(manifest.get("forbidden_write_targets") or [])
     if not expected_forbidden_targets(report_id).issubset(targets):
         reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_FORBIDDEN_TARGETS_MISSING")
+    manifest_evo = manifest.get("evo_v2")
+    try:
+        expected_evo, _feedback = load_formal_evo_packet_context(
+            FF,
+            report_id,
+            bound_context=(manifest_evo if isinstance(manifest_evo, dict) else None),
+        )
+    except CouncilEvoProductionError as exc:
+        reasons.extend(exc.reasons)
+        expected_evo = None
+    if manifest_evo != expected_evo:
+        reasons.append("BLOCK_COUNCIL_EVO_V2_DISPATCH_CONTEXT_MISMATCH")
     tasks = manifest.get("agent_tasks")
     if not isinstance(tasks, list) or not tasks:
         reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_TASKS_MISSING")
@@ -155,11 +177,21 @@ def validate_manifest(report_id: str, manifest: dict[str, Any], manifest_path: P
         except Exception as exc:
             reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_PACKET_UNREADABLE:{idx}:{exc}")
             continue
-        reasons.extend(validate_task_packet(report_id, task, packet, packet_path, idx, manifest_policy))
+        reasons.extend(
+            validate_task_packet(
+                report_id,
+                task,
+                packet,
+                packet_path,
+                idx,
+                manifest_policy,
+                manifest_evo,
+            )
+        )
     return reasons
 
 
-def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: dict[str, Any], packet_path: Path, idx: int, manifest_policy: Any) -> list[str]:
+def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: dict[str, Any], packet_path: Path, idx: int, manifest_policy: Any, manifest_evo: Any = None) -> list[str]:
     reasons: list[str] = []
     if packet.get("task_packet_version") != TASK_PACKET_VERSION:
         reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_PACKET_VERSION_INVALID:{idx}")
@@ -213,6 +245,45 @@ def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: 
     required_outputs = set(packet.get("required_outputs") or [])
     if not REQUIRED_OUTPUTS.issubset(required_outputs):
         reasons.append("BLOCK_AGENTIC_COUNCIL_DISPATCH_REQUIRED_OUTPUTS_MISSING")
+    evo_required = manifest_evo is not None
+    if packet.get("evo_v2_required") is not evo_required:
+        reasons.append(f"BLOCK_COUNCIL_EVO_V2_DISPATCH_REQUIRED_FLAG_MISMATCH:{idx}")
+    if manifest_task.get("evo_v2_required") is not evo_required:
+        reasons.append(f"BLOCK_COUNCIL_EVO_V2_DISPATCH_MANIFEST_FLAG_MISMATCH:{idx}")
+    if evo_required:
+        if packet.get("evo_v2_packet_context") != manifest_evo:
+            reasons.append(f"BLOCK_COUNCIL_EVO_V2_DISPATCH_CONTEXT_MISMATCH:{idx}")
+        if manifest_task.get("evo_v2_packet_context") != manifest_evo:
+            reasons.append(f"BLOCK_COUNCIL_EVO_V2_DISPATCH_MANIFEST_CONTEXT_MISMATCH:{idx}")
+        task_identity = packet.get("evo_v2_task_identity")
+        if manifest_task.get("evo_v2_task_identity") != task_identity:
+            reasons.append(f"BLOCK_COUNCIL_EVO_V2_DISPATCH_TASK_IDENTITY_MISMATCH:{idx}")
+        reasons.extend(
+            validate_evo_task_identity(
+                task_identity,
+                packet_context=manifest_evo,
+                report_id=report_id,
+                task_id=str(packet.get("task_id") or ""),
+                route_id=packet.get("route_id"),
+                route_fingerprint=packet.get("route_fingerprint"),
+                blind_context_hash=packet.get("blind_context_hash"),
+            )
+        )
+        shared_evo = (packet.get("shared_context") or {}).get("evo_v2")
+        if shared_evo != manifest_evo:
+            reasons.append(f"BLOCK_COUNCIL_EVO_V2_DISPATCH_VISIBLE_CONTEXT_MISMATCH:{idx}")
+        if not EVO_REQUIRED_OUTPUTS.issubset(required_outputs):
+            reasons.append("BLOCK_COUNCIL_EVO_V2_DISPATCH_REQUIRED_OUTPUTS_MISSING")
+        result_contract = packet.get("result_contract")
+        result_contract = result_contract if isinstance(result_contract, dict) else {}
+        if (
+            result_contract.get("evo_v2_closed_union_required") is not True
+            or result_contract.get("evo_v2_allowed_outcomes")
+            != ["MINIMAL_MECHANISM_DELTA", "NO_DERIVED_LAW"]
+            or result_contract.get("candidate_revision_law_cardinality")
+            != {"MINIMAL_MECHANISM_DELTA": 1, "NO_DERIVED_LAW": 0}
+        ):
+            reasons.append("BLOCK_COUNCIL_EVO_V2_DISPATCH_RESULT_CONTRACT_INVALID")
     if packet.get("research_protocol_version") == "factorforge_research_conjecture_protocol_v1":
         if not RESEARCH_PROTOCOL_REQUIRED_OUTPUTS.issubset(required_outputs):
             reasons.append(

@@ -18,7 +18,14 @@ if str(REPO_ROOT) not in sys.path:
 
 from factor_factory.formula.parser import parse_formula
 from factor_factory.artifact_identity import stable_hash
+from factor_factory.evo_v2 import evo_v2_paths
+from factor_factory.human_approval import (
+    BLOCK_HUMAN_APPROVAL,
+    human_approval_trust_path,
+    validate_external_human_approval_receipt,
+)
 from factor_factory.research_conjecture import (
+    epistemic_evolution_enabled,
     research_protocol_paths,
     validate_protocol_bundle,
 )
@@ -38,6 +45,16 @@ TOKEN_KILL_CRITERIA_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_KILL_CRITER
 TOKEN_ORCHESTRATOR_MISMATCH = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_ORCHESTRATOR_MISMATCH"
 TOKEN_DIRECT_CODE_CONTRACT_MISSING = "BLOCK_FACTORFORGE_EXECUTABLE_REVISION_DIRECT_CODE_CONTRACT_MISSING"
 TOKEN_ROUTE_SYNTHESIS_MISSING = "BLOCK_FACTORFORGE_RESEARCH_ROUTE_SYNTHESIS_MISSING"
+TOKEN_EVO_RUN_ID_MISSING = "BLOCK_FACTORFORGE_EVO_V2_RUN_ID_MISSING"
+FORBIDDEN_AUTOMATED_APPROVAL_SOURCES = {
+    "ultimate_loop_auto_bridge",
+    "ultimate_loop_auto_multibranch_bridge",
+    "current_main_agent_orchestration_synthesis",
+    "current_main_agent_default_approval",
+    "automatic",
+    "agent",
+    "runtime",
+}
 VALID_PRIMARY_FAILURE_SIGNATURES = {
     "cost_too_high",
     "long_side_negative",
@@ -159,6 +176,83 @@ def handoff_path(root: Path, report_id: str) -> Path:
 
 def approval_path(root: Path, report_id: str) -> Path:
     return council_dir(root, report_id) / f"main_agent_council_synthesis_approval__{report_id}.json"
+
+
+def evo_conjecture(root: Path, report_id: str) -> dict[str, Any]:
+    path = research_protocol_paths(root, report_id)["conjecture"]
+    if not path.is_file() or path.is_symlink():
+        return {}
+    try:
+        payload = load_json(path)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return payload if epistemic_evolution_enabled(payload) else {}
+
+
+def evo_run_id(conjecture: dict[str, Any], iteration: dict[str, Any]) -> str:
+    identity = conjecture.get("identity") if isinstance(conjecture.get("identity"), dict) else {}
+    source_identity = iteration.get("source_case_identity") if isinstance(iteration.get("source_case_identity"), dict) else {}
+    return nonempty_str(identity.get("run_id")) or nonempty_str(source_identity.get("run_id"))
+
+
+def load_and_validate_external_approval(
+    *,
+    root: Path,
+    report_id: str,
+    run_id: str,
+    receipt_path_raw: str | None,
+    synthesis_path: Path,
+    selected: dict[str, Any],
+    child_hash: str,
+    expected_trust_manifest_sha256: str | None,
+) -> tuple[dict[str, Any], Path]:
+    if not receipt_path_raw:
+        block(BLOCK_HUMAN_APPROVAL, {"reason": "external_receipt_required"})
+    receipt_path = resolve_under_root(root, receipt_path_raw)
+    if (
+        receipt_path is None
+        or not receipt_path.is_file()
+        or receipt_path.is_symlink()
+        or (receipt_path.resolve(strict=False) != root.resolve(strict=False) and root.resolve(strict=False) not in receipt_path.resolve(strict=False).parents)
+    ):
+        block(BLOCK_HUMAN_APPROVAL, {"reason": "receipt_path_invalid", "path": receipt_path_raw})
+    trust_path = human_approval_trust_path(root)
+    if not trust_path.is_file() or trust_path.is_symlink():
+        block(BLOCK_HUMAN_APPROVAL, {"reason": "pinned_human_trust_manifest_missing", "path": str(trust_path)})
+    if (
+        not expected_trust_manifest_sha256
+        or not re.fullmatch(r"[0-9a-f]{64}", expected_trust_manifest_sha256)
+        or sha256_file(trust_path) != expected_trust_manifest_sha256
+    ):
+        block(
+            BLOCK_HUMAN_APPROVAL,
+            {
+                "reason": "external_trust_manifest_pin_missing_or_mismatch",
+                "trust_manifest_path": str(trust_path),
+            },
+        )
+    try:
+        receipt = load_json(receipt_path)
+        trust = load_json(trust_path)
+    except (OSError, json.JSONDecodeError) as exc:
+        block(BLOCK_HUMAN_APPROVAL, {"reason": "receipt_or_trust_invalid", "error": type(exc).__name__})
+    paths = evo_v2_paths(root, report_id)
+    reasons = validate_external_human_approval_receipt(
+        receipt,
+        trust_manifest=trust,
+        workspace_root=root,
+        report_id=report_id,
+        run_id=run_id,
+        synthesis_path=synthesis_path,
+        selected_law_id=nonempty_str(selected.get("law_id")),
+        selected_law_hash=nonempty_str(selected.get("law_or_formula_hash")),
+        child_formula_hash=child_hash,
+        mechanism_delta_path=paths["mechanism_delta"],
+        economic_backprojection_path=paths["economic_backprojection"],
+    )
+    if reasons:
+        block(BLOCK_HUMAN_APPROVAL, {"reasons": reasons, "receipt_path": str(receipt_path)})
+    return receipt, receipt_path
 
 
 def validate_synthesis(root: Path, report_id: str, synthesis_path: Path) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -740,7 +834,21 @@ def main() -> int:
     parser.add_argument("--report-id", required=True)
     parser.add_argument("--factorforge-root", default=None)
     parser.add_argument("--synthesis-path", default=None)
-    parser.add_argument("--approval-source", required=True)
+    parser.add_argument(
+        "--approval-source",
+        default=None,
+        help="Legacy non-EVO approval source. EVO V2 derives this from the signed external-human receipt.",
+    )
+    parser.add_argument(
+        "--human-approval-receipt",
+        default=None,
+        help="Workspace-local Ed25519-signed external-human approval receipt required by EVO V2.",
+    )
+    parser.add_argument(
+        "--human-trust-manifest-sha256",
+        default=None,
+        help="Out-of-band SHA-256 pin for identity/human_approval_trust.json; required by EVO V2.",
+    )
     parser.add_argument("--skip-validate-step6", action="store_true")
     args = parser.parse_args()
 
@@ -759,6 +867,46 @@ def main() -> int:
     parent_formula, parent_hash = parent_formula_and_hash(root, rid)
     implementation_mode = parent_implementation_mode(root, rid, selected)
     _, child_hash = child_formula_hash(child_formula_or_law(selected), parent_hash, implementation_mode, selected)
+    conjecture = evo_conjecture(root, rid)
+    evo_enabled = bool(conjecture)
+    external_receipt: dict[str, Any] | None = None
+    external_receipt_path: Path | None = None
+    if evo_enabled:
+        run_id = evo_run_id(conjecture, iteration)
+        if not run_id:
+            block(TOKEN_EVO_RUN_ID_MISSING, {"report_id": rid})
+        if not nonempty_str(selected.get("law_or_formula_hash")):
+            block(TOKEN_SELECTED_LAW_MISSING, {"reason": "law_or_formula_hash_missing_for_evo_v2"})
+        external_receipt, external_receipt_path = load_and_validate_external_approval(
+            root=root,
+            report_id=rid,
+            run_id=run_id,
+            receipt_path_raw=args.human_approval_receipt,
+            synthesis_path=synthesis_path,
+            selected=selected,
+            child_hash=child_hash,
+            expected_trust_manifest_sha256=args.human_trust_manifest_sha256,
+        )
+        issuer = external_receipt["issuer"]
+        approval_source = f"external_human:{issuer['human_id']}"
+        if args.approval_source and args.approval_source != approval_source:
+            block(
+                BLOCK_HUMAN_APPROVAL,
+                {
+                    "reason": "approval_source_must_match_signed_issuer",
+                    "declared": args.approval_source,
+                    "signed": approval_source,
+                },
+            )
+    else:
+        approval_source = nonempty_str(args.approval_source)
+        if not approval_source:
+            block(BLOCK_HUMAN_APPROVAL, {"reason": "legacy_approval_source_missing"})
+        if approval_source.strip().lower() in FORBIDDEN_AUTOMATED_APPROVAL_SOURCES:
+            block(
+                BLOCK_HUMAN_APPROVAL,
+                {"reason": "automated_or_agent_approval_source_forbidden"},
+            )
     out_handoff = handoff_path(root, rid)
     brief_json_path, brief_md_path = loop_brief_paths(root, iteration)
     rollback_snapshot = {
@@ -779,8 +927,22 @@ def main() -> int:
         parent_hash=parent_hash,
         child_hash=child_hash,
         implementation_mode=implementation_mode,
-        approval_source=args.approval_source,
+        approval_source=approval_source,
     )
+    if evo_enabled and external_receipt is not None and external_receipt_path is not None:
+        child_intent = external_receipt["child_intent"]
+        handoff["child_report_id"] = child_intent["child_report_id"]
+        handoff["external_human_approval_receipt"] = {
+            "path": str(external_receipt_path),
+            "sha256": sha256_file(external_receipt_path),
+            "receipt_id": external_receipt["receipt_id"],
+            "issuer": external_receipt["issuer"],
+        }
+        handoff["fresh_oos_child_intent"] = child_intent
+        strategy = (((updated_iteration.get("research_judgment") or {}).get("research_memo") or {}).get("revision_strategy") or {})
+        strategy["external_human_approval_receipt_id"] = external_receipt["receipt_id"]
+        strategy["child_report_id"] = child_intent["child_report_id"]
+        strategy["fresh_oos_allocation_id"] = child_intent["oos_allocation_id"]
     update_loop_brief_council_section(root, rid, updated_iteration, summary)
     write_json(iter_path, updated_iteration)
     write_json(out_handoff, handoff)
@@ -788,7 +950,7 @@ def main() -> int:
         "approval_version": APPROVAL_VERSION,
         "created_at_utc": utc_now(),
         "report_id": rid,
-        "approval_source": args.approval_source,
+        "approval_source": approval_source,
         "synthesis_path": str(synthesis_path),
         "synthesis_sha256": sha256_file(synthesis_path),
         "handoff_to_step3b_path": str(out_handoff),
@@ -800,6 +962,28 @@ def main() -> int:
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_recorded": True,
+        "external_human_approval_required": evo_enabled,
+        "external_human_approval_receipt_path": (
+            str(external_receipt_path) if external_receipt_path is not None else None
+        ),
+        "external_human_approval_receipt_sha256": (
+            sha256_file(external_receipt_path) if external_receipt_path is not None else None
+        ),
+        "external_human_approval_receipt_id": (
+            external_receipt.get("receipt_id") if external_receipt is not None else None
+        ),
+        "external_human_run_id": (
+            external_receipt.get("run_id") if external_receipt is not None else None
+        ),
+        "external_human_trust_manifest_sha256": (
+            args.human_trust_manifest_sha256 if external_receipt is not None else None
+        ),
+        "external_human_issuer": (
+            external_receipt.get("issuer") if external_receipt is not None else None
+        ),
+        "fresh_oos_child_intent": (
+            external_receipt.get("child_intent") if external_receipt is not None else None
+        ),
         "approval_status": "pending_verification",
     }
     protocol_required = (
@@ -826,8 +1010,23 @@ def main() -> int:
             print(json.dumps({"result": "BLOCK", "approval": approval}, ensure_ascii=False, indent=2))
             return int(validate_result["rc"] or 1)
     if protocol_required:
-        protocol_result = run_validate_final_research_protocol(root, rid, iter_path)
-        approval["research_protocol_final"] = protocol_result
+        protocol_result = (
+            validate_protocol_bundle(
+                root=root,
+                report_id=rid,
+                stage="pre_revision",
+                iteration_path=iter_path,
+            )
+            if evo_enabled
+            else run_validate_final_research_protocol(root, rid, iter_path)
+        )
+        if evo_enabled:
+            write_json(research_protocol_paths(root, rid)["verifier"], protocol_result)
+        approval[
+            "research_protocol_pre_revision"
+            if evo_enabled
+            else "research_protocol_final"
+        ] = protocol_result
         if protocol_result.get("verdict") != "PASS":
             restore_text_snapshot(iter_path, rollback_snapshot["iteration"])
             restore_text_snapshot(out_handoff, rollback_snapshot["handoff"])

@@ -1,6 +1,6 @@
 ---
 name: factor-forge-researcher-memory
-description: Govern persistent Factor Forge researcher-role memory across otherwise ephemeral agent sessions. Use when initializing or validating the Host-private memory store, freezing role-specific memory into an isolated factor workspace, reviewing learning candidates, promoting approved lessons, auditing role performance, or diagnosing memory isolation and provenance blockers.
+description: Govern persistent Factor Forge researcher-role and EVO V2 experience memory across ephemeral agent sessions. Use when initializing or validating Host-private memory, freezing role snapshots, running independent experience review, admitting three-layer lessons, mechanism-first retrieval, promoting approved lessons, auditing role performance, or diagnosing memory/provenance blockers.
 ---
 
 # Factor Forge Researcher Memory
@@ -44,6 +44,62 @@ hypothesis, mathematical mechanism, data contract, or formal backtest.
 - Never use repo-root `knowledge/因子工厂` as the runtime memory store. That tree
   is an explicit export surface only.
 
+## EVO V2 Experience Memory
+
+Read `docs/contracts/factorforge-epistemic-evolution-v2.zh-CN.md` when an EVO
+V2 transfer bundle, use receipt, cold-start receipt, or memory admission is in
+scope. Keep `factor_factory.evo_v2` as the sole semantic authority; the memory
+layer may attest, review, persist and retrieve those exact payloads but must not
+reinterpret them or grant current-factor proof.
+
+Preserve exactly three layers:
+
+- `structural_lesson`: reusable payer/constraint, estimand, mathematical object,
+  invariant/boundary, observation map, predicted signature, falsifier,
+  counterexample and reuse boundary;
+- `conditional_realization`: causal enabling/suppressing/aliasing/challenging
+  condition, diagnostic, interaction signature and falsifier; never a regime
+  recipe;
+- `historical_episode`: immutable Host-signed window/assets/institution/event
+  facts and layer-by-layer observed verdict, with no normative authority.
+
+Do not promote an empirical structural lesson from one episode. Except for
+strict identity/institutional proof, require at least two independent episodes,
+a counterepisode or negative control, invariance audit, independent reviewer
+and Host CAS admission/promotion.
+
+Retrieve only after blind derivation. Build the target mechanism fingerprint
+from payer/constraint, estimand, economic claim, mathematical object,
+invariant/boundary, observation mapping and failure signature. Use
+`retrieve_evo_v2_memory_projection` to populate structural-isomorph,
+cross-math-analogy, near-miss-failure, direct-counterexample and historical-
+episode-context lanes. Do not rank on historical return, market-state label or
+event name. Keep state and event details inside the returned episode/context as
+stress and falsification coordinates only.
+
+Use the Host-owned runtime APIs in this order:
+
+1. use `prepare_evo_v2_cold_start_search_session` and
+   `complete_evo_v2_cold_start_search_session` when no admissible hit is found;
+   require signed zero-hit evidence from both indexes rather than an Agent
+   assertion;
+2. use `build_evo_v2_memory_review_projection`, then
+   `prepare_evo_v2_memory_review_session` and
+   `complete_evo_v2_memory_review_session` for a different disposable reviewer;
+3. for non-cold transfer, use
+   `build_evo_v2_transfer_use_change_receipt` to bind actual before/after
+   research-question or registered-test changes and unchanged protected hashes;
+4. use `build_evo_v2_memory_admission`,
+   `persist_evo_v2_memory_admission`, and
+   `load_evo_v2_memory_admissions` only with the Host trust store and exact
+   source/reviewer runtime receipts.
+
+These are Host runtime APIs, not an Agent-facing canonical-promotion CLI. Do not
+invent a shell command or claim automatic writeback when the formal runtime
+adapter has not invoked them. Missing source completion, independent reviewer,
+Host admission, cold-search receipt, or real before/after change keeps the
+experience pending. A core EVO validator PASS alone is insufficient.
+
 ## Workflow
 
 1. Inspect `git status --short --branch` and the target workspace manifest.
@@ -84,6 +140,9 @@ hypothesis, mathematical mechanism, data contract, or formal backtest.
   reusable beyond the source factor, and states where it should fail.
 - Do not promote a numerical performance claim as a universal lesson. Preserve
   its sample, verdict, proof eligibility, and applicable regime.
+- Do not call a transfer "used" because a receipt names a generated test ID.
+  Require the Host-attested before/after plan readback and unchanged Skill,
+  validator, estimand, threshold, OOS and trial-budget hashes.
 - A terminal `REJECT` may teach a bounded failure pattern even when formal proof
   eligibility is false. An `ACCEPT` outcome without formal proof eligibility is
   never admissible memory evidence.

@@ -2835,34 +2835,58 @@ def _data_liaison_preformal_pass_reasons(
             return []
         return ["active_catalog_entries"]
     admission = summary.get("active_catalog_admission")
-    if (
+    active_transport = bool(
         not isinstance(admission, Mapping)
-        or admission.get("version") != "factorforge_console_catalog_admission_v1"
-        or admission.get("verdict") != "PASS"
-        or admission.get("admission_scope")
-        != "active_catalog_identity_freshness_and_transport"
-        or admission.get("formal_dataset_qa_implied") is not False
-        or SHA256_RE.fullmatch(str(admission.get("catalog_sha256") or "")) is None
-        or SHA256_RE.fullmatch(
+    ) is False and bool(
+        admission.get("version") == "factorforge_console_catalog_admission_v1"
+        and admission.get("verdict") == "PASS"
+        and admission.get("admission_scope")
+        == "active_catalog_identity_freshness_and_transport"
+        and admission.get("formal_dataset_qa_implied") is False
+        and SHA256_RE.fullmatch(str(admission.get("catalog_sha256") or ""))
+        and SHA256_RE.fullmatch(
             str(admission.get("catalog_receipt_sha256") or "")
         )
-        is None
-    ):
-        reasons.append("active_catalog_admission")
+    )
     catalogs = summary.get("catalogs")
     admission_hash = (
         str(admission.get("catalog_sha256") or "")
         if isinstance(admission, Mapping)
         else ""
     )
-    bound_catalogs = [
-        dict(catalog)
-        for catalog in catalogs
-        if isinstance(catalog, Mapping)
-        and catalog.get("catalog_sha256") == admission_hash
-    ] if isinstance(catalogs, list) else []
+    bound_catalogs = []
+    if isinstance(catalogs, list):
+        if active_transport:
+            bound_catalogs = [
+                dict(catalog)
+                for catalog in catalogs
+                if isinstance(catalog, Mapping)
+                and catalog.get("catalog_sha256") == admission_hash
+            ]
+        elif len(catalogs) == 1 and isinstance(catalogs[0], Mapping):
+            # A workspace-local Host QA admission is deliberately not relabelled
+            # as active transport. It remains admissible for pre-formal design
+            # only when every reused base entry carries the hash-bound Host QA
+            # attestation projected by the frozen catalog summary.
+            candidate = dict(catalogs[0])
+            candidate_entries = _catalog_entry_map({"catalogs": [candidate]})
+            if candidate_entries and all(
+                entry.get("catalog_membership")
+                == "approved_catalog_snapshot_member"
+                and entry.get("qa_verdict") == "ACCEPT"
+                and isinstance(entry.get("host_qa_attestation"), Mapping)
+                and entry["host_qa_attestation"].get("contract_version")
+                == "factorforge_host_catalog_qa_attestation_v1"
+                and entry["host_qa_attestation"].get("verdict") == "ACCEPT"
+                for entry in candidate_entries.values()
+            ):
+                bound_catalogs = [candidate]
     if len(bound_catalogs) != 1:
-        reasons.append("active_catalog_binding")
+        reasons.append(
+            "active_catalog_binding"
+            if active_transport
+            else "active_catalog_admission_or_host_qa_snapshot"
+        )
     entries = _catalog_entry_map({"catalogs": bound_catalogs})
     execution_stage = task.get("execution_stage_contract")
     if (
@@ -2939,7 +2963,8 @@ def _data_liaison_preformal_pass_reasons(
         ):
             reasons.append(f"{label}.dataset_class")
         if (
-            entry.get("catalog_membership") != "active_catalog_member"
+            entry.get("catalog_membership")
+            not in {"active_catalog_member", "approved_catalog_snapshot_member"}
             or hit.get("catalog_membership") != entry.get("catalog_membership")
         ):
             reasons.append(f"{label}.catalog_membership")

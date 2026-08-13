@@ -3,7 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.run_factorforge_ultimate import data_request_candidate_from_failure, write_data_request_candidate
+from scripts.run_factorforge_ultimate import (
+    data_request_candidate_from_failure,
+    is_transient_data_transport_failure,
+    write_data_request_candidate,
+)
 
 
 @dataclass
@@ -56,6 +60,36 @@ def test_data_request_candidate_not_created_for_plain_code_failure(tmp_path):
     )
 
     assert candidate is None
+
+
+def test_data_request_candidate_not_created_for_s3_timeout_with_stale_blocked_feasibility(tmp_path):
+    ctx = DummyContext(active_root=tmp_path, objects_root=tmp_path / 'objects')
+    feasibility = ctx.objects_root / 'validation' / 'data_feasibility_report__REPORT.json'
+    feasibility.parent.mkdir(parents=True)
+    feasibility.write_text(
+        '''
+        {
+          "final_result": "blocked",
+          "blocked_items": [{"missing_datasets": ["clean_daily_bar"]}]
+        }
+        ''',
+        encoding='utf-8',
+    )
+
+    candidate = data_request_candidate_from_failure(
+        report_id='REPORT',
+        command_name='run_step3',
+        output=(
+            'OSError: AWS Error NETWORK_CONNECTION during GetObject operation: '
+            'curlCode: 28, Timeout was reached; Operation too slow'
+        ),
+        ctx=ctx,
+    )
+
+    assert candidate is None
+    assert is_transient_data_transport_failure(
+        'AWS Error NETWORK_CONNECTION: Timeout was reached; Operation too slow'
+    ) is True
 
 
 def test_data_request_candidate_not_created_when_ready_feasibility_mentions_catalog(tmp_path):

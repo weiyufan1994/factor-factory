@@ -5,7 +5,7 @@ import json
 import os
 import re
 import stat
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -61,6 +61,10 @@ BLOCK_FORMAL_VERDICT_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_VERDICT_MISMAT
 BLOCK_FORMAL_WRAPPER_INVALID = "BLOCK_FACTORFORGE_CONSOLE_FORMAL_WRAPPER_INVALID"
 BLOCK_EVIDENCE_LINEAGE_MISMATCH = "BLOCK_FACTORFORGE_CONSOLE_EVIDENCE_LINEAGE_MISMATCH"
 BOUND_VERIFIER_VERSION = "factorforge_console_bound_factor_proof_verifier_v1"
+CURRENT_AUTHORITY_VERSION = "factorforge_console_current_formal_authority_v1"
+BLOCK_CURRENT_FORMAL_AUTHORITY = (
+    "BLOCK_FACTORFORGE_CONSOLE_CURRENT_FORMAL_AUTHORITY_INVALID"
+)
 
 ROLE_PATTERNS: dict[str, tuple[str, ...]] = {
     "loop_report": ("objects/runtime_context/ultimate_loop_report*.json",),
@@ -372,6 +376,416 @@ class _FormalValidation:
     protocol_verdict: str = "NOT_RUN"
     proof_verdict: str = "UNKNOWN"
     blockers: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class CurrentUltimateWorkspace:
+    """A structural Ultimate summary plus its Host-current authority replay."""
+
+    summary: UltimateRunSummary
+    authority_validation: dict[str, Any]
+
+
+def _blocked_current_summary(
+    summary: UltimateRunSummary,
+    reasons: Iterable[str],
+) -> UltimateRunSummary:
+    blockers = _dedupe([*summary.blockers, *[str(item) for item in reasons]])
+    return replace(
+        summary,
+        execution_status="BLOCKED",
+        protocol_status="BLOCK",
+        factor_verdict="BLOCK",
+        formal_proof_eligible=False,
+        blockers=blockers,
+    )
+
+
+def _evo_current_authority_markers(
+    root: Path,
+    report_id: str,
+) -> list[str]:
+    """Identify reports whose formal terminal authority cannot be Web-only.
+
+    Classification is deliberately independent of the terminal-closure file:
+    deleting that file must not downgrade an EVO report into the legacy Web
+    finalization path.  Direct directory entries count even when unsafe, while
+    payload-derived markers are used only when they can be read safely.
+    """
+
+    from factor_factory.evo_oos import (
+        OOS_ALLOCATION_AUTHORITY_SECURE,
+        _evo_child_lineage_markers,
+        oos_allocation_path,
+    )
+    from factor_factory.research_conjecture import (
+        epistemic_evolution_enabled,
+        epistemic_evolution_lifecycle_path,
+    )
+
+    def present(path: Path) -> bool:
+        return os.path.lexists(os.fspath(path))
+
+    markers: list[str] = []
+    lifecycle_path = epistemic_evolution_lifecycle_path(root, report_id)
+    evo_report_root = lifecycle_path.parent
+    if present(lifecycle_path):
+        markers.append("evo_lifecycle")
+    if present(evo_report_root):
+        markers.append("evo_report_root")
+
+    conjecture_path = (
+        root
+        / "objects"
+        / "research_protocol"
+        / f"research_conjecture__{report_id}.json"
+    )
+    if conjecture_path.is_file() and not conjecture_path.is_symlink():
+        try:
+            conjecture = json.loads(conjecture_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            conjecture = None
+        if epistemic_evolution_enabled(conjecture):
+            markers.append("evo_research_conjecture")
+
+    for report_path in (
+        root
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_run_report__{report_id}.json",
+        root
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_loop_report__{report_id}.json",
+    ):
+        if not report_path.is_file() or report_path.is_symlink():
+            continue
+        try:
+            report = json.loads(report_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(report, dict):
+            continue
+        gate = report.get("evo_v2_execution_gate")
+        if (
+            isinstance(gate, dict)
+            and gate.get("enabled") is True
+        ) or str(report.get("final_outcome") or "").startswith(
+            "awaiting_evo_v2_"
+        ):
+            markers.append("evo_runtime_report")
+
+    allocation_path = oos_allocation_path(root, report_id)
+    if allocation_path.is_file() and not allocation_path.is_symlink():
+        try:
+            allocation = json.loads(allocation_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            allocation = None
+        if (
+            isinstance(allocation, dict)
+            and allocation.get("allocation_authority_mode")
+            == OOS_ALLOCATION_AUTHORITY_SECURE
+        ):
+            markers.append("secure_child_oos_allocation")
+
+    # These durable projections survive loss of an allocation or lifecycle
+    # artifact and therefore prevent a child from being reclassified as legacy.
+    markers.extend(_evo_child_lineage_markers(root, report_id))
+    return list(dict.fromkeys(markers))
+
+
+def validate_current_ultimate_authority(
+    workspace_root: str | Path,
+    *,
+    report_id: str,
+    expected_factor_verdict: str,
+    formal_proof_eligible: bool,
+    incident_trust_root: Path,
+    incident_installation_id: str,
+    _incident_guard: object | None = None,
+) -> dict[str, Any]:
+    """Replay Host-current OOS authority without changing structural validators.
+
+    The private incident context is explicit and is never inferred from an Agent
+    environment.  Callers that already hold the registry lock pass its opaque
+    guard so the final evidence replay shares the same linearization point.
+    """
+
+    # Local imports keep the structural reader usable in Agent/Step6 processes
+    # that neither possess nor need Host-private incident authority.
+    from factor_factory.console.web_factor_proof import (
+        validate_web_factor_proof_finalization,
+        web_factor_proof_paths,
+    )
+    from factor_factory.console.web_research_plan import (
+        resolve_report_scoped_web_research_plan,
+    )
+    from factor_factory.evo_oos import formal_oos_incident_reasons
+    from factor_factory.evo_terminal_closure import (
+        terminal_closure_path,
+        validate_evo_post_oos_terminal_closure,
+    )
+    from factor_factory.oos_exposure_incident import (
+        oos_exposure_private_registry_guard,
+        validate_oos_exposure_private_registry_guard,
+    )
+    from factor_factory.research_evidence import sha256_file
+    from factor_factory.research_org.runtime_trust import load_runtime_trust_store
+
+    root = Path(workspace_root).expanduser().resolve(strict=True)
+    trust_root = incident_trust_root.expanduser().resolve(strict=True)
+    base = {
+        "contract_version": CURRENT_AUTHORITY_VERSION,
+        "report_id": report_id,
+        "factor_verdict": "BLOCK",
+        "formal_proof_eligible": False,
+    }
+    if not incident_installation_id:
+        return {
+            **base,
+            "status": "BLOCK",
+            "authority_source": None,
+            "evidence_ref": None,
+            "evidence_sha256": None,
+            "block_reasons": [
+                f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:incident_host_context_required"
+            ],
+        }
+
+    if _incident_guard is None:
+        try:
+            context = oos_exposure_private_registry_guard(
+                trust_root,
+                installation_id=incident_installation_id,
+            )
+            with context as guard:
+                return validate_current_ultimate_authority(
+                    root,
+                    report_id=report_id,
+                    expected_factor_verdict=expected_factor_verdict,
+                    formal_proof_eligible=formal_proof_eligible,
+                    incident_trust_root=trust_root,
+                    incident_installation_id=incident_installation_id,
+                    _incident_guard=guard,
+                )
+        except (OSError, RuntimeError, ValueError) as exc:
+            token = str(exc).split(";", 1)[0]
+            if not token.startswith("BLOCK_"):
+                token = f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:{type(exc).__name__}"
+            return {
+                **base,
+                "status": "BLOCK",
+                "authority_source": None,
+                "evidence_ref": None,
+                "evidence_sha256": None,
+                "block_reasons": [token],
+            }
+
+    try:
+        validate_oos_exposure_private_registry_guard(
+            _incident_guard,
+            trust_root=trust_root,
+            installation_id=incident_installation_id,
+        )
+        incident_reasons = formal_oos_incident_reasons(
+            workspace_root=root,
+            report_id=report_id,
+            trust_root=trust_root,
+            installation_id=incident_installation_id,
+        )
+        if incident_reasons:
+            return {
+                **base,
+                "status": "BLOCK",
+                "authority_source": "durable_oos_incident_registry",
+                "evidence_ref": None,
+                "evidence_sha256": None,
+                "block_reasons": list(dict.fromkeys(incident_reasons)),
+            }
+        if not formal_proof_eligible:
+            return {
+                **base,
+                "status": "NOT_APPLICABLE",
+                "factor_verdict": expected_factor_verdict,
+                "authority_source": None,
+                "evidence_ref": None,
+                "evidence_sha256": None,
+                "block_reasons": [],
+            }
+
+        closure_path = terminal_closure_path(root, report_id)
+        evo_markers = _evo_current_authority_markers(root, report_id)
+        if closure_path.exists() or closure_path.is_symlink():
+            closure = validate_evo_post_oos_terminal_closure(
+                workspace_root=root,
+                report_id=report_id,
+                trust_root=trust_root,
+                installation_id=incident_installation_id,
+                _incident_guard=_incident_guard,
+            )
+            if (
+                closure.get("verdict") != "PASS"
+                or closure.get("formal_factor_verdict")
+                != expected_factor_verdict
+                or closure.get("block_reasons")
+            ):
+                reasons = list(closure.get("block_reasons") or [])
+                if not reasons:
+                    reasons = [
+                        f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:terminal_verdict_mismatch"
+                    ]
+                return {
+                    **base,
+                    "status": "BLOCK",
+                    "authority_source": "evo_post_oos_terminal_closure",
+                    "evidence_ref": None,
+                    "evidence_sha256": None,
+                    "block_reasons": reasons,
+                }
+            return {
+                **base,
+                "status": "PASS",
+                "factor_verdict": expected_factor_verdict,
+                "formal_proof_eligible": True,
+                "authority_source": "evo_post_oos_terminal_closure",
+                "evidence_ref": str(closure_path.relative_to(root)),
+                "evidence_sha256": sha256_file(closure_path),
+                "block_reasons": [],
+            }
+
+        if evo_markers:
+            return {
+                **base,
+                "status": "BLOCK",
+                "authority_source": "evo_post_oos_terminal_closure",
+                "evidence_ref": None,
+                "evidence_sha256": None,
+                "evo_authority_markers": evo_markers,
+                "block_reasons": [
+                    f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:"
+                    "evo_terminal_closure_missing"
+                ],
+            }
+
+        trust_manifest = load_runtime_trust_store(
+            trust_root,
+            installation_id=incident_installation_id,
+        ).public_manifest
+        resolved = resolve_report_scoped_web_research_plan(
+            root,
+            report_id=report_id,
+            expected_host_trust_manifest_sha256=str(
+                trust_manifest.get("manifest_sha256") or ""
+            ),
+        )
+        plan = resolved.get("plan")
+        if not isinstance(plan, dict):
+            raise ValueError(f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:plan_invalid")
+        if resolved.get("is_evo_child") is True:
+            return {
+                **base,
+                "status": "BLOCK",
+                "authority_source": "evo_post_oos_terminal_closure",
+                "evidence_ref": None,
+                "evidence_sha256": None,
+                "evo_authority_markers": ["report_scoped_evo_child_plan"],
+                "block_reasons": [
+                    f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:"
+                    "evo_terminal_closure_missing"
+                ],
+            }
+        paths = web_factor_proof_paths(root, report_id)
+        finalization_path = paths["finalization"]
+        if not finalization_path.is_file() or finalization_path.is_symlink():
+            raise ValueError(
+                f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:web_finalization_missing"
+            )
+        persisted = json.loads(finalization_path.read_text(encoding="utf-8"))
+        if not isinstance(persisted, dict):
+            raise ValueError(
+                f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:web_finalization_invalid"
+            )
+        allocation = resolved.get("allocation")
+        token_hash = (
+            str(allocation.get("sealed_token_sha256") or "")
+            if isinstance(allocation, dict)
+            else None
+        )
+        termination_authority = persisted.get("host_agent_termination_authority")
+        current = validate_web_factor_proof_finalization(
+            root,
+            plan,
+            oos_release_token_hash=token_hash,
+            host_agent_termination_authority=(
+                termination_authority
+                if isinstance(termination_authority, dict)
+                else None
+            ),
+            incident_trust_root=trust_root,
+            incident_installation_id=incident_installation_id,
+            _incident_guard=_incident_guard,
+        )
+        if (
+            current.get("status") != "PASS"
+            or current.get("formal_proof_eligible") is not True
+            or current.get("factor_verdict") != expected_factor_verdict
+        ):
+            raise ValueError(
+                f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:web_finalization_verdict_mismatch"
+            )
+        return {
+            **base,
+            "status": "PASS",
+            "factor_verdict": expected_factor_verdict,
+            "formal_proof_eligible": True,
+            "authority_source": "web_factor_proof_finalization",
+            "evidence_ref": str(finalization_path.relative_to(root)),
+            "evidence_sha256": sha256_file(finalization_path),
+            "block_reasons": [],
+        }
+    except (OSError, RuntimeError, ValueError) as exc:
+        token = str(exc).split(";", 1)[0]
+        if not token.startswith("BLOCK_"):
+            token = f"{BLOCK_CURRENT_FORMAL_AUTHORITY}:{type(exc).__name__}"
+        return {
+            **base,
+            "status": "BLOCK",
+            "authority_source": None,
+            "evidence_ref": None,
+            "evidence_sha256": None,
+            "block_reasons": [token],
+        }
+
+
+def read_current_ultimate_workspace(
+    workspace_root: str | Path,
+    *,
+    report_id: str | None = None,
+    incident_trust_root: Path,
+    incident_installation_id: str,
+    _incident_guard: object | None = None,
+) -> CurrentUltimateWorkspace:
+    """Read structural evidence, then overlay Host-current formal authority."""
+
+    summary = read_ultimate_workspace(workspace_root, report_id=report_id)
+    validation = validate_current_ultimate_authority(
+        workspace_root,
+        report_id=summary.report_id,
+        expected_factor_verdict=summary.factor_verdict,
+        formal_proof_eligible=summary.formal_proof_eligible,
+        incident_trust_root=incident_trust_root,
+        incident_installation_id=incident_installation_id,
+        _incident_guard=_incident_guard,
+    )
+    if validation.get("status") == "BLOCK":
+        summary = _blocked_current_summary(
+            summary,
+            validation.get("block_reasons") or [BLOCK_CURRENT_FORMAL_AUTHORITY],
+        )
+    return CurrentUltimateWorkspace(
+        summary=summary,
+        authority_validation=validation,
+    )
 
 
 def read_ultimate_workspace(

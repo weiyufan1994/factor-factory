@@ -3843,6 +3843,55 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'External Step6 researcher-agent memo was loaded and preserved under research_memo.researcher_agent_memo.'
         )
 
+    evo_execution_summary = run_master.get('evo_child_execution')
+    evo_execution_contract = run_master.get('evo_transfer_diagnostic_contract')
+    evo_transfer_tension_ledger = None
+    if isinstance(evo_execution_contract, dict):
+        result_ref = (
+            evo_execution_summary.get('result_ref')
+            if isinstance(evo_execution_summary, dict)
+            else None
+        )
+        result_payload = {}
+        if isinstance(result_ref, dict) and result_ref.get('path'):
+            result_path = Path(str(result_ref['path']))
+            if not result_path.is_absolute():
+                result_path = FF / result_path
+            result_payload = load_json(result_path)
+        evo_transfer_tension_ledger = {
+            'contract_version': 'factorforge_evo_transfer_tension_ledger_projection_v1',
+            'diagnostic_contract_sha256': evo_execution_contract.get('contract_sha256'),
+            'execution_result_ref': result_ref,
+            'tests': [
+                {
+                    'test_id': item.get('test_id'),
+                    'source_test_sha256': item.get('source_test_sha256'),
+                    'predicted_signature': item.get('expected_signature'),
+                    'observed_signature': item.get('observed_metrics'),
+                    'falsifier': item.get('falsifier'),
+                    'mismatch_vector': None,
+                    'what_survived': None,
+                    'what_failed': None,
+                    'rival_explanations': [],
+                    'distinguishing_test': None,
+                    'host_review_status': 'HOST_REVIEW_REQUIRED_NOT_AUTOMATICALLY_ADJUDICATED',
+                }
+                for item in (result_payload.get('test_results') or [])
+                if isinstance(item, dict)
+            ],
+            'authority': {
+                'diagnostic_only': True,
+                'affects_current_factor_acceptance': False,
+                'automatic_support_or_falsification_allowed': False,
+                'factor_verdict': 'NOT_ISSUED',
+                'canonical_memory_write_allowed': False,
+            },
+        }
+        research_memo['evo_transfer_tension_ledger'] = evo_transfer_tension_ledger
+        research_memo.setdefault('evidence_quality', {}).setdefault('notes', []).append(
+            'EVO transfer tests were executed and projected for Host review; they remain diagnostic-only and do not affect current factor acceptance.'
+        )
+
     return {
         'report_id': report_id,
         'factor_id': factor_id,
@@ -3856,6 +3905,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'formal_window_evidence': window_evidence,
             'step5_lessons': case.get('lessons') or handoff.get('lessons') or [],
             'step5_next_actions': case.get('next_actions') or handoff.get('next_actions') or [],
+            'evo_transfer_tension_ledger': evo_transfer_tension_ledger,
         },
         'evidence_status': evidence_status,
         'research_judgment': {
@@ -3867,6 +3917,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'why_now': 'Step6 research memo based on Step4/5 executable artifacts, backend payloads, return-source logic, and historical retrieval context.',
             'factor_investing_framework': framework,
             'research_memo': research_memo,
+            'evo_transfer_tension_ledger': evo_transfer_tension_ledger,
             'experience_chain': experience_chain,
             'revision_taxonomy': revision_taxonomy,
             'program_search_policy': program_search_policy,
@@ -3918,11 +3969,46 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     }
 
 
+def _reusable_evo_research_projection(
+    iteration: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    reusable_research_memo = dict(
+        iteration['knowledge_writeback'].get('research_memo') or {}
+    )
+    pending_transfer_tension = reusable_research_memo.pop(
+        'evo_transfer_tension_ledger', None
+    )
+    if not isinstance(pending_transfer_tension, dict):
+        return reusable_research_memo, None
+    gate = {
+        'status': 'HOST_ADJUDICATION_REQUIRED_NOT_REUSABLE',
+        'diagnostic_contract_sha256': pending_transfer_tension.get(
+            'diagnostic_contract_sha256'
+        ),
+        'execution_result_ref': pending_transfer_tension.get(
+            'execution_result_ref'
+        ),
+        'ordered_test_ids': [
+            item.get('test_id')
+            for item in (pending_transfer_tension.get('tests') or [])
+            if isinstance(item, dict)
+        ],
+        'raw_tension_ledger_copied_to_knowledge': False,
+        'reusable_as_analogy': False,
+        'canonical_memory_promotion_allowed': False,
+        'factor_acceptance_affected': False,
+    }
+    return reusable_research_memo, gate
+
+
 def build_factor_record(iteration: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
     case = bundle['factor_case_master']
     run_master = bundle['factor_run_master']
     framework = iteration['research_judgment'].get('factor_investing_framework') or {}
-    return {
+    reusable_research_memo, transfer_review_gate = (
+        _reusable_evo_research_projection(iteration)
+    )
+    record = {
         'report_id': iteration['report_id'],
         'factor_id': iteration['factor_id'],
         'decision': iteration['research_judgment']['decision'],
@@ -3952,7 +4038,7 @@ def build_factor_record(iteration: dict[str, Any], bundle: dict[str, Any]) -> di
         'revision_taxonomy': iteration['knowledge_writeback'].get('revision_taxonomy'),
         'program_search_policy': iteration['knowledge_writeback'].get('program_search_policy'),
         'diversity_position': iteration['knowledge_writeback'].get('diversity_position'),
-        'research_memo': iteration['research_judgment'].get('research_memo'),
+        'research_memo': reusable_research_memo,
         'evidence_identity': iteration.get('evidence_identity') or {},
         'source_case_identity': iteration.get('source_case_identity') or {},
         'implementation_mode_decision': iteration.get('implementation_mode_decision') or {},
@@ -3962,10 +4048,16 @@ def build_factor_record(iteration: dict[str, Any], bundle: dict[str, Any]) -> di
         'created_at_utc': iteration['created_at_utc'],
         'producer': 'step6',
     }
+    if transfer_review_gate is not None:
+        record['evo_transfer_tension_review_gate'] = transfer_review_gate
+    return record
 
 
 def build_knowledge_record(iteration: dict[str, Any]) -> dict[str, Any]:
-    return {
+    reusable_research_memo, transfer_review_gate = (
+        _reusable_evo_research_projection(iteration)
+    )
+    record = {
         'report_id': iteration['report_id'],
         'factor_id': iteration['factor_id'],
         'decision': iteration['research_judgment']['decision'],
@@ -3992,7 +4084,13 @@ def build_knowledge_record(iteration: dict[str, Any]) -> dict[str, Any]:
         'revision_taxonomy': iteration['knowledge_writeback'].get('revision_taxonomy'),
         'program_search_policy': iteration['knowledge_writeback'].get('program_search_policy'),
         'diversity_position': iteration['knowledge_writeback'].get('diversity_position'),
-        'research_memo': iteration['knowledge_writeback'].get('research_memo'),
+        # Raw EVO transfer diagnostics are deliberately retained in the
+        # immutable iteration, but they are not reusable knowledge until a
+        # separately signed Host adjudication supplies mismatch/survival/
+        # rival-explanation judgments.  Keeping this projection out of the
+        # canonical knowledge memo prevents an unreviewed diagnostic from
+        # silently becoming a cross-run lesson.
+        'research_memo': reusable_research_memo,
         'knowledge_scope': 'same_factor',
         'source_identity': iteration.get('source_case_identity') or {},
         'evidence_identity': iteration.get('evidence_identity') or {},
@@ -4008,6 +4106,9 @@ def build_knowledge_record(iteration: dict[str, Any]) -> dict[str, Any]:
         'created_at_utc': iteration['created_at_utc'],
         'producer': 'step6',
     }
+    if transfer_review_gate is not None:
+        record['evo_transfer_tension_review_gate'] = transfer_review_gate
+    return record
 
 
 def build_handoff_to_step3b(iteration: dict[str, Any]) -> dict[str, Any]:
@@ -4694,6 +4795,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
+    ap.add_argument('--expected-host-trust-manifest-sha256', default=None)
     args = ap.parse_args()
     enforce_direct_step_policy(args.manifest)
     manifest = load_runtime_manifest(args.manifest) if args.manifest else None
@@ -4706,6 +4808,21 @@ def main() -> None:
         raise SystemExit('run_step6.py requires --report-id or --manifest')
 
     bundle = load_required_inputs(report_id)
+    from factor_factory.evo_child_execution import validate_evo_child_execution_gate
+
+    evo_gate_reasons = validate_evo_child_execution_gate(
+        workspace_root=FF,
+        report_id=report_id,
+        factor_run_master=bundle['factor_run_master'],
+        expected_host_trust_manifest_sha256=(
+            args.expected_host_trust_manifest_sha256
+        ),
+    )
+    if evo_gate_reasons:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_CHILD_EXECUTION_GATE: '
+            + ';'.join(evo_gate_reasons)
+        )
     payloads = load_backend_payloads(report_id, bundle['factor_run_master'])
     iteration = build_iteration_payload(bundle, payloads)
     base_identity = (

@@ -415,7 +415,7 @@ def classify_loop_state(
     if max_reached:
         return LoopState(
             outcome="max_loops_reached",
-            proof_status="PASS",
+            proof_status="PAUSED",
             can_continue=False,
             stop_reason="max_loops_reached",
             decision=decision,

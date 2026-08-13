@@ -4,9 +4,14 @@ import ast
 import json
 import math
 import re
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+from ..formula.parser import parse_formula
+from ..formula.registry import operator_meta
+from ..knowledge_reference import validate_knowledge_reference_contract
+from ..measurement_program import validate_measurement_program
 from .formula_specific import BASELINE_MODEL_FAMILIES, build_formula_understanding
 
 
@@ -331,7 +336,14 @@ MODEL_FAMILY_ALIASES = {
     "dcf": "valuation_identity",
     "residual-income valuation": "valuation_identity",
     "residual_income": "valuation_identity",
-    "accounting identity": "valuation_identity",
+    # Accounting identities also support earnings-quality, cash-conversion,
+    # capital-allocation, financing-constraint, and unit-economic mechanisms.
+    # They become valuation identities only when the researcher explicitly
+    # selects that model family; fundamental-domain routing alone is not enough.
+    "accounting identity": "other",
+    "accounting quality": "other",
+    "unit economics": "other",
+    "structural causal model": "other",
     "price_volume_microstructure": "transient_impact",
     "price_volume_correlation": "copula_rank_dependence",
     "ranked_price_volume_state_process": "transient_impact",
@@ -468,8 +480,14 @@ def _nonempty_str_list(value: Any, min_count: int = 2) -> bool:
 def _has_explicit_forward_price_payoff(
     value: Any,
     allowed_information_names: set[str] | None = None,
+    *,
+    include_default_information_names: bool = True,
 ) -> bool:
-    payoff = _conditional_target_payoff(value, allowed_information_names)
+    payoff = _conditional_target_payoff(
+        value,
+        allowed_information_names,
+        include_default_information_names=include_default_information_names,
+    )
     if payoff is None:
         return False
     price_term = (
@@ -491,8 +509,14 @@ def _has_explicit_forward_price_payoff(
 def _has_explicit_named_return_payoff(
     value: Any,
     allowed_information_names: set[str] | None = None,
+    *,
+    include_default_information_names: bool = True,
 ) -> bool:
-    payoff = _conditional_target_payoff(value, allowed_information_names)
+    payoff = _conditional_target_payoff(
+        value,
+        allowed_information_names,
+        include_default_information_names=include_default_information_names,
+    )
     if payoff is None:
         return False
     named_return = re.fullmatch(
@@ -550,12 +574,14 @@ def _is_forward_return_time_range(value: str) -> bool:
         return False
     if not isinstance(end, int):
         return start == 1
-    return end >= start
+    return end > start
 
 
 def _conditional_target_payoff(
     value: Any,
     allowed_information_names: set[str] | None,
+    *,
+    include_default_information_names: bool = True,
 ) -> str | None:
     compact = (
         re.sub(r"\s+", "", str(value or "").lower())
@@ -563,7 +589,11 @@ def _conditional_target_payoff(
         .replace("→", "->")
         .replace(r"\to", "->")
     )
-    trusted_information_names = set(TRUSTED_INFORMATION_NAMES)
+    trusted_information_names = (
+        set(TRUSTED_INFORMATION_NAMES)
+        if include_default_information_names
+        else set()
+    )
     trusted_information_names.update(
         str(name).strip().lower()
         for name in (allowed_information_names or set())
@@ -687,10 +717,48 @@ def _information_name_is_admissible(name: str, allowed_names: set[str]) -> bool:
 
 
 def _information_name_has_future_semantics(name: str) -> bool:
-    return re.search(
-        r"(?:future|forward|fwd|target|label|outcome|next|lead|lookahead|tomorrow|(?:tp|tplus)0*[1-9][0-9]*)",
-        name,
-    ) is not None
+    normalized = str(name or "").strip().casefold()
+    if re.fullmatch(r"[a-z][a-z0-9_]*", normalized) is None:
+        return True
+    tokens = normalized.split("_")
+    future_tokens = {
+        "following",
+        "forward",
+        "future",
+        "fwd",
+        "label",
+        "later",
+        "lead",
+        "lookahead",
+        "next",
+        "outcome",
+        "subsequent",
+        "target",
+        "tomorrow",
+        "upcoming",
+    }
+    if any(token in future_tokens for token in tokens):
+        return True
+    if any(
+        re.fullmatch(
+            r"(?:following|forward|future|fwd|label|later|lookahead|next|outcome|"
+            r"subsequent|target|tomorrow|upcoming)[a-z0-9]+",
+            token,
+        )
+        for token in tokens
+    ):
+        return True
+    if any(
+        re.fullmatch(r"(?:t|tp)0*[1-9][0-9]*", token)
+        or token.startswith("tplus") and token != "tpluszero"
+        for token in tokens
+    ):
+        return True
+    return bool(
+        len(tokens) >= 2
+        and tokens[-2] == "t"
+        and re.fullmatch(r"0*[1-9][0-9]*", tokens[-1])
+    )
 
 
 def _state_rhs_is_trusted(
@@ -698,7 +766,47 @@ def _state_rhs_is_trusted(
     *,
     observable_names: set[str],
     operator_names: set[str],
+    strict_formula_registry: bool = False,
 ) -> bool:
+    if strict_formula_registry:
+        normalized = _normalize_current_observation_indices(
+            rhs.strip(),
+            observable_names,
+        )
+        if (
+            normalized is None
+            or not _formula_source_is_fully_represented(normalized)
+        ):
+            return False
+        parsed = parse_formula(normalized)
+        if parsed.get("parse_status") != "success":
+            return False
+        required_fields = {
+            str(field).strip().casefold()
+            for field in parsed.get("required_fields") or []
+            if str(field).strip()
+        }
+        parsed_operators = {
+            str(operator).strip().casefold()
+            for operator in parsed.get("operator_set") or []
+            if str(operator).strip()
+        }
+        structural_operators = {
+            "divide",
+            "minus",
+            "multiply",
+            "negate",
+            "plus",
+            "signedpower",
+        }
+        return bool(required_fields) and (
+            required_fields <= observable_names
+            and not any(
+                _information_name_has_future_semantics(field)
+                for field in required_fields
+            )
+            and parsed_operators <= operator_names | structural_operators
+        )
     try:
         if len(rhs.encode("utf-8")) > 4_096:
             return False
@@ -739,11 +847,20 @@ def _state_rhs_is_trusted(
         "winsorize",
         "zscore",
     }
-    allowed_functions = safe_functions | {
-        str(operator).strip().lower()
-        for operator in operator_names
-        if str(operator).strip()
-    }
+    allowed_functions = set(safe_functions)
+    for operator in operator_names:
+        normalized_operator = str(operator).strip().lower()
+        if not normalized_operator:
+            continue
+        allowed_functions.add(normalized_operator)
+        try:
+            allowed_functions.update(
+                str(alias).strip().lower()
+                for alias in operator_meta(normalized_operator).get("aliases") or []
+                if str(alias).strip()
+            )
+        except KeyError:
+            continue
     allowed_dependencies = set(observable_names)
 
     allowed_node_types = (
@@ -887,6 +1004,8 @@ def _declared_current_state_names(
     memo: dict[str, Any],
     observable_names: set[str],
     operator_names: set[str] | None = None,
+    *,
+    strict_formula_registry: bool = False,
 ) -> set[str]:
     math_payload = (
         memo.get("math_hypothesis")
@@ -901,7 +1020,8 @@ def _declared_current_state_names(
     equation = equation.replace("−", "-").replace("→", "->")
     states: set[str] = set()
     assignment = re.compile(
-        r"(?P<name>[a-z][a-z0-9_]*)_\{(?P<index>[^{}]+)\}\s*="
+        r"(?P<name>[a-z][a-z0-9_]*)_"
+        r"(?:\{(?P<braced_index>[^{}]+)\}|(?P<plain_index>t))\s*="
     )
     allowed_operators = {
         str(operator).strip().lower()
@@ -910,13 +1030,26 @@ def _declared_current_state_names(
     }
     for match in assignment.finditer(equation):
         name = match.group("name")
-        index_parts = [part.strip() for part in match.group("index").split(",")]
+        index_parts = [
+            part.strip()
+            for part in (
+                match.group("braced_index")
+                or match.group("plain_index")
+                or ""
+            ).split(",")
+        ]
         if (
-            _information_name_has_future_semantics(name)
+            name in observable_names
+            or _information_name_has_future_semantics(name)
             or index_parts.count("t") != 1
             or any(
                 re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", item) is None
                 for item in index_parts
+            )
+            or any(
+                _information_name_has_future_semantics(item)
+                for item in index_parts
+                if item != "t"
             )
         ):
             continue
@@ -926,13 +1059,1712 @@ def _declared_current_state_names(
             not rhs.strip()
             or not _state_rhs_is_trusted(
                 rhs,
-                observable_names=observable_names,
+                observable_names=set(observable_names) | states,
                 operator_names=allowed_operators,
+                strict_formula_registry=strict_formula_registry,
             )
         ):
             continue
         states.add(name)
     return states
+
+
+def _has_future_temporal_reference(value: str) -> bool:
+    text = str(value or "").lower().replace("−", "-")
+    compact = re.sub(r"\s+", "", text)
+    prose = re.sub(r"[-_]", " ", text)
+    positive_number_word = (
+        r"(?:one|two|three|four|five|six|seven|eight|nine|ten|"
+        r"eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|"
+        r"eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|"
+        r"eighty|ninety|hundred|thousand|[1-9][0-9]*|k|h|n)"
+    )
+    return bool(
+        re.search(
+            r"(?<![a-z0-9])t\s*\+\s*(?:0*[1-9][0-9]*|k|h|n)(?![a-z0-9])",
+            text,
+        )
+        or re.search(
+            r"(?<![a-z0-9])t\s*plus\s*(?:0*[1-9][0-9]*|k|h|n)(?![a-z0-9])",
+            text,
+        )
+        or re.search(
+            r"(?<![a-z0-9])tplus(?:0*[1-9][0-9]*|k|h|n)(?![a-z0-9])",
+            text,
+        )
+        or re.search(r"t\^\{\+(?:0*[1-9][0-9]*|k|h|n)\}", compact)
+        or re.search(
+            r"\.shift\((?:periods=)?-0*[1-9][0-9]*(?:,[^)]*)?\)",
+            compact,
+        )
+        or re.search(
+            r"\b(?:shift|delay)\([^;)]*,(?:periods=)?-0*[1-9][0-9]*"
+            r"(?:,[^)]*)?\)",
+            compact,
+        )
+        or re.search(r"\b(?:lead|lookahead)\(", compact)
+        or re.search(
+            rf"\bt\s+(?:plus|after)\s+{positive_number_word}\b",
+            prose,
+        )
+        or re.search(
+            rf"(?<![a-z0-9])tplus{positive_number_word}(?![a-z0-9])",
+            compact,
+        )
+        or re.search(
+            r"(?<![a-z0-9_])t\s*\+\s*[a-z0-9]+\b",
+            text,
+        )
+        or re.search(
+            rf"\b(?:{positive_number_word}\s+)?(?:bar|bars|day|days|horizon|horizons|"
+            r"minute|minutes|month|months|period|periods|session|sessions|"
+            r"step|steps|week|weeks|year|years)\s+"
+            r"(?:ahead|later|after|forward)\b",
+            prose,
+        )
+        or re.search(
+            r"\b(?:forthcoming|future|next|tomorrow|subsequent|following|"
+            r"upcoming|lookahead)\b",
+            prose,
+        )
+    )
+
+
+def _contains_future_payoff_object(value: str) -> bool:
+    raw = str(value or "").lower().replace("−", "-")
+    text = re.sub(r"[_-]+", " ", raw)
+    tokens = set(re.findall(r"[a-z][a-z0-9]*", text))
+    has_future_semantics = bool(
+        _has_future_temporal_reference(raw)
+        or re.search(
+            r"t\^\{\+(?:0*[1-9][0-9]{0,3}|k|h|n)\}",
+            re.sub(r"\s+", "", raw),
+        )
+        or any(_information_name_has_future_semantics(term) for term in tokens)
+    )
+    has_payoff_semantics = any(
+        re.search(r"(?:return|price|close|payoff|alpha|label|outcome)", term)
+        for term in tokens
+    ) or bool(
+        re.search(
+            r"(?<![a-z0-9_])(?:r|p)\s*(?:_\{|\(|_(?:tplus|t\+))",
+            raw,
+        )
+    )
+    return has_future_semantics and has_payoff_semantics
+
+
+def _current_object_alias_names(value: str) -> set[str] | None:
+    text = str(value or "").lower().replace("−", "-")
+    aliases: set[str] = set()
+    indexed_pattern = re.compile(
+        r"(?<![a-z0-9_])(?P<name>[a-z][a-z0-9_]*)_\{(?P<index>[^{}]+)\}",
+    )
+    for match in indexed_pattern.finditer(text):
+        parts = [item.strip() for item in match.group("index").split(",")]
+        time_parts = [item for item in parts if item == "t"]
+        identities = [item for item in parts if item not in time_parts]
+        if len(time_parts) != 1 or not all(
+            re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", item)
+            and not _information_name_has_future_semantics(item)
+            for item in identities
+        ):
+            return None
+        aliases.add(match.group("name"))
+    without_indexed = indexed_pattern.sub("", text)
+    if any(character in without_indexed for character in "{}") or re.search(
+        r"_\s+\{", text
+    ):
+        return None
+    aliases.update(
+        re.findall(
+            r"(?<![a-z0-9_])(?P<name>[a-z][a-z0-9_]*)_t\b",
+            without_indexed,
+        )
+    )
+    return aliases
+
+
+def _annotation_has_dependency_claim(value: str) -> bool:
+    normalized = re.sub(r"[-']", " ", str(value or "").casefold())
+    return bool(
+        re.search(
+            r"\b(?:based\s+on|conditioned|conditioning|conditional|depends?|"
+            r"computed\s+from|dependencies|dependency|derived\s+from|"
+            r"draws\s+on|estimates?|inputs?|incorporates?|incorporated|"
+            r"incorporating|leverages?|maps?|needs?|powered\s+by|reads?|"
+            r"relies\s+(?:on|upon)|relying\s+(?:on|upon)|requires?|sources?|"
+            r"supplies?|uses?|using|via|with)\b",
+            normalized,
+        )
+    )
+
+
+def _plain_semantic_label(value: str, mathematical_object: str) -> bool:
+    text = str(value or "").strip().rstrip(".,")
+    if not text:
+        return False
+    try:
+        encoded_length = len(text.encode("utf-8"))
+    except UnicodeError:
+        return False
+    if encoded_length > 512:
+        return False
+    # Labels are object-bound domain prose, never executable syntax. The
+    # expression prefix, not this prose, owns every data dependency.
+    if (
+        re.search(r"[\[\]{}()=+*/%<>]", text)
+        or re.search(r"\s-\s|[a-z0-9]\.[a-z0-9]", text.casefold())
+        or "_" in text
+    ):
+        return False
+    words = re.findall(r"[a-z0-9]+(?:[-'][a-z0-9]+)*", text.casefold())
+    if not words or re.sub(r"[a-z0-9\s,.\-']", "", text.casefold()):
+        return False
+    for word in words:
+        parts = re.split(r"[-']", word)
+        if not (
+            parts
+            and all(part for part in parts)
+            and (
+                all(part.isalpha() for part in parts)
+                or parts[0].isdecimal()
+                and len(parts) > 1
+                and all(part.isalpha() for part in parts[1:])
+            )
+        ):
+            return False
+    label_terms = {
+        part
+        for word in words
+        for part in re.split(r"[-']", word)
+        if part and part.isalpha()
+    }
+    object_terms = set(
+        re.findall(r"[a-z][a-z0-9]*", str(mathematical_object or "").casefold())
+    )
+    structural_terms = {
+        "a",
+        "an",
+        "and",
+        "at",
+        "best",
+        "component",
+        "components",
+        "current",
+        "day",
+        "days",
+        "direction",
+        "feature",
+        "for",
+        "gap",
+        "index",
+        "level",
+        "measure",
+        "object",
+        "observable",
+        "observed",
+        "of",
+        "path",
+        "proxy",
+        "rally",
+        "range",
+        "ratio",
+        "scale",
+        "score",
+        "semantic",
+        "shape",
+        "signal",
+        "spike",
+        "standardization",
+        "standardized",
+        "state",
+        "t",
+        "tail",
+        "the",
+        "value",
+        "window",
+        "windows",
+    }
+    normalized_words = re.sub(r"[-']", " ", text.casefold())
+    return not (
+        _annotation_has_dependency_claim(normalized_words)
+        or _has_future_temporal_reference(normalized_words)
+        or any(_information_name_has_future_semantics(term) for term in label_terms)
+    ) and label_terms <= object_terms | structural_terms
+
+
+def _canonical_formula_supports_valuation(
+    canonical_formula_ir: dict[str, Any],
+) -> bool:
+    if canonical_formula_ir.get("parse_status") != "success":
+        return False
+    normalized_fields = {
+        str(field).strip().casefold()
+        for field in canonical_formula_ir.get("required_fields") or []
+        if str(field).strip()
+    }
+    if not normalized_fields or any(
+        _information_name_has_future_semantics(field)
+        for field in normalized_fields
+    ):
+        return False
+
+    direct_valuation_names = {
+        "book_to_market",
+        "dividend_yield",
+        "earnings_to_price",
+        "earnings_yield",
+        "ebitda_yield",
+        "ebit_yield",
+        "ev_to_ebit",
+        "ev_to_ebitda",
+        "ev_to_sales",
+        "fcf_yield",
+        "market_to_book",
+        "price_to_book",
+        "price_to_cash_flow",
+        "price_to_earnings",
+        "price_to_fcf",
+        "price_to_sales",
+        "sales_to_price",
+        "valuation_gap",
+        "value_gap",
+    }
+
+    def is_direct_valuation_field(field: str) -> bool:
+        return bool(
+            field in direct_valuation_names
+            or re.fullmatch(
+                r"(?:ev|enterprise_value|market_cap|market_price|price)_to_"
+                r"(?:book|cash_flow|ebit|ebitda|earnings|fcf|revenue|sales)",
+                field,
+            )
+            or re.fullmatch(
+                r"(?:book|cash_flow|dividend|ebit|ebitda|earnings|fcf|revenue|sales)_to_"
+                r"(?:ev|enterprise_value|market_cap|market_price|price)",
+                field,
+            )
+        )
+
+    fundamental_value_names = {
+        "book_equity",
+        "book_value",
+        "cash_flow",
+        "dividend",
+        "earnings",
+        "ebit",
+        "ebitda",
+        "equity_value",
+        "fcf",
+        "forecast_fcf",
+        "free_cash_flow",
+        "intrinsic_value",
+        "net_debt",
+        "net_income",
+        "operating_cash_flow",
+        "operating_income",
+        "residual_income",
+        "residual_income_value",
+        "revenue",
+        "sales",
+        "total_revenue",
+    }
+    fundamental_per_share_names = {
+        "book_value_per_share",
+        "dividend_per_share",
+        "earnings_per_share",
+        "eps",
+        "fcf_per_share",
+    }
+    market_value_names = {
+        "enterprise_value",
+        "ev",
+        "market_cap",
+    }
+    market_per_share_names = {
+        "close",
+        "market_price",
+        "price",
+    }
+    share_count_names = {
+        "diluted_shares_outstanding",
+        "shares_outstanding",
+        "weighted_average_shares",
+    }
+    discount_rate_names = {
+        "cost_of_equity",
+        "discount_rate",
+        "growth_rate",
+        "terminal_growth",
+        "terminal_growth_rate",
+        "wacc",
+    }
+
+    def field_role(field: str) -> str | None:
+        if is_direct_valuation_field(field):
+            return "direct"
+        if field in fundamental_value_names:
+            return "fundamental_value"
+        if field in fundamental_per_share_names:
+            return "fundamental_per_share"
+        if field in market_value_names:
+            return "market_value"
+        if field in market_per_share_names:
+            return "market_per_share"
+        if field in share_count_names:
+            return "shares"
+        if field in discount_rate_names:
+            return "discount"
+        return None
+
+    if any(field_role(field) is None for field in normalized_fields):
+        return False
+
+    def subtree_fields(node: Any) -> set[str]:
+        if not isinstance(node, dict):
+            return set()
+        if node.get("type") == "field" and isinstance(node.get("name"), str):
+            return {node["name"].casefold()}
+        if node.get("type") != "operator":
+            return set()
+        return {
+            field
+            for arg in node.get("args") or []
+            for field in subtree_fields(arg)
+        }
+
+    root = canonical_formula_ir.get("root")
+    # Dimensions are powers of (currency, shares). A ratio is (0, 0), a
+    # company-level value is (1, 0), and a per-share value is (1, -1).
+    Dimension = tuple[int, int]
+    ratio_dimension: Dimension = (0, 0)
+
+    def static_numeric_value(node: Any) -> float | None:
+        """Evaluate only algebraically certain constants used for liveness."""
+        if not isinstance(node, dict):
+            return None
+        if node.get("type") == "constant":
+            value = node.get("value")
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                return None
+            numeric = float(value)
+            return numeric if math.isfinite(numeric) else None
+        if node.get("type") != "operator":
+            return None
+        operator = str(node.get("operator") or "").casefold()
+        args = node.get("args") or []
+        identities = [_formula_ir_node_identity(arg) for arg in args]
+        if operator == "minus" and len(args) == 2 and identities[0] == identities[1]:
+            return 0.0
+        if operator == "divide" and len(args) == 2 and identities[0] == identities[1]:
+            return 1.0
+        values = [static_numeric_value(arg) for arg in args]
+        if operator == "negate" and len(values) == 1 and values[0] is not None:
+            return -values[0]
+        if operator == "abs" and len(values) == 1 and values[0] is not None:
+            return abs(values[0])
+        if operator in {"plus", "minus", "multiply", "divide"} and len(values) == 2:
+            left, right = values
+            if operator == "multiply" and (left == 0.0 or right == 0.0):
+                return 0.0
+            if left is None or right is None:
+                return None
+            if operator == "plus":
+                return left + right
+            if operator == "minus":
+                return left - right
+            if operator == "multiply":
+                return left * right
+            if right != 0.0:
+                return left / right
+        return None
+
+    def valuation_dimensions(node: Any) -> set[Dimension]:
+        if not isinstance(node, dict):
+            return set()
+        node_type = node.get("type")
+        if node_type == "constant":
+            return {ratio_dimension}
+        if node_type == "field" and isinstance(node.get("name"), str):
+            field = node["name"].casefold()
+            role = field_role(field)
+            if role in {"direct", "discount"}:
+                return {ratio_dimension}
+            if role in {"fundamental_value", "market_value"}:
+                # Forecast aggregates may be supplied either company-wide or
+                # per share; the rest of the expression must resolve the basis.
+                return {(1, 0), (1, -1)} if field == "forecast_fcf" else {(1, 0)}
+            if role in {"fundamental_per_share", "market_per_share"}:
+                return {(1, -1)}
+            if role == "shares":
+                return {(0, 1)}
+            return set()
+        if node_type != "operator" or not isinstance(node.get("operator"), str):
+            return set()
+        operator = node["operator"].casefold()
+        args = node.get("args") or []
+        dimensions = [valuation_dimensions(arg) for arg in args]
+        if any(not dimension for dimension in dimensions):
+            return set()
+        if operator in {"rank", "scale", "cs_zscore", "sign"}:
+            return {ratio_dimension}
+        if operator == "log":
+            return {ratio_dimension} if dimensions == [{ratio_dimension}] else set()
+        if operator in {"correlation", "ts_rank"}:
+            return {ratio_dimension}
+        if operator in {
+            "abs",
+            "argmax",
+            "argmin",
+            "delay",
+            "delta",
+            "max",
+            "mean",
+            "min",
+            "negate",
+            "stddev",
+            "sum",
+        }:
+            return set.intersection(*dimensions) if dimensions else set()
+        if operator == "covariance" and len(dimensions) == 2:
+            return {
+                (left[0] + right[0], left[1] + right[1])
+                for left in dimensions[0]
+                for right in dimensions[1]
+            }
+        if operator in {"plus", "minus"} and len(dimensions) == 2:
+            return dimensions[0] & dimensions[1]
+        if operator == "divide" and len(dimensions) == 2:
+            return {
+                (left[0] - right[0], left[1] - right[1])
+                for left in dimensions[0]
+                for right in dimensions[1]
+            }
+        if operator == "multiply" and len(dimensions) == 2:
+            return {
+                (left[0] + right[0], left[1] + right[1])
+                for left in dimensions[0]
+                for right in dimensions[1]
+            }
+        if operator == "signedpower" and len(args) == 2:
+            exponent = args[1]
+            if (
+                exponent.get("type") == "constant"
+                and isinstance(exponent.get("value"), int)
+                and not isinstance(exponent.get("value"), bool)
+            ):
+                power = exponent["value"]
+                return {
+                    (dimension[0] * power, dimension[1] * power)
+                    for dimension in dimensions[0]
+                }
+            return set()
+        return set()
+
+    def contains_valuation_ratio(node: Any) -> bool:
+        if not isinstance(node, dict):
+            return False
+        # A valuation-looking subtree cannot authorize a formula when its
+        # contribution is provably dead or the surrounding algebra is constant.
+        if static_numeric_value(node) is not None:
+            return False
+        if node.get("type") == "field" and isinstance(node.get("name"), str):
+            return field_role(node["name"].casefold()) == "direct"
+        if node.get("type") != "operator":
+            return False
+        args = node.get("args") or []
+        if node.get("operator") == "divide" and len(args) == 2:
+            left_roles = {
+                field_role(field) for field in subtree_fields(args[0])
+            }
+            right_roles = {
+                field_role(field) for field in subtree_fields(args[1])
+            }
+            left_has_fundamental = bool(
+                left_roles & {"fundamental_value", "fundamental_per_share"}
+            )
+            right_has_fundamental = bool(
+                right_roles & {"fundamental_value", "fundamental_per_share"}
+            )
+            left_has_market = bool(
+                left_roles & {"market_value", "market_per_share"}
+            )
+            right_has_market = bool(
+                right_roles & {"market_value", "market_per_share"}
+            )
+            if ratio_dimension in valuation_dimensions(node) and (
+                left_has_fundamental and right_has_market
+                or left_has_market and right_has_fundamental
+            ):
+                return True
+        return any(
+            static_numeric_value(arg) is None and contains_valuation_ratio(arg)
+            for arg in args
+        )
+
+    all_fields_are_direct_ratios = all(
+        field_role(field) == "direct"
+        for field in normalized_fields
+    )
+    return static_numeric_value(root) is None and ratio_dimension in valuation_dimensions(root) and (
+        all_fields_are_direct_ratios
+        or contains_valuation_ratio(root)
+    )
+
+
+def _valuation_projection_prose_is_safe(
+    value: str,
+    allowed_information_names: set[str],
+) -> bool:
+    text = str(value or "").strip().casefold()
+    try:
+        if len(text.encode("utf-8")) > 4_096:
+            return False
+    except UnicodeError:
+        return False
+    normalized = re.sub(r"\s+", " ", text).strip().rstrip(".")
+    match = re.fullmatch(
+        r"forward (?:return|payoff|alpha) from t\s*\+\s*"
+        r"(?P<start>0*[1-9][0-9]*) to t\s*\+\s*"
+        r"(?P<end>0*[1-9][0-9]*) (?:is|should be) "
+        r"(?P<direction>positive|negative|increasing|decreasing|monotone) "
+        r"(?:in|for) (?P<name>[a-z][a-z0-9_]*_t) under "
+        r"(?:the )?(?:declared )?"
+        r"(?P<mechanism>convergence|reversal|continuation|valuation) mechanism",
+        normalized,
+    )
+    if match is None:
+        return False
+    start = int(match.group("start"))
+    end = int(match.group("end"))
+    name = match.group("name")[:-2]
+    allowed = {
+        str(item).strip().casefold()
+        for item in allowed_information_names
+        if str(item).strip()
+    }
+    return (
+        0 < start < end <= MAX_TARGET_HORIZON
+        and name in allowed
+        and not _information_name_has_future_semantics(name)
+        and not _has_future_temporal_reference(
+            re.sub(
+                r"from t\s*\+\s*[0-9]+ to t\s*\+\s*[0-9]+",
+                "",
+                normalized,
+            )
+        )
+    )
+
+
+def _parse_projection_offset(value: str) -> int | str | None:
+    text = str(value or "")
+    if text in {"k", "h", "n"}:
+        return text
+    if not text.isdigit() or len(text) > 6:
+        return None
+    try:
+        numeric = int(text)
+    except ValueError:
+        return None
+    return numeric if 0 < numeric <= MAX_TARGET_HORIZON else None
+
+
+def _single_expectation_projection_suffix_is_safe(value: str) -> bool:
+    text = (
+        str(value or "").lower().replace("→", "->").replace(r"\to", "->")
+    )
+    markers = list(re.finditer(r"(?<![a-z0-9_])e\s*\[", text))
+    if len(markers) != 1 or text[: markers[0].start()].strip():
+        return False
+    start = markers[0].end() - 1
+    depth = 0
+    end = None
+    for index in range(start, len(text)):
+        if text[index] == "[":
+            depth += 1
+        elif text[index] == "]":
+            depth -= 1
+            if depth == 0:
+                end = index
+                break
+            if depth < 0:
+                return False
+    if end is None:
+        return False
+    body = text[start + 1 : end]
+    payoff = _strip_balanced_outer_parentheses(
+        re.sub(r"\s+", "", body.split("|", 1)[0])
+    )
+    price_term = (
+        r"(?:close|open|vwap|price|p)"
+        r"(?:_\{[^{}]+\}|\.shift\(-(?:[1-9][0-9]{0,3}|h|n)\))?"
+    )
+    payoff_match = re.fullmatch(
+        rf"(?P<exit>{price_term})/(?P<entry>{price_term})-1(?:\.0+)?",
+        payoff,
+    )
+    expected_exit = (
+        _price_term_time(payoff_match.group("exit")) if payoff_match else None
+    )
+    expected_entry = (
+        _price_term_time(payoff_match.group("entry")) if payoff_match else None
+    )
+    expected_named_range: tuple[int | str, int | str] | None = None
+    named_return_detected = False
+    if payoff_match is None:
+        named_match = re.fullmatch(
+            r"(?:r|return|forward_return)_\{(?P<braced>[^{}]+)\}"
+            r"|(?:r|return|forward_return)_[a-z][a-z0-9_]*,"
+            r"(?P<plain>t\+(?:0*[1-9][0-9]*|k|h|n)"
+            r"(?:(?:->|:)t\+(?:0*[1-9][0-9]*|k|h|n))?)",
+            payoff,
+        )
+        candidate_parts = (
+            named_match.group("braced").split(",")
+            if named_match and named_match.group("braced")
+            else [named_match.group("plain")]
+            if named_match and named_match.group("plain")
+            else []
+        )
+        named_return_detected = bool(named_match)
+        for index_part in candidate_parts:
+            timing_match = re.fullmatch(
+                r"t\+(?P<start>0*[1-9][0-9]*|k|h|n)"
+                r"(?:(?:->|:)t\+(?P<end>0*[1-9][0-9]*|k|h|n))?",
+                index_part,
+            )
+            if timing_match:
+                start_text = timing_match.group("start")
+                end_text = timing_match.group("end")
+                parsed_start = _parse_projection_offset(start_text)
+                parsed_end = _parse_projection_offset(end_text) if end_text else None
+                if parsed_start is not None and parsed_end is not None:
+                    expected_named_range = (parsed_start, parsed_end)
+                break
+    suffix = text[end + 1 :]
+    if not suffix.strip():
+        return False
+    normalized_suffix = re.sub(
+        r"\bt\s*\+\s*(?P<offset>0*[1-9][0-9]*|k|h|n)\b",
+        lambda match: f" tplus{match.group('offset')} ",
+        suffix,
+    )
+    clauses = [clause.strip() for clause in normalized_suffix.split(";")]
+    if not clauses or any(not clause for clause in clauses):
+        return False
+    sign_clause = clauses[0].replace("-", " ")
+    if re.search(r"[^a-z0-9_\s,.()']", sign_clause):
+        return False
+    sign_tokens = set(re.findall(r"[a-z_][a-z0-9_]*", sign_clause))
+    sign_directions = {
+        "continuation",
+        "convergence",
+        "decreasing",
+        "higher",
+        "increasing",
+        "lower",
+        "monotone",
+        "negative",
+        "positive",
+        "reversal",
+    }
+    allowed_sign_tokens = sign_directions | {
+        "and",
+        "bottom",
+        "crowding",
+        "decile",
+        "deciles",
+        "factor",
+        "for",
+        "group",
+        "groups",
+        "high",
+        "in",
+        "long",
+        "low",
+        "measured",
+        "object",
+        "quintile",
+        "quintiles",
+        "rank",
+        "short",
+        "sign",
+        "state",
+        "than",
+        "the",
+        "top",
+        "value",
+        "values",
+    }
+    if not sign_tokens & sign_directions or not sign_tokens <= allowed_sign_tokens:
+        return False
+    signed_directions = sign_tokens & {"negative", "positive"}
+    if any(
+        pair <= sign_tokens
+        for pair in (
+            {"higher", "lower"},
+            {"increasing", "decreasing"},
+            {"continuation", "reversal"},
+        )
+    ):
+        return False
+    if len(signed_directions) > 1:
+        binding_clause = re.sub(
+            r"\((?![^()]*\b(?:positive|negative)\b)[^()]*\)",
+            "",
+            sign_clause,
+        )
+        binding_pattern = re.compile(
+            r"\b(?P<direction>positive|negative)\s+for\s+"
+            r"(?P<group>high|low)\b"
+        )
+        binding_matches = list(binding_pattern.finditer(binding_clause))
+        bindings = [
+            (match.group("direction"), match.group("group"))
+            for match in binding_matches
+        ]
+        unmatched_binding_text = binding_pattern.sub("", binding_clause)
+        if (
+            len(bindings)
+            != len(re.findall(r"\b(?:positive|negative)\b", binding_clause))
+            or {group for _, group in bindings} != {"high", "low"}
+            or any(
+                len({group for bound_direction, group in bindings if bound_direction == direction})
+                != 1
+                for direction in signed_directions
+            )
+            or re.search(r"\b(?:positive|negative|high|low)\b", unmatched_binding_text)
+        ):
+            return False
+
+    timing_seen = False
+    information_seen = False
+    for clause in clauses[1:]:
+        timing_match = re.fullmatch(
+            r"entry\s+tplus(?P<entry_offset>0*[1-9][0-9]*|k|h|n)\s+"
+            r"(?P<entry_field>close|open|vwap|price)\s*,\s*exit\s+"
+            r"tplus(?P<exit_offset>0*[1-9][0-9]*|k|h|n)\s+"
+            r"(?P<exit_field>close|open|vwap|price)\s*,?",
+            clause,
+        )
+        if timing_match:
+            if timing_seen:
+                return False
+            entry_offset_text = timing_match.group("entry_offset")
+            exit_offset_text = timing_match.group("exit_offset")
+            entry_offset = _parse_projection_offset(entry_offset_text)
+            exit_offset = _parse_projection_offset(exit_offset_text)
+            if entry_offset is None or exit_offset is None:
+                return False
+            normalized_entry_field = timing_match.group("entry_field")
+            normalized_exit_field = timing_match.group("exit_field")
+            if expected_entry is not None and expected_exit is not None:
+                expected_entry_field = (
+                    "price" if expected_entry[0] == "p" else expected_entry[0]
+                )
+                expected_exit_field = (
+                    "price" if expected_exit[0] == "p" else expected_exit[0]
+                )
+                if (
+                    (normalized_entry_field, entry_offset)
+                    != (expected_entry_field, expected_entry[1])
+                    or (normalized_exit_field, exit_offset)
+                    != (expected_exit_field, expected_exit[1])
+                ):
+                    return False
+            elif expected_named_range is not None:
+                if (
+                    (entry_offset, exit_offset) != expected_named_range
+                    or normalized_entry_field != normalized_exit_field
+                    or isinstance(entry_offset, int)
+                    and isinstance(exit_offset, int)
+                    and exit_offset <= entry_offset
+                ):
+                    return False
+            elif named_return_detected:
+                return False
+            elif not (
+                isinstance(entry_offset, int)
+                and isinstance(exit_offset, int)
+                and exit_offset >= entry_offset
+            ):
+                return False
+            timing_seen = True
+            continue
+        if re.fullmatch(
+            r"f_t\s+holds\s+only\s+t(?:-(?:close|open|vwap|price))?\s+"
+            r"(?:data|information)\s*[.,]?",
+            clause,
+        ):
+            if information_seen:
+                return False
+            information_seen = True
+            continue
+        return False
+    return not named_return_detected or timing_seen
+
+
+def _normalize_current_observation_indices(
+    value: str,
+    observable_names: set[str],
+    *,
+    required_index_signatures: dict[str, tuple[str, ...]] | None = None,
+) -> str | None:
+    text = str(value or "").lower().replace("−", "-")
+    if _has_future_temporal_reference(text):
+        return None
+
+    allowed_index_names = set(observable_names) | set(TRUSTED_INFORMATION_NAMES)
+    required_signatures = required_index_signatures or {}
+
+    def normalize_index_part(part: str) -> str:
+        stripped = part.strip()
+        return "t" if re.fullmatch(r"t\s*[+-]\s*0", stripped) else stripped
+
+    def replace_indexed(match: re.Match[str]) -> str:
+        name = match.group("name")
+        index_parts = [
+            normalize_index_part(item) for item in match.group("index").split(",")
+        ]
+        time_parts = [item for item in index_parts if item == "t"]
+        identities = [item for item in index_parts if item not in time_parts]
+        if (
+            len(time_parts) != 1
+            or name not in allowed_index_names
+            and not re.fullmatch(r"[a-z]", name)
+            or any(
+                re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", item) is None
+                or _information_name_has_future_semantics(item)
+                for item in identities
+            )
+            or (
+                name in required_signatures
+                and tuple(index_parts) != required_signatures[name]
+            )
+            or (
+                name in observable_names
+                and name not in required_signatures
+                and tuple(index_parts) not in {("t",), ("i", "t")}
+            )
+        ):
+            return "__invalid_index__"
+        return name
+
+    text = re.sub(
+        r"(?P<name>[a-z][a-z0-9_]*?)_\{(?P<index>[^{}]+)\}",
+        replace_indexed,
+        text,
+    )
+    for name in sorted(observable_names, key=len, reverse=True):
+        plain_reference = re.search(
+            rf"(?<![a-z0-9_]){re.escape(name)}_t\b",
+            text,
+        )
+        if (
+            plain_reference is not None
+            and name in required_signatures
+            and required_signatures[name] != ("t",)
+        ):
+            return None
+        text = re.sub(
+            rf"(?<![a-z0-9_]){re.escape(name)}_t\b",
+            name,
+            text,
+        )
+    if "__invalid_index__" in text or "{" in text or "}" in text:
+        return None
+    return text
+
+
+def _formula_source_is_fully_represented(value: str) -> bool:
+    try:
+        encoded_length = len(value.encode("utf-8"))
+    except UnicodeError:
+        return False
+    if "#" in value or encoded_length > 8_192:
+        return False
+    try:
+        tree = ast.parse(value, mode="eval")
+    except (
+        MemoryError,
+        OverflowError,
+        RecursionError,
+        SyntaxError,
+        UnicodeError,
+        ValueError,
+    ):
+        return False
+    ignored_keyword_names = {"with_one_col", "fill_predict", "dummies"}
+    return not any(
+        keyword.arg.casefold() in ignored_keyword_names
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        for keyword in node.keywords
+        if keyword.arg is not None
+    )
+
+
+def _observation_mapping_formula_contract(
+    value: str,
+    observable_names: set[str],
+    mathematical_object: str,
+) -> tuple[tuple[tuple[Any, ...], ...], frozenset[str]] | None:
+    if _contains_future_payoff_object(value):
+        return None
+    normalized = _normalize_current_observation_indices(value, observable_names)
+    if normalized is None:
+        return None
+    identities: list[tuple[Any, ...]] = []
+    observed_fields: set[str] = set()
+    for clause in re.split(r"[;\n]+", normalized):
+        clause = clause.strip()
+        if not clause:
+            continue
+        verb_matches = list(
+            re.finditer(
+                r"\b(?:estimates?|maps?|standardizes?|normalizes?|scales?|"
+                r"transforms?|flips?|measures?|proxies?|captures?|"
+                r"represents?)\b",
+                clause,
+            )
+        )
+        parsed_clause: tuple[str, str, dict[str, Any]] | None = None
+        for verb_match in reversed(verb_matches):
+            prefix = clause[: verb_match.start()].strip()
+            description = clause[verb_match.end() :].strip()
+            if (
+                not prefix
+                or not description
+                or not _formula_source_is_fully_represented(prefix)
+            ):
+                continue
+            parsed = parse_formula(prefix)
+            if parsed.get("parse_status") == "success":
+                parsed_clause = prefix, description, parsed
+                break
+        if parsed_clause is None:
+            return None
+        _, description, parsed = parsed_clause
+        if (
+            _contains_future_payoff_object(description)
+            or any(
+                _information_name_has_future_semantics(term)
+                for term in re.findall(r"[a-z_][a-z0-9_]*", description)
+            )
+            or re.search(
+                r"\b(?:input|inputs|dependency|dependencies|depends?|using|"
+                r"supplies?|conditioned|conditioning|based\s+on|derived\s+from|"
+                r"reads?|with|via|through|from|conditional|incorporates?|"
+                r"incorporated|incorporating|requires?|relies\s+on|"
+                r"relying\s+on|uses?|maps?)\b",
+                description,
+            )
+            or not _plain_semantic_label(description, mathematical_object)
+        ):
+            return None
+        required_fields = {
+            str(field).strip().casefold()
+            for field in parsed.get("required_fields") or []
+            if str(field).strip()
+        }
+        if (
+            not required_fields
+            or not required_fields <= observable_names
+            or any(
+                _information_name_has_future_semantics(field)
+                for field in required_fields
+            )
+        ):
+            return None
+        identity = _formula_ir_node_identity(parsed.get("root"))
+        if identity is None:
+            return None
+        identities.append(identity)
+        observed_fields.update(required_fields)
+    if not identities:
+        return None
+    return tuple(identities), frozenset(observed_fields)
+
+
+def _mathematical_object_binding_is_safe(
+    value: str,
+    _operator_names: set[str],
+) -> bool:
+    text = str(value or "").lower()
+    try:
+        if len(text.encode("utf-8")) > 4_096:
+            return False
+    except UnicodeError:
+        return False
+    if (
+        _has_future_temporal_reference(text)
+        or _annotation_has_dependency_claim(text)
+        or "\\" in text
+    ):
+        return False
+    terms = re.findall(r"[a-z][a-z0-9_]*", text)
+    return not (
+        any(_information_name_has_future_semantics(term) for term in terms)
+        or "[" in text
+        or "]" in text
+        or "(" in text
+        or ")" in text
+        or "/*" in text
+        or "*/" in text
+        or re.search(r"\b[a-z][a-z0-9_]*\s*\.\s*[a-z][a-z0-9_]*\b", text)
+    )
+
+
+def _formula_ir_node_identity(node: Any) -> tuple[Any, ...] | None:
+    if not isinstance(node, dict):
+        return None
+    node_type = node.get("type")
+    if node_type == "field" and isinstance(node.get("name"), str):
+        return ("field", node["name"].casefold())
+    if node_type == "constant" and isinstance(node.get("value"), (int, float)):
+        value = node.get("value")
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, int):
+            return ("constant", "integer", value)
+        if not math.isfinite(value):
+            return None
+        return ("constant", "float", value.hex())
+    if node_type == "operator" and isinstance(node.get("operator"), str):
+        args = node.get("args")
+        if not isinstance(args, list):
+            return None
+        identities = [_formula_ir_node_identity(arg) for arg in args]
+        if any(identity is None for identity in identities):
+            return None
+        return (
+            "operator",
+            node["operator"].casefold(),
+            tuple(identities),
+        )
+    return None
+
+
+def _formula_identity(value: str) -> tuple[Any, ...] | None:
+    parsed = parse_formula(str(value or ""))
+    if parsed.get("parse_status") != "success":
+        return None
+    return _formula_ir_node_identity(parsed.get("root"))
+
+
+def _expanded_formula_ir_node_identity(
+    node: Any,
+    state_identities: dict[str, tuple[Any, ...]],
+) -> tuple[Any, ...] | None:
+    if not isinstance(node, dict):
+        return None
+    node_type = node.get("type")
+    if node_type == "field" and isinstance(node.get("name"), str):
+        name = node["name"].casefold()
+        return state_identities.get(name, ("field", name))
+    if node_type == "constant":
+        return _formula_ir_node_identity(node)
+    if node_type == "operator" and isinstance(node.get("operator"), str):
+        args = node.get("args")
+        if not isinstance(args, list):
+            return None
+        identities = [
+            _expanded_formula_ir_node_identity(arg, state_identities)
+            for arg in args
+        ]
+        if any(identity is None for identity in identities):
+            return None
+        return (
+            "operator",
+            node["operator"].casefold(),
+            tuple(identities),
+        )
+    return None
+
+
+def _current_state_formula_identities(
+    memo: dict[str, Any],
+    observable_names: set[str],
+    operator_names: set[str],
+) -> dict[tuple[str, tuple[str, ...]], tuple[Any, ...]] | None:
+    math_payload = (
+        memo.get("math_hypothesis")
+        if isinstance(memo.get("math_hypothesis"), dict)
+        else {}
+    )
+    equation = str(
+        math_payload.get("mechanism_equation_or_functional")
+        or math_payload.get("process_or_distribution")
+        or ""
+    ).casefold()
+    equation = equation.replace("−", "-").replace("→", "->")
+    assignment = re.compile(
+        r"(?P<name>[a-z][a-z0-9_]*)_"
+        r"(?:\{(?P<braced_index>[^{}]+)\}|(?P<plain_index>t))"
+        r"\s*=\s*(?P<rhs>.+)"
+    )
+    state_identities: dict[str, tuple[Any, ...]] = {}
+    state_signatures: dict[str, tuple[str, ...]] = {}
+    state_bindings: dict[tuple[str, tuple[str, ...]], tuple[Any, ...]] = {}
+    structural_operators = {
+        "divide",
+        "minus",
+        "multiply",
+        "negate",
+        "plus",
+        "signedpower",
+    }
+    allowed_operators = {
+        str(operator).strip().casefold()
+        for operator in operator_names
+        if str(operator).strip()
+    }
+    clauses = [
+        clause.strip()
+        for clause in re.split(r"[;\n]+", equation)
+        if clause.strip()
+    ]
+    for clause in clauses:
+        match = assignment.fullmatch(clause)
+        if match is None:
+            return None
+        name = match.group("name")
+        index_parts = [
+            (
+                "t"
+                if re.fullmatch(r"t\s*[+-]\s*0", part.strip())
+                else part.strip()
+            )
+            for part in (
+                match.group("braced_index")
+                or match.group("plain_index")
+                or ""
+            ).split(",")
+        ]
+        if (
+            name in state_identities
+            or name in observable_names
+            or _information_name_has_future_semantics(name)
+            or index_parts.count("t") != 1
+            or any(
+                re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", item) is None
+                or item != "t" and _information_name_has_future_semantics(item)
+                for item in index_parts
+            )
+        ):
+            return None
+        rhs = match.group("rhs").strip()
+        dependencies = set(observable_names) | set(state_identities)
+        normalized = _normalize_current_observation_indices(
+            rhs,
+            dependencies,
+            required_index_signatures=state_signatures,
+        )
+        if (
+            not normalized
+            or not _formula_source_is_fully_represented(normalized)
+        ):
+            return None
+        parsed = parse_formula(normalized)
+        if parsed.get("parse_status") != "success":
+            return None
+        required_fields = {
+            str(field).strip().casefold()
+            for field in parsed.get("required_fields") or []
+            if str(field).strip()
+        }
+        parsed_operators = {
+            str(operator).strip().casefold()
+            for operator in parsed.get("operator_set") or []
+            if str(operator).strip()
+        }
+        if (
+            not required_fields
+            or not required_fields <= dependencies
+            or any(
+                _information_name_has_future_semantics(field)
+                for field in required_fields
+            )
+            or not parsed_operators <= allowed_operators | structural_operators
+        ):
+            return None
+        identity = _expanded_formula_ir_node_identity(
+            parsed.get("root"),
+            state_identities,
+        )
+        if identity is not None:
+            state_identities[name] = identity
+            state_signatures[name] = tuple(index_parts)
+            state_bindings[(name, tuple(index_parts))] = identity
+        else:
+            return None
+    return state_bindings
+
+
+def _current_indexed_identifier_references(
+    value: str,
+) -> set[tuple[str, tuple[str, ...]]] | None:
+    text = str(value or "").casefold().replace("−", "-")
+    try:
+        if len(text.encode("utf-8")) > 8_192:
+            return None
+    except UnicodeError:
+        return None
+    if re.search(
+        r"\b[a-z][a-z0-9_]*\s*\.\s*(?:delay|lag|shift)\s*\(\s*0\s*\)",
+        text,
+    ) or re.search(
+        r"\b(?:delay|lag|shift)\s*\([^,;()]+,\s*0\s*\)",
+        text,
+    ):
+        return None
+    references: set[tuple[str, tuple[str, ...]]] = set()
+    indexed_pattern = re.compile(
+        r"(?P<name>[a-z][a-z0-9_]*?)_\{(?P<index>[^{}]+)\}",
+    )
+    for match in indexed_pattern.finditer(text):
+        name = match.group("name")
+        index_parts = [
+            (
+                "t"
+                if re.fullmatch(r"t\s*[+-]\s*0", part.strip())
+                else part.strip()
+            )
+            for part in match.group("index").split(",")
+        ]
+        if (
+            index_parts.count("t") != 1
+            or any(
+                re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", part) is None
+                or part != "t" and _information_name_has_future_semantics(part)
+                for part in index_parts
+            )
+            or _information_name_has_future_semantics(name)
+        ):
+            return None
+        references.add((name, tuple(index_parts)))
+    without_indexed = indexed_pattern.sub("", text)
+    if any(character in without_indexed for character in "{}"):
+        return None
+    if re.search(
+        r"(?<![a-z0-9_])[a-z][a-z0-9_]*_t(?:plus[a-z0-9]+|_[0-9]+|0*[1-9][0-9]*)\b",
+        without_indexed,
+    ):
+        return None
+    references.update(
+        (match.group("name"), ("t",))
+        for match in re.finditer(
+            r"(?<![a-z0-9_])(?P<name>[a-z][a-z0-9_]*)_t(?![a-z0-9_])",
+            without_indexed,
+        )
+        if not _information_name_has_future_semantics(match.group("name"))
+    )
+    return references
+
+
+def _current_indexed_identifier_names(value: str) -> set[str] | None:
+    references = _current_indexed_identifier_references(value)
+    if references is None:
+        return None
+    return {name for name, _ in references}
+
+
+def _mechanism_equation_binds_formula_root(
+    memo: dict[str, Any],
+    canonical_formula_ir: dict[str, Any],
+) -> bool:
+    if canonical_formula_ir.get("parse_status") != "success":
+        return False
+    canonical_identity = _formula_ir_node_identity(canonical_formula_ir.get("root"))
+    if canonical_identity is None:
+        return False
+    observable_names = {
+        str(field).strip().casefold()
+        for field in canonical_formula_ir.get("required_fields") or []
+        if str(field).strip()
+    }
+    operator_names = {
+        str(operator).strip().casefold()
+        for operator in canonical_formula_ir.get("operator_set") or []
+        if str(operator).strip()
+    }
+    state_identities = _current_state_formula_identities(
+        memo,
+        observable_names,
+        operator_names,
+    )
+    if not state_identities:
+        return False
+    math_payload = (
+        memo.get("math_hypothesis")
+        if isinstance(memo.get("math_hypothesis"), dict)
+        else {}
+    )
+    projection = str(math_payload.get("market_outcome_projection") or "")
+    expectation_body = _first_top_level_expectation_body(projection.casefold())
+    projection_object_text = projection
+    if expectation_body is not None and expectation_body.count("|") == 1:
+        # Payoff-side t+1/t+2 prices are deliberately future-valued. Root
+        # binding concerns only the legal conditioning/current-object side.
+        projection_object_text = expectation_body.split("|", 1)[1]
+    projected_references = _current_indexed_identifier_references(
+        projection_object_text
+    )
+    if projected_references is None:
+        return False
+    projected_references = {
+        reference for reference in projected_references if reference[0] != "f"
+    }
+    if (
+        not projected_references
+        or not projected_references <= set(state_identities)
+    ):
+        return False
+    return all(
+        state_identities[reference] == canonical_identity
+        for reference in projected_references
+    )
+
+
+def _measurement_program_observation_binds_formula_root(
+    program: dict[str, Any] | None,
+    canonical_formula_ir: dict[str, Any],
+) -> bool:
+    if (
+        not isinstance(program, dict)
+        or canonical_formula_ir.get("parse_status") != "success"
+    ):
+        return False
+    observation = program.get("observation_and_estimation")
+    if not isinstance(observation, dict):
+        return False
+    expression = str(observation.get("observation_map") or "").strip().casefold()
+    try:
+        expression.encode("utf-8")
+    except UnicodeError:
+        return False
+    assignment = re.fullmatch(
+        r"(?P<name>[a-z][a-z0-9_]*)_"
+        r"(?:\{(?P<braced_index>[^{}]+)\}|(?P<plain_index>t))"
+        r"\s*=\s*(?P<rhs>.+)",
+        expression,
+    )
+    if assignment:
+        name = assignment.group("name")
+        index_parts = [
+            (
+                "t"
+                if re.fullmatch(r"t\s*[+-]\s*0", part.strip())
+                else part.strip()
+            )
+            for part in (
+                assignment.group("braced_index")
+                or assignment.group("plain_index")
+                or ""
+            ).split(",")
+        ]
+        selected_model = _selected_measurement_program_model(program) or {}
+        selected_object_references: set[tuple[str, tuple[str, ...]]] = set()
+        for field in ("mathematical_object", "target_functional"):
+            references = _current_indexed_identifier_references(
+                str(selected_model.get(field) or "")
+            )
+            if references is None:
+                return False
+            selected_object_references.update(references)
+        selected_object_references = {
+            reference
+            for reference in selected_object_references
+            if reference[0] != "f"
+        }
+        assignment_reference = (name, tuple(index_parts))
+        estimand_references = _current_indexed_identifier_references(
+            str(observation.get("estimand") or "")
+        )
+        projection = program.get("market_outcome_projection")
+        source_references = _current_indexed_identifier_references(
+            str(
+                projection.get("source_math_object")
+                if isinstance(projection, dict)
+                else ""
+            )
+        )
+        observable_names = {
+            str(field).strip().casefold()
+            for field in canonical_formula_ir.get("required_fields") or []
+            if str(field).strip()
+        }
+        if (
+            _information_name_has_future_semantics(name)
+            or name in observable_names
+            or index_parts.count("t") != 1
+            or estimand_references is None
+            or source_references is None
+            or any(
+                re.fullmatch(r"(?:[a-z][a-z0-9_]*|[0-9]+)", part) is None
+                or part != "t" and _information_name_has_future_semantics(part)
+                for part in index_parts
+            )
+            or assignment_reference not in selected_object_references
+            or assignment_reference not in estimand_references
+            or assignment_reference not in source_references
+        ):
+            return False
+        expression = assignment.group("rhs").strip()
+    elif "=" in expression:
+        return False
+    observable_names = {
+        str(field).strip().casefold()
+        for field in canonical_formula_ir.get("required_fields") or []
+        if str(field).strip()
+    }
+    normalized = _normalize_current_observation_indices(
+        expression,
+        observable_names,
+    )
+    if (
+        not normalized
+        or not _formula_source_is_fully_represented(normalized)
+    ):
+        return False
+    parsed = parse_formula(normalized)
+    return (
+        parsed.get("parse_status") == "success"
+        and _formula_ir_node_identity(parsed.get("root"))
+        == _formula_ir_node_identity(canonical_formula_ir.get("root"))
+    )
+
+
+def _formula_subtree_identities(node: Any) -> tuple[tuple[Any, ...], ...]:
+    identity = _formula_ir_node_identity(node)
+    if identity is None or not isinstance(node, dict):
+        return ()
+    identities = [identity]
+    if node.get("type") == "operator":
+        for arg in node.get("args") or []:
+            identities.extend(_formula_subtree_identities(arg))
+    return tuple(identities)
+
+
+def _linked_component_formula_contract(
+    memo: dict[str, Any],
+    factor_spec: dict[str, Any],
+) -> tuple[
+    tuple[tuple[Any, ...], ...],
+    frozenset[str],
+    frozenset[str],
+] | None:
+    mapping = memo.get("mathematical_object_mapping")
+    components = memo.get("formula_component_map")
+    if not isinstance(mapping, dict) or not isinstance(components, list):
+        return None
+    links = mapping.get("component_links")
+    if (
+        not isinstance(links, list)
+        or not links
+        or "formula_root" not in links
+        or any(not isinstance(item, str) or not item.strip() for item in links)
+        or len(links) != len(set(links))
+    ):
+        return None
+    component_by_id: dict[str, dict[str, Any]] = {}
+    for component in components:
+        if not isinstance(component, dict):
+            return None
+        component_id = component.get("component_id")
+        if (
+            not isinstance(component_id, str)
+            or not component_id.strip()
+            or component_id in component_by_id
+        ):
+            return None
+        component_by_id[component_id] = component
+    if not set(links) <= set(component_by_id):
+        return None
+    canonical_formula = _formula_text(factor_spec)
+    if not _formula_source_is_fully_represented(canonical_formula):
+        return None
+    canonical_ir = parse_formula(canonical_formula)
+    if canonical_ir.get("parse_status") != "success":
+        return None
+    canonical_identity = _formula_ir_node_identity(canonical_ir.get("root"))
+    canonical_fields = frozenset(
+        str(field).strip().casefold()
+        for field in canonical_ir.get("required_fields") or []
+        if str(field).strip()
+    )
+    canonical_operators = frozenset(
+        str(operator).strip().casefold()
+        for operator in canonical_ir.get("operator_set") or []
+        if str(operator).strip()
+    )
+    canonical_subtrees = Counter(
+        _formula_subtree_identities(canonical_ir.get("root"))
+    )
+    if canonical_identity is None:
+        return None
+    linked_identities: list[tuple[Any, ...]] = []
+    for component_id in links:
+        component_formula = str(
+            component_by_id[component_id].get("formula_subexpression") or ""
+        )
+        if not _formula_source_is_fully_represented(component_formula):
+            return None
+        component_identity = _formula_identity(component_formula)
+        if component_identity is None or (
+            component_id == "formula_root"
+            and component_identity != canonical_identity
+        ) or (
+            component_id != "formula_root"
+            and canonical_subtrees[component_identity] == 0
+        ):
+            return None
+        linked_identities.append(component_identity)
+    if not Counter(linked_identities) <= canonical_subtrees:
+        return None
+    return tuple(linked_identities), canonical_fields, canonical_operators
+
+
+def _bound_measured_object_projection_aliases(
+    memo: dict[str, Any],
+    factor_spec: dict[str, Any],
+) -> set[str]:
+    math_payload = (
+        memo.get("math_hypothesis")
+        if isinstance(memo.get("math_hypothesis"), dict)
+        else {}
+    )
+    object_mapping = (
+        memo.get("mathematical_object_mapping")
+        if isinstance(memo.get("mathematical_object_mapping"), dict)
+        else {}
+    )
+    math_object = str(math_payload.get("mathematical_object") or "").strip()
+    math_observation = str(math_payload.get("observation_mapping") or "").strip()
+    mapped_object = str(object_mapping.get("mathematical_object") or "").strip()
+    mapped_observation = str(object_mapping.get("observation_mapping") or "").strip()
+    current_object_names = _current_object_alias_names(math_object)
+    linked_formula_contract = _linked_component_formula_contract(
+        memo,
+        factor_spec,
+    )
+    canonical_observable_names = (
+        set(linked_formula_contract[1]) if linked_formula_contract else set()
+    )
+    canonical_operator_names = (
+        set(linked_formula_contract[2]) if linked_formula_contract else set()
+    )
+    observation_contract = _observation_mapping_formula_contract(
+        math_observation,
+        canonical_observable_names,
+        math_object,
+    )
+    normalized = lambda value: re.sub(r"\s+", " ", value).strip().casefold()
+    if (
+        not math_object
+        or not math_observation
+        or linked_formula_contract is None
+        or observation_contract is None
+        or Counter(observation_contract[0])
+        != Counter(linked_formula_contract[0])
+        or current_object_names is None
+        or normalized(math_object) != normalized(mapped_object)
+        or normalized(math_observation) != normalized(mapped_observation)
+        or _contains_future_payoff_object(math_object)
+        or not _mathematical_object_binding_is_safe(
+            math_object,
+            canonical_operator_names,
+        )
+    ):
+        return set()
+
+    declared_state_names = _declared_current_state_names(
+        memo,
+        canonical_observable_names,
+        canonical_operator_names,
+        strict_formula_registry=True,
+    )
+    if not current_object_names <= (
+        declared_state_names | set(observation_contract[1])
+    ):
+        return set()
+
+    equation = str(
+        math_payload.get("mechanism_equation_or_functional")
+        or math_payload.get("process_or_distribution")
+        or ""
+    ).lower()
+    if "measured_object" in equation:
+        standard_references = re.findall(
+            r"measured_object_\{[^{}]+\}",
+            equation,
+        )
+        unsupported_references = re.sub(
+            r"measured_object_\{[^{}]+\}",
+            "",
+            equation,
+        )
+        assignments = re.findall(
+            r"measured_object_\{[^{}]+\}\s*=",
+            equation,
+        )
+        if (
+            not standard_references
+            or "measured_object" in unsupported_references
+            or len(assignments) != 1
+            or re.search(
+                r"measured_object_\{[^{}]+\}\s*(?::=|<-|\()",
+                equation,
+            )
+            or "measured_object" not in declared_state_names
+        ):
+            return set()
+    projection = str(math_payload.get("market_outcome_projection") or "")
+    expectation_body = _first_top_level_expectation_body(projection.casefold())
+    conditioning_text = projection
+    if expectation_body is not None and expectation_body.count("|") == 1:
+        conditioning_text = expectation_body.split("|", 1)[1]
+    conditioning_references = _current_indexed_identifier_references(
+        conditioning_text
+    )
+    measured_object_references = {
+        reference
+        for reference in conditioning_references or set()
+        if reference[0] == "measured_object"
+    }
+    canonical_formula = _formula_text(factor_spec)
+    canonical_ir = (
+        parse_formula(canonical_formula)
+        if _formula_source_is_fully_represented(canonical_formula)
+        else {}
+    )
+    state_bindings = _current_state_formula_identities(
+        memo,
+        canonical_observable_names,
+        canonical_operator_names,
+    )
+    canonical_identity = _formula_ir_node_identity(canonical_ir.get("root"))
+    allowed_signatures = {
+        signature
+        for (_name, signature), identity in (state_bindings or {}).items()
+        if canonical_identity is not None and identity == canonical_identity
+    }
+    if not allowed_signatures:
+        # The public Pilot notation uses i as the canonical asset identity when
+        # no named state assignment is present. Arbitrary identities must not
+        # acquire measured-object authority through name-only matching.
+        allowed_signatures = {("i", "t")}
+    if "measured_object" in projection.casefold() and (
+        not measured_object_references
+        or any(
+            signature not in allowed_signatures
+            for _name, signature in measured_object_references
+        )
+    ):
+        return set()
+    return {"measured_object"}
 
 
 def _first_top_level_expectation_body(value: str) -> str | None:
@@ -1847,6 +3679,119 @@ def _measurement_program_from_factor_spec(
     return None
 
 
+def _factor_spec_knowledge_node_ids(
+    factor_spec: dict[str, Any] | None,
+) -> set[str]:
+    factor_spec = factor_spec if isinstance(factor_spec, dict) else {}
+    canonical = (
+        factor_spec.get("canonical_spec")
+        if isinstance(factor_spec.get("canonical_spec"), dict)
+        else {}
+    )
+    research_contracts = [
+        container.get("research_contract")
+        for container in (factor_spec, canonical)
+        if isinstance(container.get("research_contract"), dict)
+    ]
+    knowledge_contracts = [
+        container.get("knowledge_reference_contract")
+        for container in (*research_contracts, factor_spec, canonical)
+        if isinstance(container.get("knowledge_reference_contract"), dict)
+    ]
+    authorized_ids: set[str] = set()
+    for contract in knowledge_contracts:
+        cited_ids = contract.get("cited_node_ids")
+        if not isinstance(cited_ids, list):
+            cited_ids = contract.get("retrieved_case_ids")
+        normalized_ids = [
+            str(item).strip()
+            for item in cited_ids or []
+            if str(item).strip()
+        ]
+        query_hash = str(contract.get("query_hash") or "")
+        if (
+            validate_knowledge_reference_contract(
+                contract,
+                retrieval_required=True,
+            )
+            or contract.get("retrieval_status") != "retrieved"
+            or re.fullmatch(r"[0-9a-f]{64}", query_hash.casefold()) is None
+            or not isinstance(contract.get("indexes_available"), list)
+            or not contract.get("indexes_available")
+            or not normalized_ids
+            or len(normalized_ids) != len(set(normalized_ids))
+            or contract.get("hit_count") != len(normalized_ids)
+            or not str(contract.get("producer") or "").strip()
+            or (
+                contract.get("summary_sha256") is not None
+                and re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(contract.get("summary_sha256") or "").casefold(),
+                )
+                is None
+            )
+        ):
+            continue
+        authorized_ids.update(normalized_ids)
+    if not authorized_ids:
+        return set()
+
+    context_node_ids: set[str] = set()
+    contexts = [
+        container.get("factor_knowledge_context")
+        for container in (*research_contracts, factor_spec, canonical)
+        if isinstance(container.get("factor_knowledge_context"), dict)
+    ]
+    for context in contexts:
+        if context.get("schema_version") != "factor_knowledge_context_v1":
+            continue
+        nodes = context.get("nodes")
+        if not isinstance(nodes, list):
+            continue
+        declared_count = context.get("node_count")
+        if declared_count is not None and declared_count != len(nodes):
+            continue
+        query = context.get("query")
+        if not isinstance(query, dict) or not isinstance(query.get("top_k"), int):
+            continue
+        context_node_ids.update(
+            str(item.get("id"))
+            for item in nodes
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        )
+    return context_node_ids & authorized_ids
+
+
+def _validated_measurement_program_from_factor_spec(
+    factor_spec: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, list[str]]:
+    factor_spec = factor_spec if isinstance(factor_spec, dict) else {}
+    canonical = (
+        factor_spec.get("canonical_spec")
+        if isinstance(factor_spec.get("canonical_spec"), dict)
+        else {}
+    )
+    raw_candidates = [
+        container.get("mechanism_conditioned_measurement_program")
+        for container in (factor_spec, canonical)
+        if "mechanism_conditioned_measurement_program" in container
+    ]
+    if any(not isinstance(candidate, dict) for candidate in raw_candidates):
+        return None, ["measurement_program.copy_type_invalid"]
+    candidates = list(raw_candidates)
+    program = candidates[0] if candidates else None
+    if program is None:
+        return None, []
+    if any(candidate != program for candidate in candidates[1:]):
+        return None, ["measurement_program.copies_mismatch"]
+    failures = validate_measurement_program(
+        program,
+        available_knowledge_node_ids=_factor_spec_knowledge_node_ids(factor_spec),
+        require_web_executable=False,
+    )
+    return (program if not failures else None), failures
+
+
 def _math_hypothesis_from_measurement_program(
     program: Any,
 ) -> dict[str, Any] | None:
@@ -2418,18 +4363,42 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_QA_MISSING")
     formula_text = str(memo.get("formula") or _formula_text(factor_spec or {}) or "").lower()
     understanding = memo.get("formula_understanding") if isinstance(memo.get("formula_understanding"), dict) else {}
-    trusted_understanding = build_formula_understanding(factor_spec or {})
     operators = _operator_set(factor_spec or {}, understanding)
-    trusted_operators = _operator_set(factor_spec or {}, trusted_understanding)
     fields = _field_set(factor_spec or {}, understanding)
-    trusted_information_fields = _field_set(factor_spec or {}, trusted_understanding)
+    canonical_formula_text = _formula_text(factor_spec or {})
+    canonical_formula_ir = (
+        parse_formula(canonical_formula_text)
+        if _formula_source_is_fully_represented(canonical_formula_text)
+        else {}
+    )
+    trusted_operators = (
+        {
+            str(operator).strip().casefold()
+            for operator in canonical_formula_ir.get("operator_set") or []
+            if str(operator).strip()
+        }
+        if canonical_formula_ir.get("parse_status") == "success"
+        else set()
+    )
+    trusted_observable_fields = (
+        {
+            str(field).strip().casefold()
+            for field in canonical_formula_ir.get("required_fields") or []
+            if str(field).strip()
+        }
+        if canonical_formula_ir.get("parse_status") == "success"
+        else set()
+    )
+    trusted_information_fields = set(trusted_observable_fields)
     trusted_information_fields.update(
         _declared_current_state_names(
             memo,
             trusted_information_fields,
             trusted_operators,
+            strict_formula_registry=True,
         )
     )
+    trusted_information_fields.discard("measured_object")
     formula_terms = formula_specific_qa_terms(
         formula_text,
         operators=operators,
@@ -2556,7 +4525,13 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         else {}
     )
     raw_selection_model_family = str(selection.get("model_family") or "").strip()
-    measurement_program = _measurement_program_from_factor_spec(factor_spec)
+    measurement_program, measurement_program_failures = (
+        _validated_measurement_program_from_factor_spec(factor_spec)
+    )
+    if measurement_program_failures:
+        failures.append(
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MEASUREMENT_PROGRAM_INVALID"
+        )
     selected_program_model = _selected_measurement_program_model(measurement_program)
     program_model_family = str(
         (selected_program_model or {}).get("model_family") or ""
@@ -2621,6 +4596,50 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     formula_tokens = {"rank", "delta", "sign", "sum", "divide", "plus", "minus", "multiply", "close", "volume"}
     if mechanism_equation and set(re.findall(r"[a-z_]+", mechanism_equation)) <= formula_tokens:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_GENERIC")
+    uses_current_math_schema = any(
+        field in math
+        for field in (
+            "mathematical_object",
+            "mechanism_equation_or_functional",
+            "market_outcome_projection",
+            "observation_mapping",
+        )
+    )
+    bound_measured_object_aliases = _bound_measured_object_projection_aliases(
+        memo,
+        factor_spec or {},
+    )
+    canonical_valuation_formula_supported = (
+        _canonical_formula_supports_valuation(
+            canonical_formula_ir,
+        )
+        and _mechanism_equation_binds_formula_root(
+            memo,
+            canonical_formula_ir,
+        )
+    )
+    canonical_valuation_root_bound = bool(bound_measured_object_aliases)
+    program_valuation_root_bound = (
+        bool(program_model_family)
+        and _measurement_program_observation_binds_formula_root(
+            measurement_program,
+            canonical_formula_ir,
+        )
+    )
+    valuation_exemption_allowed = (
+        selected_model_family == "valuation_identity"
+        and canonical_valuation_formula_supported
+        and (
+            canonical_valuation_root_bound
+            or program_valuation_root_bound
+        )
+    )
+    if (
+        uses_current_math_schema
+        and selected_model_family == "valuation_identity"
+        and not valuation_exemption_allowed
+    ):
+        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH")
     target = str(math.get("target_functional") or "").lower()
     target_is_tradeable = (
         _has_explicit_named_return_payoff(
@@ -2630,15 +4649,6 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         or _has_explicit_forward_price_payoff(
             target,
             allowed_information_names=trusted_information_fields,
-        )
-    )
-    uses_current_math_schema = any(
-        field in math
-        for field in (
-            "mathematical_object",
-            "mechanism_equation_or_functional",
-            "market_outcome_projection",
-            "observation_mapping",
         )
     )
     generic_targets = {
@@ -2656,7 +4666,7 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         and any(character in target for character in ["=", "_", "[", "("])
     )
     valuation_target = (
-        selected_model_family == "valuation_identity"
+        valuation_exemption_allowed
         and any(
             term in target
             for term in [
@@ -2679,31 +4689,80 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         or (target if target_is_tradeable else "")
         or ""
     ).lower()
+    projection_information_fields = (
+        set(trusted_information_fields)
+        if not uses_current_math_schema or valuation_exemption_allowed
+        else set()
+    )
+    projection_information_fields.update(bound_measured_object_aliases)
+    projection_has_expectation = bool(
+        re.search(r"(?<![a-z0-9_])e\s*\[", projection)
+    )
+    measured_object_is_required = (
+        uses_current_math_schema and not valuation_exemption_allowed
+    )
+    measured_object_is_present = "measured_object" in projection
+    requires_strict_projection_suffix = (
+        measured_object_is_present
+        or uses_current_math_schema and projection_has_expectation
+    )
+    structured_projection_suffix_is_safe = (
+        (not measured_object_is_required or measured_object_is_present)
+        and (
+            not requires_strict_projection_suffix
+            or projection_has_expectation
+            and _single_expectation_projection_suffix_is_safe(projection)
+        )
+    )
     projection_is_tradeable = (
-        _has_explicit_named_return_payoff(
-            projection,
-            allowed_information_names=trusted_information_fields,
-        )
-        or _has_explicit_forward_price_payoff(
-            projection,
-            allowed_information_names=trusted_information_fields,
-        )
-        or (
-            any(term in projection for term in ["return", "payoff", "alpha", "r_"])
-            and any(term in projection for term in ["t+1", "t+2", "t+h", "next horizon", "forward"])
-            and any(
-                term in projection
-                for term in [
-                    "positive",
-                    "negative",
-                    "increasing",
-                    "decreasing",
-                    "monotone",
-                    "sign",
-                    "convergence",
-                    "reversal",
-                    "continuation",
-                ]
+        (not measured_object_is_required or measured_object_is_present)
+        and (
+            structured_projection_suffix_is_safe
+            and (
+                _has_explicit_named_return_payoff(
+                    projection,
+                    allowed_information_names=projection_information_fields,
+                    include_default_information_names=not uses_current_math_schema,
+                )
+                or _has_explicit_forward_price_payoff(
+                    projection,
+                    allowed_information_names=projection_information_fields,
+                    include_default_information_names=not uses_current_math_schema,
+                )
+            )
+            or (
+                not requires_strict_projection_suffix
+                and not projection_has_expectation
+                and (
+                    not uses_current_math_schema
+                    or valuation_exemption_allowed
+                    and _valuation_projection_prose_is_safe(
+                        projection,
+                        trusted_information_fields,
+                    )
+                )
+                and any(
+                    term in projection
+                    for term in ["return", "payoff", "alpha", "r_"]
+                )
+                and any(
+                    term in projection
+                    for term in ["t+1", "t+2", "t+h", "next horizon", "forward"]
+                )
+                and any(
+                    term in projection
+                    for term in [
+                        "positive",
+                        "negative",
+                        "increasing",
+                        "decreasing",
+                        "monotone",
+                        "sign",
+                        "convergence",
+                        "reversal",
+                        "continuation",
+                    ]
+                )
             )
         )
     )

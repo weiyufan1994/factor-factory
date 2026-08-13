@@ -56,6 +56,103 @@ VALID_MESSAGE_ROLES = {"user"}
 USER_MESSAGE_CONTENT_KINDS = {"hypothesis", "report", "formula", "code", "decision"}
 INTERNAL_MESSAGE_CONTENT_KINDS = {"formula_contract"}
 VALID_MESSAGE_CONTENT_KINDS = USER_MESSAGE_CONTENT_KINDS | INTERNAL_MESSAGE_CONTENT_KINDS
+HOST_PRIVATE_PUBLIC_REDACTION = "[HOST_PRIVATE]"
+
+# ResearchJob.result is also the private continuation state for EVO V2.  It is
+# intentionally persisted verbatim, but the authenticated HTTP API must not
+# expose Host control-plane coordinates embedded in that state.  Keep this
+# deny-list close to the public model projection so a new API caller cannot
+# accidentally bypass it.
+_HOST_PRIVATE_RESULT_FIELDS = frozenset(
+    {
+        "adapter_id",
+        "admission_path",
+        "assurance_path",
+        "calendar_snapshot_path",
+        "calendar_projection_path",
+        "catalog_snapshot_path",
+        "catalog_projection_path",
+        "checkpoint_path",
+        "completion_journal_path",
+        "container_admission_path",
+        "container_name",
+        "container_state_root",
+        "cwd",
+        "denied_private_roots",
+        "execution_receipt_path",
+        "engine_root",
+        "host_installation_id",
+        "host_trust_root",
+        "incident_installation_id",
+        "incident_trust_root",
+        "installation_id",
+        "launch_journal_path",
+        "phase_receipt_path",
+        "phase_inflight_path",
+        "phase_receipt_candidate_path",
+        "private_attempt_root",
+        "private_root",
+        "qualification_receipt_path",
+        "recovery_admission_path",
+        "research_org_runtime_installation_id",
+        "research_org_runtime_private_root",
+        "research_org_runtime_trust_root",
+        "sealed_oos_carrier",
+        "sealed_oos_carrier_path",
+        "sealed_oos_private_root",
+        "state_root",
+        "trust_root",
+        "worktree",
+        "worktree_path",
+        "workspace_path",
+    }
+)
+_HOST_PRIVATE_RESULT_FIELD_SUFFIXES = (
+    "_admission_path",
+    "_assurance_path",
+    "_carrier_path",
+    "_checkpoint_path",
+    "_journal_path",
+    "_private_root",
+    "_receipt_path",
+    "_state_root",
+    "_trust_root",
+)
+_HOST_PRIVATE_REFERENCE_CONTEXT_TOKENS = (
+    "admission",
+    "assurance",
+    "carrier",
+    "checkpoint",
+    "container_termination",
+    "host_control",
+    "private_locator",
+    "receipt",
+)
+_HOST_PRIVATE_ARGV_OPTIONS = frozenset(
+    {
+        "--agent-execution-container-admission",
+        "--agent-execution-sandbox-admission",
+        "--evo-child-command-recovery-admission",
+        "--evo-child-finalizer-recovery-admission",
+        "--evo-child-research-org-assurance",
+        "--factor-workspace",
+        "--factorforge-root",
+        "--host-installation-id",
+        "--host-trust-root",
+        "--incident-installation-id",
+        "--incident-trust-root",
+        "--installation-id",
+        "--private-root",
+        "--research-org-runtime-installation-id",
+        "--research-org-runtime-private-root",
+        "--research-org-runtime-trust-root",
+        "--sealed-oos-agent-visible-root",
+        "--sealed-oos-carrier",
+        "--sealed-oos-private-root",
+        "--state-root",
+        "--trust-root",
+    }
+)
 _MESSAGE_SECRET_PATTERN = re.compile(
     r"(?is)(?:"
     r"-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|"
@@ -64,6 +161,245 @@ _MESSAGE_SECRET_PATTERN = re.compile(
     r"\b(?:api[_-]?key|secret[_-]?key|access[_-]?token|password)\s*[:=]\s*[^\s,;]{8,}"
     r")"
 )
+
+
+def _normalized_public_field_name(value: object) -> str:
+    return str(value).strip().lower().replace("-", "_")
+
+
+def _is_host_private_result_field(
+    key: object,
+    *,
+    private_reference_context: bool = False,
+) -> bool:
+    normalized = _normalized_public_field_name(key)
+    if normalized in _HOST_PRIVATE_RESULT_FIELDS:
+        return True
+    if normalized.endswith(_HOST_PRIVATE_RESULT_FIELD_SUFFIXES):
+        return True
+    return bool(
+        private_reference_context and normalized in {"path", "root"}
+    )
+
+
+def _is_host_private_reference_context(key: object) -> bool:
+    normalized = _normalized_public_field_name(key)
+    return any(
+        token in normalized for token in _HOST_PRIVATE_REFERENCE_CONTEXT_TOKENS
+    )
+
+
+def _is_argv_field(key: object) -> bool:
+    normalized = _normalized_public_field_name(key)
+    return normalized == "argv" or normalized.endswith("_argv") or normalized == "command"
+
+
+def _is_host_private_argv_option(value: str) -> bool:
+    option = value.split("=", 1)[0]
+    return option in _HOST_PRIVATE_ARGV_OPTIONS
+
+
+def _collect_scalar_strings(value: Any, output: set[str]) -> None:
+    if isinstance(value, str):
+        if value and value != HOST_PRIVATE_PUBLIC_REDACTION:
+            output.add(value)
+        return
+    if isinstance(value, dict):
+        for item in value.values():
+            _collect_scalar_strings(item, output)
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _collect_scalar_strings(item, output)
+
+
+def _collect_host_private_argv_values(value: Any, output: set[str]) -> None:
+    if not isinstance(value, (list, tuple)):
+        return
+    expect_private_value = False
+    for item in value:
+        if not isinstance(item, str):
+            expect_private_value = False
+            continue
+        if expect_private_value:
+            if item and item != HOST_PRIVATE_PUBLIC_REDACTION:
+                output.add(item)
+            expect_private_value = False
+            continue
+        if _is_host_private_argv_option(item):
+            if "=" in item:
+                private_value = item.split("=", 1)[1]
+                if private_value:
+                    output.add(private_value)
+            else:
+                expect_private_value = True
+
+
+def _collect_host_private_result_values(
+    value: Any,
+    output: set[str],
+    *,
+    private_reference_context: bool = False,
+) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            private_field = _is_host_private_result_field(
+                key,
+                private_reference_context=private_reference_context,
+            )
+            if private_field:
+                _collect_scalar_strings(item, output)
+            if _is_argv_field(key):
+                _collect_host_private_argv_values(item, output)
+            _collect_host_private_result_values(
+                item,
+                output,
+                private_reference_context=(
+                    private_reference_context
+                    or _is_host_private_reference_context(key)
+                ),
+            )
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            _collect_host_private_result_values(
+                item,
+                output,
+                private_reference_context=private_reference_context,
+            )
+
+
+def _redact_host_private_text(value: str, denied_values: tuple[str, ...]) -> str:
+    redacted = value
+    for denied in denied_values:
+        # Direct schema fields are redacted regardless of length.  Cross-field
+        # replacement ignores tiny malformed identifiers to avoid replacing
+        # ordinary one-character text throughout an otherwise public result.
+        if len(denied) >= 4:
+            redacted = redacted.replace(denied, HOST_PRIVATE_PUBLIC_REDACTION)
+    return redacted
+
+
+def _redact_host_private_field_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _redact_host_private_field_value(item)
+            for key, item in value.items()
+        }
+    if isinstance(value, list):
+        return [_redact_host_private_field_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_host_private_field_value(item) for item in value)
+    if value is None or value == "":
+        return value
+    return HOST_PRIVATE_PUBLIC_REDACTION
+
+
+def _public_argv_projection(
+    value: Any,
+    *,
+    denied_values: tuple[str, ...],
+) -> Any:
+    if not isinstance(value, (list, tuple)):
+        return _public_result_projection_value(
+            value,
+            denied_values=denied_values,
+        )
+    projected: list[Any] = []
+    expect_private_value = False
+    for item in value:
+        if not isinstance(item, str):
+            projected.append(
+                _public_result_projection_value(
+                    item,
+                    denied_values=denied_values,
+                )
+            )
+            expect_private_value = False
+            continue
+        if expect_private_value:
+            projected.append(HOST_PRIVATE_PUBLIC_REDACTION)
+            expect_private_value = False
+            continue
+        if _is_host_private_argv_option(item):
+            if "=" in item:
+                projected.append(
+                    f"{item.split('=', 1)[0]}={HOST_PRIVATE_PUBLIC_REDACTION}"
+                )
+            else:
+                projected.append(item)
+                expect_private_value = True
+            continue
+        projected.append(_redact_host_private_text(item, denied_values))
+    return tuple(projected) if isinstance(value, tuple) else projected
+
+
+def _public_result_projection_value(
+    value: Any,
+    *,
+    denied_values: tuple[str, ...],
+    private_reference_context: bool = False,
+) -> Any:
+    if isinstance(value, dict):
+        projected: dict[Any, Any] = {}
+        for key, item in value.items():
+            if _is_host_private_result_field(
+                key,
+                private_reference_context=private_reference_context,
+            ):
+                projected[key] = _redact_host_private_field_value(item)
+                continue
+            if _is_argv_field(key):
+                projected[key] = _public_argv_projection(
+                    item,
+                    denied_values=denied_values,
+                )
+                continue
+            projected[key] = _public_result_projection_value(
+                item,
+                denied_values=denied_values,
+                private_reference_context=(
+                    private_reference_context
+                    or _is_host_private_reference_context(key)
+                ),
+            )
+        return projected
+    if isinstance(value, list):
+        return [
+            _public_result_projection_value(
+                item,
+                denied_values=denied_values,
+                private_reference_context=private_reference_context,
+            )
+            for item in value
+        ]
+    if isinstance(value, tuple):
+        return tuple(
+            _public_result_projection_value(
+                item,
+                denied_values=denied_values,
+                private_reference_context=private_reference_context,
+            )
+            for item in value
+        )
+    if isinstance(value, str):
+        return _redact_host_private_text(value, denied_values)
+    return value
+
+
+def public_research_result_projection(result: dict[str, Any]) -> dict[str, Any]:
+    """Return a non-mutating public view of a private Console result payload."""
+
+    denied: set[str] = set()
+    _collect_host_private_result_values(result, denied)
+    denied_values = tuple(sorted(denied, key=len, reverse=True))
+    projected = _public_result_projection_value(
+        result,
+        denied_values=denied_values,
+    )
+    if not isinstance(projected, dict):  # defensive; ResearchJob enforces dict
+        return {}
+    return projected
 
 
 def _require_verdict(verdict: str) -> str:
@@ -272,6 +608,9 @@ class ResearchJob:
             payload.pop("worktree_path", None)
             payload.pop("workspace_path", None)
             payload.pop("agent_session_key", None)
+            payload["result"] = public_research_result_projection(
+                dict(payload.get("result") or {})
+            )
         return payload
 
     @classmethod

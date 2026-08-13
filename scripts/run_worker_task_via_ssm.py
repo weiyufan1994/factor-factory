@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from factor_factory.worker_execution import IN_PROGRESS_SSM_STATUSES
+from factor_factory.worker_execution import IN_PROGRESS_SSM_STATUSES, validate_worker_command_report
+from factor_factory.runtime_context import write_json_atomic
 
 
 def run_local(cmd: list[str]) -> subprocess.CompletedProcess[str]:
@@ -28,7 +29,9 @@ def build_remote_commands(task_spec: dict, remote_spec_path: str, remote_runner:
     encoded = base64.b64encode(json.dumps(task_spec, ensure_ascii=False, indent=2).encode("utf-8")).decode("ascii")
     report_arg = f" --report-path {json.dumps(remote_report_path)}" if remote_report_path else ""
     return [
-        "set -euo pipefail",
+        # AWS-RunShellScript invokes /bin/sh on Ubuntu; `pipefail` is not POSIX and
+        # makes the transport fail before the versioned worker runner is reached.
+        "set -eu",
         f"mkdir -p {json.dumps(str(Path(remote_spec_path).parent))}",
         "python3 - <<'PY'\n"
         "from pathlib import Path\n"
@@ -89,6 +92,11 @@ def main() -> int:
     parser.add_argument("--remote-spec-path", required=True)
     parser.add_argument("--remote-runner", required=True, help="Remote path to scripts/run_worker_task_spec.py or equivalent bootstrap.")
     parser.add_argument("--remote-report-path", default=None)
+    parser.add_argument(
+        "--combined-report-path",
+        default=None,
+        help="Optional local path for the worker report enriched with the authoritative SSM envelope.",
+    )
     parser.add_argument("--comment", default="worker task spec via ssm")
     parser.add_argument("--timeout-sec", type=int, default=3600)
     parser.add_argument("--poll-sec", type=int, default=10)
@@ -102,9 +110,45 @@ def main() -> int:
     if args.dry_run_local:
         print(json.dumps({"dry_run": True, "instance_id": args.instance_id, "commands": commands}, ensure_ascii=False, indent=2))
         return 0
+    if not args.combined_report_path:
+        print(
+            json.dumps(
+                {
+                    "verdict": "BLOCK",
+                    "blocker_token": "BLOCK_WORKER_REPORT_SCHEMA_INVALID",
+                    "reason": "--combined-report-path is required for authoritative SSM readback",
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        return 2
 
     command_id = send_ssm(args.instance_id, args.comment, commands, args.timeout_sec)
     payload = wait_ssm(args.instance_id, command_id, args.timeout_sec, args.poll_sec)
+    worker_report = None
+    stdout_text = payload.get("StandardOutputContent", "")
+    json_start = stdout_text.find("{")
+    if json_start >= 0:
+        try:
+            candidate = json.loads(stdout_text[json_start:])
+            if isinstance(candidate, dict) and candidate.get("schema_version") == "worker_command_report_v1":
+                worker_report = candidate
+        except json.JSONDecodeError:
+            worker_report = None
+    combined_validation = None
+    if worker_report is not None:
+        worker_report.setdefault("transport", {}).update({
+            "type": "ssm",
+            "instance_id": args.instance_id,
+            "command_id": command_id,
+            "ssm_status": payload.get("Status"),
+        })
+        combined_validation = validate_worker_command_report(worker_report)
+        if args.combined_report_path:
+            combined_path = Path(args.combined_report_path).expanduser().resolve()
+            combined_path.parent.mkdir(parents=True, exist_ok=True)
+            write_json_atomic(combined_path, worker_report)
     summary = {
         "transport": {
             "type": "ssm",
@@ -113,12 +157,22 @@ def main() -> int:
             "ssm_status": payload.get("Status"),
             "response_code": payload.get("ResponseCode"),
         },
-        "stdout": payload.get("StandardOutputContent", ""),
+        "stdout": stdout_text,
         "stderr": payload.get("StandardErrorContent", ""),
         "remote_report_path": args.remote_report_path,
+        "combined_report_path": args.combined_report_path,
+        "combined_report_validation": combined_validation,
     }
     print(json.dumps(summary, ensure_ascii=False, indent=2))
-    return 0 if payload.get("Status") == "Success" and payload.get("ResponseCode", 0) == 0 else 1
+    transport_passed = (
+        payload.get("Status") == "Success"
+        and payload.get("ResponseCode", 0) == 0
+    )
+    report_passed = (
+        isinstance(combined_validation, dict)
+        and combined_validation.get("verdict") == "ACCEPT"
+    )
+    return 0 if transport_passed and report_passed else 1
 
 
 if __name__ == "__main__":

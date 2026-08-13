@@ -3,11 +3,23 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 from typing import Any
 
 import pandas as pd
 
+from factor_factory.evo_oos import (
+    consume_oos_allocation_for_release,
+    formal_oos_incident_reasons,
+    validate_oos_release_preflight,
+    validate_oos_release_consumption,
+    validate_oos_release_consumption_structural,
+)
+from factor_factory.oos_exposure_incident import (
+    oos_exposure_private_registry_guard,
+    validate_oos_exposure_private_registry_guard,
+)
 from factor_factory.research_evidence import (
     resolve_workspace_evidence_path,
     sha256_file,
@@ -64,6 +76,7 @@ METRIC_ALLOWED_DECISION_PATHS = set().union(
         "metrics.long_end.coverage",
         "metrics.long_end.terminal_wealth",
         "metrics.long_end.minimum_wealth",
+        "metrics.control_residualization.residual_rank_ic_mean",
         "metrics.fama_macbeth.lambda_mean",
         "metrics.bucket_monotonicity.adjacent_pairs_violated",
     }
@@ -523,8 +536,90 @@ def write_oos_release_manifest(
     identities: dict[str, Any],
     threshold_path: Path,
     release_sequence: int = 30,
+    host_agent_termination_authority: dict[str, Any] | None = None,
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    _incident_guard: object | None = None,
+) -> dict[str, Any]:
+    trust_raw = (
+        str(incident_trust_root)
+        if incident_trust_root is not None
+        else os.environ.get("FACTORFORGE_OOS_HOST_EXPOSURE_TRUST_ROOT")
+        or os.environ.get("FACTORFORGE_OOS_HOST_TRUST_ROOT")
+    )
+    incident_installation_id = (
+        incident_installation_id
+        or os.environ.get("FACTORFORGE_OOS_HOST_EXPOSURE_INSTALLATION_ID")
+        or os.environ.get("FACTORFORGE_OOS_HOST_INSTALLATION_ID")
+    )
+    if not trust_raw or not incident_installation_id:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_RESEARCH_RELEASE_INCIDENT_HOST_CONTEXT_REQUIRED"
+        )
+    trust_root = Path(trust_raw).expanduser().resolve(strict=True)
+    if _incident_guard is not None:
+        validate_oos_exposure_private_registry_guard(
+            _incident_guard,
+            trust_root=trust_root,
+            installation_id=incident_installation_id,
+        )
+        return _write_oos_release_manifest_guarded(
+            path,
+            workspace_root=workspace_root,
+            spec=spec,
+            identities=identities,
+            threshold_path=threshold_path,
+            release_sequence=release_sequence,
+            host_agent_termination_authority=host_agent_termination_authority,
+            incident_trust_root=trust_root,
+            incident_installation_id=incident_installation_id,
+            _incident_guard=_incident_guard,
+        )
+    with oos_exposure_private_registry_guard(
+        trust_root,
+        installation_id=incident_installation_id,
+    ) as guard:
+        return _write_oos_release_manifest_guarded(
+            path,
+            workspace_root=workspace_root,
+            spec=spec,
+            identities=identities,
+            threshold_path=threshold_path,
+            release_sequence=release_sequence,
+            host_agent_termination_authority=host_agent_termination_authority,
+            incident_trust_root=trust_root,
+            incident_installation_id=incident_installation_id,
+            _incident_guard=guard,
+        )
+
+
+def _write_oos_release_manifest_guarded(
+    path: Path,
+    *,
+    workspace_root: Path,
+    spec: dict[str, Any],
+    identities: dict[str, Any],
+    threshold_path: Path,
+    release_sequence: int,
+    host_agent_termination_authority: dict[str, Any] | None,
+    incident_trust_root: Path,
+    incident_installation_id: str,
+    _incident_guard: object,
 ) -> dict[str, Any]:
     root = workspace_root.expanduser().resolve(strict=False)
+    validate_oos_exposure_private_registry_guard(
+        _incident_guard,
+        trust_root=incident_trust_root,
+        installation_id=incident_installation_id,
+    )
+    incident_reasons = formal_oos_incident_reasons(
+        workspace_root=root,
+        report_id=str(spec.get("report_id") or ""),
+        trust_root=incident_trust_root,
+        installation_id=incident_installation_id,
+    )
+    if incident_reasons:
+        raise ValueError(";".join(incident_reasons))
     resolved_path = path.expanduser().resolve(strict=False)
     if resolved_path != root and root not in resolved_path.parents:
         raise ValueError(
@@ -692,7 +787,37 @@ def write_oos_release_manifest(
                 "verification_scope": identities.get("verification_scope"),
             }
         )
+    if host_agent_termination_authority is not None:
+        if not isinstance(host_agent_termination_authority, dict):
+            raise ValueError(
+                "BLOCK_FACTORFORGE_RESEARCH_RELEASE_HOST_TERMINATION_AUTHORITY_INVALID"
+            )
+        payload["host_agent_termination_authority"] = dict(
+            host_agent_termination_authority
+        )
     payload["release_manifest_sha256"] = stable_hash(payload)
+    existing_identical = False
+    if resolved_path.is_file() and not resolved_path.is_symlink():
+        try:
+            existing_identical = (
+                json.loads(resolved_path.read_text(encoding="utf-8")) == payload
+            )
+        except (OSError, json.JSONDecodeError):
+            existing_identical = False
+    if (
+        spec.get("version") == METRIC_VERIFIER_SPEC_VERSION
+        and not existing_identical
+    ):
+        preflight_reasons = validate_oos_release_preflight(
+            workspace_root=root,
+            report_id=str(spec["report_id"]),
+            release_manifest_payload=payload,
+            incident_trust_root=incident_trust_root,
+            incident_installation_id=incident_installation_id,
+            _incident_guard=_incident_guard,
+        )
+        if preflight_reasons:
+            raise ValueError(";".join(preflight_reasons))
     _write_immutable_json(
         resolved_path,
         payload,
@@ -700,6 +825,15 @@ def write_oos_release_manifest(
             "BLOCK_FACTORFORGE_RESEARCH_RELEASE_OOS_MANIFEST_IMMUTABLE"
         ),
     )
+    if spec.get("version") == METRIC_VERIFIER_SPEC_VERSION:
+        consume_oos_allocation_for_release(
+            workspace_root=root,
+            report_id=str(spec["report_id"]),
+            release_manifest_path=resolved_path,
+            incident_trust_root=incident_trust_root,
+            incident_installation_id=incident_installation_id,
+            _incident_guard=_incident_guard,
+        )
     return payload
 
 
@@ -1024,6 +1158,14 @@ def validate_evaluation_release_chain(
         raise ValueError(
             "BLOCK_FACTORFORGE_RESEARCH_RELEASE_MANIFEST_HASH_MISMATCH"
         )
+    if spec.get("version") == METRIC_VERIFIER_SPEC_VERSION:
+        consumption_reasons = validate_oos_release_consumption_structural(
+            workspace_root=root,
+            report_id=str(spec.get("report_id") or ""),
+            release_manifest_path=release_path,
+        )
+        if consumption_reasons:
+            raise ValueError(";".join(consumption_reasons))
     return {
         "search_trial_ledger_ref": ledger_ref,
         "search_trial_ledger_sha256": ledger_sha256,
@@ -1043,4 +1185,78 @@ def validate_evaluation_release_chain(
         "freeze_sequence": freeze_sequence,
         "registration_sequence": registration_sequence,
         "release_sequence": release_sequence,
+        "current_formal_authority_verified": False,
     }
+
+
+def validate_evaluation_release_chain_current(
+    *,
+    workspace_root: Path,
+    spec: dict[str, Any],
+    identities: dict[str, Any],
+    threshold_path: Path,
+    threshold_payload: dict[str, Any],
+    incident_trust_root: Path,
+    incident_installation_id: str,
+    _incident_guard: object | None = None,
+) -> dict[str, Any]:
+    """Host-current replay, linearized against private incident registration."""
+
+    trust_root = incident_trust_root.expanduser().resolve(strict=True)
+    if _incident_guard is None:
+        with oos_exposure_private_registry_guard(
+            trust_root,
+            installation_id=incident_installation_id,
+        ) as guard:
+            return validate_evaluation_release_chain_current(
+                workspace_root=workspace_root,
+                spec=spec,
+                identities=identities,
+                threshold_path=threshold_path,
+                threshold_payload=threshold_payload,
+                incident_trust_root=trust_root,
+                incident_installation_id=incident_installation_id,
+                _incident_guard=guard,
+            )
+    validate_oos_exposure_private_registry_guard(
+        _incident_guard,
+        trust_root=trust_root,
+        installation_id=incident_installation_id,
+    )
+    root = workspace_root.expanduser().resolve(strict=False)
+    report_id = str(spec.get("report_id") or "")
+    reasons = formal_oos_incident_reasons(
+        workspace_root=root,
+        report_id=report_id,
+        trust_root=trust_root,
+        installation_id=incident_installation_id,
+    )
+    if reasons:
+        raise ValueError(";".join(reasons))
+    structural = validate_evaluation_release_chain(
+        workspace_root=root,
+        spec=spec,
+        identities=identities,
+        threshold_path=threshold_path,
+        threshold_payload=threshold_payload,
+    )
+    if spec.get("version") == METRIC_VERIFIER_SPEC_VERSION:
+        release_path = resolve_workspace_evidence_path(
+            root,
+            (spec.get("window_contract") or {}).get("oos_release_manifest_ref"),
+        )
+        if release_path is None:
+            raise ValueError(
+                "BLOCK_FACTORFORGE_RESEARCH_RELEASE_MANIFEST_MISSING"
+            )
+        consumption_reasons = validate_oos_release_consumption(
+            workspace_root=root,
+            report_id=report_id,
+            release_manifest_path=release_path,
+            incident_trust_root=trust_root,
+            incident_installation_id=incident_installation_id,
+            _incident_guard=_incident_guard,
+        )
+        if consumption_reasons:
+            raise ValueError(";".join(consumption_reasons))
+    return {**structural, "current_formal_authority_verified": True}

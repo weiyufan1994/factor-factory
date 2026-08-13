@@ -73,6 +73,8 @@ def _test_conversation_ledger_binding() -> dict:
 @pytest.fixture(autouse=True)
 def _stub_materialized_web_contract(monkeypatch):
     import factor_factory.console.run_service as module
+    import factor_factory.console.ultimate_reader as reader
+    from types import SimpleNamespace
 
     monkeypatch.setattr(
         module,
@@ -84,6 +86,62 @@ def _stub_materialized_web_contract(monkeypatch):
             "factor_spec_sha256": "factor-spec-hash",
         },
     )
+    monkeypatch.setattr(
+        module,
+        "read_current_ultimate_workspace",
+        lambda workspace, *, report_id, **_kwargs: SimpleNamespace(
+            summary=reader.read_ultimate_workspace(
+                workspace,
+                report_id=report_id,
+            ),
+            authority_validation={
+                "contract_version": (
+                    "factorforge_console_current_formal_authority_v1"
+                ),
+                "status": "PASS",
+                "report_id": report_id,
+                "factor_verdict": "REJECT",
+                "formal_proof_eligible": True,
+                "authority_source": "unit_test_current_authority",
+                "evidence_ref": "unit-test",
+                "evidence_sha256": "a" * 64,
+                "block_reasons": [],
+            },
+        ),
+    )
+
+    def validate_current_authority_stub(
+        _workspace,
+        *,
+        report_id,
+        expected_factor_verdict,
+        formal_proof_eligible,
+        **_kwargs,
+    ):
+        return {
+            "contract_version": (
+                "factorforge_console_current_formal_authority_v1"
+            ),
+            "status": "PASS" if formal_proof_eligible else "NOT_APPLICABLE",
+            "report_id": report_id,
+            "factor_verdict": expected_factor_verdict,
+            "formal_proof_eligible": bool(formal_proof_eligible),
+            "authority_source": (
+                "unit_test_current_authority"
+                if formal_proof_eligible
+                else None
+            ),
+            "evidence_ref": "unit-test" if formal_proof_eligible else None,
+            "evidence_sha256": "a" * 64 if formal_proof_eligible else None,
+            "block_reasons": [],
+        }
+
+    monkeypatch.setattr(
+        module,
+        "validate_current_ultimate_authority",
+        validate_current_authority_stub,
+    )
+
     def write_host_attestation_stub(self, **kwargs):
         job = kwargs["job"]
         agent_result = kwargs["agent_result"]
@@ -1866,6 +1924,7 @@ def test_routed_console_runs_specialists_around_host_director(
         return complete_runtime
 
     host_admissions = []
+    episode_registrations = []
     monkeypatch.setattr(module, "run_research_organization_runtime", fake_runtime)
     monkeypatch.setattr(
         module,
@@ -1877,6 +1936,30 @@ def test_routed_console_runs_specialists_around_host_director(
         "_admit_host_research_director_result",
         lambda **kwargs: host_admissions.append(kwargs["agent_result"].session_key)
         or {"verdict": "PASS"},
+    )
+    monkeypatch.setattr(
+        module,
+        "is_validated_evo_v2_memory_runtime_enabled",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        module,
+        "register_terminal_historical_episode_candidate",
+        lambda **kwargs: episode_registrations.append(kwargs)
+        or {
+            "candidate_id": "episode_candidate_test",
+            "candidate_sha256": "a" * 64,
+            "relative_path": "episodes/episode_candidate_test.json",
+            "file_sha256": "b" * 64,
+            "written": True,
+            "authority": "historical_episode_candidate_only",
+            "episode_layer": "historical_episode",
+            "structural_or_conditional_lesson_generated": False,
+            "next_lesson_pipeline": (
+                "materialize_learning_candidates -> real independent review -> "
+                "Host CAS promotion"
+            ),
+        },
     )
     job = service.submit(
         ResearchRequest(
@@ -1901,7 +1984,91 @@ def test_routed_console_runs_specialists_around_host_director(
     assert runtime_calls == [1, 2]
     assert adapter.host_runs == 1
     assert len(host_admissions) == 1
+    assert len(episode_registrations) == 1
+    assert episode_registrations[0]["terminal_outcome"]["factor_verdict"] == "REJECT"
+    assert episode_registrations[0]["terminal_outcome"][
+        "organization_runtime_verified"
+    ] is True
     assert completed.result["researcher_memory"]["status"] == "OUTCOME_RECORDED"
+    episode = completed.result["researcher_memory"]["evo_v2_historical_episode"]
+    assert episode["status"] == "CANDIDATE_RECORDED", episode
+    assert episode["episode_layer"] == "historical_episode"
+    assert episode["structural_or_conditional_lesson_generated"] is False
+    assert episode["authority"] == "historical_episode_candidate_only"
+
+
+def test_evo_v2_memory_gate_runs_after_materializer_and_before_ultimate(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+
+    source, store, service = _service(tmp_path, _TerminalRejectAdapter())
+    catalog = tmp_path / "catalog.json"
+    _write_json(catalog, {"datasets": []})
+    service.config = replace(service.config, data_catalogs=(catalog,))
+    job = service.submit(_request("EVO pre-result gate ordering"))
+    allocation = service.allocator.allocate(
+        factor_id=job.factor_id,
+        research_id=job.research_id,
+        report_id=job.report_id,
+        implementation_mode="operator",
+    )
+    job = store.update_job(
+        job.job_id,
+        base_commit=allocation.base_commit,
+        worktree_path=str(allocation.worktree_path),
+        workspace_path=str(allocation.workspace_path),
+    )
+    service._write_request_artifacts(job, allocation)
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout="PASS\n", stderr="")
+
+    paused_state = {
+        "stage": "AWAITING_TRANSFER_AUTHORING_AND_REVIEW",
+        "formal_execution_allowed": False,
+        "event_sha256": "a" * 64,
+        "pause": {
+            "required": True,
+            "reason": "independent review required",
+            "resume_action": "admit transfer",
+        },
+    }
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        module,
+        "is_validated_evo_v2_memory_runtime_enabled",
+        lambda **_kwargs: True,
+    )
+    memory_calls = []
+    monkeypatch.setattr(
+        module,
+        "prepare_evo_v2_memory_round",
+        lambda **kwargs: memory_calls.append(kwargs) or paused_state,
+    )
+
+    with pytest.raises(module.EvoV2MemoryGatePause) as exc_info:
+        _ORIGINAL_EXECUTE_HOST_FORMAL_PIPELINE(
+            service,
+            job,
+            worktree=allocation.worktree_path,
+            workspace=allocation.workspace_path,
+            resume=False,
+            denied_values=(),
+            host_data_env={},
+        )
+
+    assert exc_info.value.state == paused_state
+    assert len(memory_calls) == 1
+    assert len(calls) == 1
+    assert calls[0][1].endswith("materialize_factorforge_web_research.py")
+    assert all(
+        not argv[1].endswith("run_factorforge_ultimate.py") for argv in calls
+    )
+    assert source.is_dir()
 
 
 def test_memory_write_failure_preserves_official_factor_outcome(
@@ -2613,6 +2780,14 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "Do not invent a stochastic state" in prompt
     assert "math_hypothesis.process_or_distribution" not in prompt
     assert "mathematical_object_mapping.component_links" in prompt
+    assert "copy that component's exact canonical `formula_subexpression`" in prompt
+    assert "must include `formula_root`" in prompt
+    assert "Include no executable clause that is not selected" in prompt
+    assert "repeat the clause once for each component" in prompt
+    assert "Do not add comments or optional keyword arguments" in prompt
+    assert "Formula IR topology, nesting, arity, constants" in prompt
+    assert "Reuse the domain terms already declared" in prompt
+    assert "never introduce another expression" in prompt
     assert "identical JSON objects" in prompt
     assert "top-level `falsification_tests` as a JSON list with at least two" in prompt
     assert "Every list item must be one non-empty plain JSON string" in prompt
@@ -3174,6 +3349,30 @@ def test_current_program_accepts_open_mechanism_family_without_stochastic_coerci
     candidates[0]["model_family"] = "pathwise optimal-transport imbalance geometry"
     candidates[1]["model_family"] = "spectral phase-coupling alternative"
     candidates[2]["model_family"] = "observable alias null"
+    candidates[0]["mechanism_equation_or_functional"] = (
+        "transport_state_t = optimal_transport(observables_t)"
+    )
+    candidates[0]["market_outcome_projection"] = program[
+        "market_outcome_projection"
+    ]["projection_equation_or_map"]
+    candidates[0]["target_functional"] = program[
+        "observation_and_estimation"
+    ]["estimand"]
+    candidates[0]["observation_mapping"] = program[
+        "observation_and_estimation"
+    ]["observation_map"]
+    candidates[1]["mechanism_equation_or_functional"] = (
+        "phase_state_t = spectral_phase_coupling(observables_t)"
+    )
+    candidates[1]["market_outcome_projection"] = (
+        "phase state maps to a distinct signed payoff"
+    )
+    candidates[2]["mechanism_equation_or_functional"] = (
+        "alias_state_t = known_aliases_t + noise_t"
+    )
+    candidates[2]["market_outcome_projection"] = (
+        "null predicts zero incremental after-cost payoff"
+    )
     factor_spec = {
         "mechanism_conditioned_measurement_program": program,
         "canonical_spec": {
@@ -3838,6 +4037,352 @@ def test_host_formal_checkpoint_resume_does_not_call_research_agent(
     ] == "host_formal_checkpoint"
 
 
+@pytest.mark.parametrize(
+    ("progress_status", "expected_error"),
+    [
+        (
+            "WAITING_EXTERNAL_CONTROL",
+            "FACTORFORGE_CONSOLE_EVO_V2_EXTERNAL_CONTROL_REQUIRED",
+        ),
+    ],
+)
+def test_evo_v2_external_resume_stops_before_agent_and_formal_runner(
+    tmp_path,
+    monkeypatch,
+    progress_status,
+    expected_error,
+):
+    adapter = _PausedThenForgingAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("EVO V2 external control pause"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_run_report__{job.report_id}.json"
+    )
+    pause_outcome = "awaiting_evo_v2_external_approval_and_fresh_child"
+    _write_json(
+        proof_path,
+        {
+            "report_id": job.report_id,
+            "status": "PAUSED",
+            "failure": None,
+            "factor_verdict": "NOT_ISSUED",
+            "formal_proof_eligible": False,
+            "proof_semantics": (
+                "review_only_delta_awaiting_external_approval_and_fresh_child"
+            ),
+            "final_outcome": pause_outcome,
+            "evo_v2_execution_gate": {
+                "enabled": True,
+                "current_state": "TRANSFER_RECORDED",
+                "action": "AWAIT_EXTERNAL_APPROVAL_AND_CHILD",
+                "oos_release_allowed": False,
+                "oos_artifacts": [],
+            },
+        },
+    )
+    progress = {
+        "report_id": job.report_id,
+        "pause_outcome": pause_outcome,
+        "status": progress_status,
+        "start_step": None,
+        "reason": "verified_external_control_state",
+        "child_report_id": (
+            "EVO_CHILD_001" if progress_status == "CHILD_HANDOFF_READY" else None
+        ),
+    }
+
+    def trusted_external_pause(
+        _job,
+        *,
+        worktree,
+        workspace,
+        private_execution_started=False,
+    ):
+        return {
+            "start_step": "6",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+            "attestation_id": f"attestations/{job.job_id}.json",
+            "attestation_sha256": "attestation-hash",
+            "receipt_id": f"jobs/{job.job_id}/formal-execution/receipt.json",
+            "receipt_sha256": "receipt-hash",
+            "workspace_evidence_tree_root_sha256": stable_json_hash(
+                _workspace_evidence_tree(Path(workspace))
+            ),
+            "evo_v2_external_progress": progress,
+        }
+
+    formal_calls = []
+    monkeypatch.setattr(
+        service,
+        "_validate_trusted_resume_context",
+        trusted_external_pause,
+    )
+    monkeypatch.setattr(
+        service,
+        "_execute_host_formal_pipeline",
+        lambda *_args, **_kwargs: formal_calls.append("called"),
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    review = store.get_job(job.job_id)
+    assert review.execution_status == "REVIEW_REQUIRED"
+    assert review.protocol_status == "PAUSED"
+    assert review.error_code == expected_error
+    assert adapter.calls == 1
+    assert formal_calls == []
+    assert list(
+        (
+            service.config.state_root
+            / "jobs"
+            / job.job_id
+            / "host-checkpoint-runs"
+        ).glob("*.json")
+    ) == []
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "RESUMABLE"
+
+
+def test_evo_v2_authorized_child_runs_production_caller_not_parent_wrapper(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _PausedThenForgingAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("EVO V2 authorized child execution"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    proof_path = (
+        workspace
+        / "objects/runtime_context"
+        / f"ultimate_run_report__{job.report_id}.json"
+    )
+    pause_outcome = "awaiting_evo_v2_external_approval_and_fresh_child"
+    _write_json(
+        proof_path,
+        {
+            "report_id": job.report_id,
+            "status": "PAUSED",
+            "failure": None,
+            "factor_verdict": "NOT_ISSUED",
+            "formal_proof_eligible": False,
+            "proof_semantics": (
+                "review_only_delta_awaiting_external_approval_and_fresh_child"
+            ),
+            "final_outcome": pause_outcome,
+        },
+    )
+    child = f"{job.report_id}__EVO_CHILD_001"
+    progress = {
+        "report_id": job.report_id,
+        "pause_outcome": pause_outcome,
+        "status": "CHILD_HANDOFF_AUTHORIZED",
+        "start_step": None,
+        "reason": "signed_authorization_verified",
+        "child_report_id": child,
+    }
+
+    def trusted_external_pause(
+        _job, *, worktree, workspace, private_execution_started=False
+    ):
+        return {
+            "start_step": "6",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+            "attestation_id": f"attestations/{job.job_id}.json",
+            "attestation_sha256": "a" * 64,
+            "receipt_id": f"jobs/{job.job_id}/formal-execution/receipt.json",
+            "receipt_sha256": "b" * 64,
+            "workspace_evidence_tree_root_sha256": stable_json_hash(
+                _workspace_evidence_tree(Path(workspace))
+            ),
+            "evo_v2_external_progress": progress,
+        }
+
+    child_calls = []
+    monkeypatch.setattr(
+        service, "_validate_trusted_resume_context", trusted_external_pause
+    )
+    monkeypatch.setattr(
+        service,
+        "_execute_evo_v2_child_from_parent_handoff",
+        lambda *_args, **kwargs: child_calls.append(kwargs["child_report_id"])
+        or {
+            "ready": {"status": "CHILD_EXECUTION_READY"},
+            "execution": {
+                "status": "CHILD_RESUME_READY",
+                "resume_start_step": "4",
+                "execution_receipt_path": "/host/private/child-execution.json",
+                "execution_receipt_sha256": "c" * 64,
+            },
+        },
+    )
+    parent_formal_calls = []
+    monkeypatch.setattr(
+        service,
+        "_execute_host_formal_pipeline",
+        lambda *_args, **_kwargs: parent_formal_calls.append("called"),
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+    review = store.get_job(job.job_id)
+    assert child_calls == [child]
+    assert parent_formal_calls == []
+    assert review.execution_status == "REVIEW_REQUIRED"
+    assert review.current_stage == "evo_v2_child_resume_ready"
+    assert review.error_code == "FACTORFORGE_CONSOLE_EVO_V2_CHILD_EXECUTION_READY"
+    assert review.result["evo_v2_child_runtime"]["execution"][
+        "resume_start_step"
+    ] == "4"
+
+
+@pytest.mark.parametrize(
+    ("formal_verdict", "terminal_decision"),
+    [("ACCEPT", "promote_official"), ("REJECT", "reject")],
+)
+def test_evo_v2_signed_terminal_checkpoint_completes_without_any_runner(
+    tmp_path,
+    monkeypatch,
+    formal_verdict,
+    terminal_decision,
+):
+    adapter = _PausedThenForgingAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("EVO V2 signed terminal closure"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_run_report__{job.report_id}.json"
+    )
+    pause_outcome = "awaiting_evo_v2_non_revision_terminal_closure"
+    _write_json(
+        proof_path,
+        {
+            "report_id": job.report_id,
+            "status": "PAUSED",
+            "formal_proof_eligible": False,
+            "proof_semantics": pause_outcome,
+            "final_outcome": pause_outcome,
+            "failure": None,
+        },
+    )
+    closure_relative = (
+        f"objects/evo_v2/{job.report_id}/post_oos_terminal_closure.json"
+    )
+    closure_path = workspace / closure_relative
+    _write_json(
+        closure_path,
+        {
+            "report_id": job.report_id,
+            "formal_factor_verdict": formal_verdict,
+            "step6_decision": terminal_decision,
+            "authority_guard": {
+                "revision_authority": False,
+                "canonical_memory_write_allowed": False,
+            },
+        },
+    )
+    progress = {
+        "report_id": job.report_id,
+        "pause_outcome": pause_outcome,
+        "status": "TERMINAL_CHECKPOINT_READY",
+        "start_step": None,
+        "paused_lifecycle_state": "NO_QUALIFIED_CONTRADICTION",
+        "paused_lifecycle_generation": 2,
+        "paused_lifecycle_snapshot_path": (
+            f"objects/evo_v2/{job.report_id}/lifecycle_history/"
+            "lifecycle__0002.json"
+        ),
+        "paused_lifecycle_snapshot_sha256": "1" * 64,
+        "current_lifecycle_state": "NO_QUALIFIED_CONTRADICTION",
+        "current_lifecycle_generation": 2,
+        "current_lifecycle_sha256": "2" * 64,
+        "staging_event_count": 0,
+        "child_report_id": None,
+        "terminal_factor_verdict": formal_verdict,
+        "terminal_decision": terminal_decision,
+        "terminal_closure_path": closure_relative,
+        "terminal_closure_sha256": _file_sha256(closure_path),
+        "reason": "signed_non_revision_terminal_closure_verified",
+    }
+
+    def trusted_terminal_pause(
+        _job,
+        *,
+        worktree,
+        workspace,
+        private_execution_started=False,
+    ):
+        return {
+            "start_step": "6",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+            "attestation_id": f"attestations/{job.job_id}.json",
+            "attestation_sha256": "a" * 64,
+            "receipt_id": f"jobs/{job.job_id}/formal-execution/receipt.json",
+            "receipt_sha256": "b" * 64,
+            "workspace_evidence_tree_root_sha256": stable_json_hash(
+                _workspace_evidence_tree(Path(workspace))
+            ),
+            "evo_v2_external_progress": progress,
+        }
+
+    formal_calls = []
+    monkeypatch.setattr(
+        service,
+        "_validate_trusted_resume_context",
+        trusted_terminal_pause,
+    )
+    monkeypatch.setattr(
+        service,
+        "_execute_host_formal_pipeline",
+        lambda *_args, **_kwargs: formal_calls.append("called"),
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    completed = store.get_job(job.job_id)
+    assert completed.execution_status == "COMPLETED"
+    assert completed.protocol_status == "PASS"
+    assert completed.factor_verdict == formal_verdict
+    assert completed.council_status == "NOT_REQUIRED"
+    assert completed.formal_proof_eligible is True
+    assert adapter.calls == 1
+    assert formal_calls == []
+    checkpoint_ref = completed.result["evo_v2_terminal_checkpoint"]
+    checkpoint_path = service.config.state_root / checkpoint_ref["path"]
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint_ref["sha256"] == _file_sha256(checkpoint_path)
+    assert checkpoint["actor_kind"] == "host_terminal_checkpoint"
+    assert checkpoint["terminal_closure"] == {
+        "path": closure_relative,
+        "sha256": _file_sha256(closure_path),
+        "formal_factor_verdict": formal_verdict,
+        "terminal_decision": terminal_decision,
+    }
+    assert checkpoint["trusted_pause"]["sha256"] == _file_sha256(
+        proof_path
+    )
+    assert all(
+        value is False for value in checkpoint["authority"].values()
+    )
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "TERMINAL"
+
+
 def test_generic_resume_preserves_explicit_human_decision_pause(tmp_path):
     adapter = _PausedThenForgingAdapter()
     _source, store, service = _service(tmp_path, adapter)
@@ -4334,6 +4879,13 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
     )
     _write_json(evidence, {"report_id": job.report_id, "status": "PAUSED", "failure": None})
     _write_json(step4_evidence, {"report_id": job.report_id, "status": "PASS"})
+    from factor_factory.console.private_job_root import ensure_host_private_job_root
+
+    ensure_host_private_job_root(
+        service.config.state_root,
+        job.job_id,
+        create=True,
+    )
     result_path = service.config.state_root / "jobs" / job.job_id / "agent-result.json"
     _write_json(result_path, {"returncode": 0})
     summary = UltimateRunSummary(
@@ -4831,6 +5383,16 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
     assert calls[0][1]["env"]["AWS_SESSION_TOKEN"] == "host-session-token-for-test"
     assert calls[0][1]["env"]["FACTORFORGE_REPO_ROOT"] == str(worktree.resolve())
     assert calls[1][1]["env"]["FACTORFORGE_REPO_ROOT"] == str(worktree.resolve())
+    expected_incident_trust = str(
+        (service.config.state_root / "research-org-trust").resolve(strict=True)
+    )
+    for _argv, kwargs in calls:
+        assert kwargs["env"]["FACTORFORGE_OOS_HOST_TRUST_ROOT"] == (
+            expected_incident_trust
+        )
+        assert kwargs["env"]["FACTORFORGE_OOS_HOST_INSTALLATION_ID"] == (
+            service.config.installation_id
+        )
     assert "FACTORFORGE_CONSOLE_INVITE_PASSWORD" not in calls[0][1]["env"]
     assert "DEEPSEEK_API_KEY" not in calls[0][1]["env"]
     assert calls[1][1]["env"]["AWS_EC2_METADATA_DISABLED"] == "true"

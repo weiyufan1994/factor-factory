@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import sys
@@ -16,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from validate_agentic_council_result import validate_agentic_result
+from factor_factory.revision_council.production import result_evo_outcome_summary
 
 OBJ = FF / "objects"
 COLLECTION_VERSION = "factorforge_agentic_council_result_collection_v1"
@@ -32,6 +34,14 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def resolve(path: str | None) -> Path:
@@ -79,6 +89,9 @@ def main() -> int:
             "producer": payload.get("producer"),
             "agent_identifier": payload.get("agent_identifier"),
             "status": payload.get("status"),
+            "result_sha256": sha256_file(path),
+            "evo_v2_task_identity": payload.get("evo_v2_task_identity"),
+            "evo_v2_outcome": result_evo_outcome_summary(payload),
         }
         if reasons:
             entry["block_reasons"] = reasons
@@ -119,6 +132,7 @@ def main() -> int:
     collection = {
         "collection_version": COLLECTION_VERSION,
         "report_id": rid,
+        "evo_v2": manifest.get("evo_v2"),
         "status": status,
         "required_result_count": len(required_tasks),
         "present_result_count": len(valid_results) + len(invalid_results),

@@ -8,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -33,8 +34,28 @@ from factor_factory.console.web_research_plan import (
 from factor_factory.console.conversation_ledger import (
     CONVERSATION_LEDGER_REFERENCE_FIELD,
 )
-from factor_factory.console.web_factor_proof import prepare_web_factor_proof
-from factor_factory.research_conjecture import research_protocol_paths
+from factor_factory.console.web_factor_proof import (
+    prepare_web_factor_proof,
+    web_factor_proof_paths,
+)
+from factor_factory.research_conjecture import (
+    build_epistemic_evolution_lifecycle,
+    epistemic_evolution_lifecycle_snapshot_path,
+    research_protocol_paths,
+)
+from factor_factory.research_org import (
+    ResearchOrganizationError,
+    validate_research_organization_runtime,
+)
+from factor_factory.oos_exposure_incident import (
+    OOS_EXPOSURE_INSTALLATION_ID_ENV,
+    OOS_EXPOSURE_TRUST_ROOT_ENV,
+)
+
+
+BLOCK_RESEARCH_ORG_NOT_FORMAL = (
+    "BLOCK_FACTORFORGE_WEB_RESEARCH_ORG_RUNTIME_NOT_FORMAL_COMPLETE"
+)
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -103,10 +124,112 @@ def _validate_command(command: list[str], *, workspace: Path) -> dict[str, Any]:
     }
 
 
-def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
+def _materialization_runtime_gate(
+    *,
+    workspace: Path,
+    runtime_mode: str,
+    private_root: Path | None,
+    trust_root: Path | None,
+    installation_id: str | None,
+    allow_preformal_contract_smoke: bool,
+) -> dict[str, Any]:
+    organization_plan = workspace / "identity" / "research_organization_plan.json"
+    if not organization_plan.is_file() or organization_plan.is_symlink():
+        return {
+            "materialization_authority": "legacy_non_organization_workspace",
+            "formal_independence_verified": False,
+        }
+    if allow_preformal_contract_smoke:
+        temporary_root = Path(tempfile.gettempdir()).resolve(strict=True)
+        if temporary_root != workspace and temporary_root not in workspace.parents:
+            raise WebResearchPlanError(
+                BLOCK_RESEARCH_ORG_NOT_FORMAL,
+                ["preformal_contract_smoke_must_be_under_system_temp"],
+            )
+        return {
+            "materialization_authority": "contract_smoke_only",
+            "formal_independence_verified": False,
+        }
+    if runtime_mode != "formal-complete":
+        raise WebResearchPlanError(
+            BLOCK_RESEARCH_ORG_NOT_FORMAL,
+            ["research_org_runtime_mode_must_be_formal_complete"],
+        )
+    if private_root is None or trust_root is None or not installation_id:
+        raise WebResearchPlanError(
+            BLOCK_RESEARCH_ORG_NOT_FORMAL,
+            ["formal_runtime_arguments_missing"],
+        )
+    try:
+        runtime = validate_research_organization_runtime(
+            workspace=workspace,
+            require_complete=True,
+            private_root=private_root,
+            trust_root=trust_root,
+            installation_id=installation_id,
+            require_formal=True,
+        )
+    except ResearchOrganizationError as exc:
+        raise WebResearchPlanError(
+            BLOCK_RESEARCH_ORG_NOT_FORMAL,
+            [str(exc)],
+        ) from exc
+    if (
+        runtime.get("lifecycle") != "COMPLETE"
+        or runtime.get("formal_independence_verified") is not True
+    ):
+        raise WebResearchPlanError(
+            BLOCK_RESEARCH_ORG_NOT_FORMAL,
+            ["formal_independence_not_verified"],
+        )
+    return {
+        "materialization_authority": "signed_formal_runtime_complete",
+        "runtime_id": runtime["runtime_id"],
+        "runtime_assurance": runtime["runtime_assurance"],
+        "formal_independence_verified": True,
+    }
+
+
+def materialize(
+    *,
+    workspace: Path,
+    plan_path: Path,
+    runtime_mode: str = "off",
+    private_root: Path | None = None,
+    trust_root: Path | None = None,
+    installation_id: str | None = None,
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    allow_preformal_contract_smoke: bool = False,
+) -> dict[str, Any]:
     workspace = workspace.expanduser().resolve(strict=True)
     plan_path = plan_path.expanduser().resolve(strict=True)
     plan_path.relative_to(workspace)
+    incident_trust_root = incident_trust_root or (
+        Path(os.environ.get(OOS_EXPOSURE_TRUST_ROOT_ENV) or os.environ.get(
+            "FACTORFORGE_OOS_HOST_TRUST_ROOT"
+        ))
+        if (
+            os.environ.get(OOS_EXPOSURE_TRUST_ROOT_ENV)
+            or os.environ.get("FACTORFORGE_OOS_HOST_TRUST_ROOT")
+        )
+        else None
+    )
+    incident_installation_id = incident_installation_id or os.environ.get(
+        OOS_EXPOSURE_INSTALLATION_ID_ENV
+    ) or os.environ.get("FACTORFORGE_OOS_HOST_INSTALLATION_ID")
+    if not incident_trust_root or not incident_installation_id:
+        raise ValueError(
+            "BLOCK_FACTORFORGE_WEB_PREREGISTRATION_INCIDENT_HOST_CONTEXT_REQUIRED"
+        )
+    runtime_gate = _materialization_runtime_gate(
+        workspace=workspace,
+        runtime_mode=runtime_mode,
+        private_root=(private_root.expanduser().resolve(strict=True) if private_root else None),
+        trust_root=(trust_root.expanduser().resolve(strict=True) if trust_root else None),
+        installation_id=installation_id,
+        allow_preformal_contract_smoke=allow_preformal_contract_smoke,
+    )
     result_path = workspace / "identity" / "web_research_bootstrap_result.json"
     if result_path.exists() or result_path.is_symlink():
         if not result_path.is_file() or result_path.is_symlink():
@@ -116,7 +239,21 @@ def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
             )
         existing = _read_json(result_path)
         if existing.get("verdict") == "PASS":
-            validate_materialized_web_research(workspace)
+            if existing.get("research_organization_runtime") != runtime_gate:
+                raise WebResearchPlanError(
+                    "BLOCK_FACTORFORGE_WEB_RESEARCH_BOOTSTRAP_IMMUTABLE",
+                    ["existing bootstrap runtime authority mismatch"],
+                )
+            if incident_trust_root is None or not incident_installation_id:
+                raise ValueError(
+                    "BLOCK_FACTORFORGE_WEB_PREREGISTRATION_INCIDENT_HOST_CONTEXT_REQUIRED"
+                )
+            validate_materialized_web_research(
+                workspace,
+                incident_trust_root=incident_trust_root,
+                incident_installation_id=incident_installation_id,
+                current_authority=True,
+            )
             return {**existing, "idempotent_reuse": True}
     plan = _read_json(plan_path)
     _, formula_ir = validate_plan(plan, workspace=workspace)
@@ -147,6 +284,54 @@ def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
     proof_preregistration = prepare_web_factor_proof(
         workspace_root=workspace,
         plan=plan,
+        incident_trust_root=incident_trust_root,
+        incident_installation_id=incident_installation_id,
+    )
+    proof_paths = web_factor_proof_paths(workspace, report_id)
+
+    # Freeze the epistemic lifecycle only after the trial ledger, thresholds,
+    # and metric specification exist.  This first event records no empirical
+    # result and cannot qualify a contradiction.
+    evo_root = protocol_paths["evo_lifecycle"].parent
+    freeze_verifier_path = evo_root / "prediction_freeze_verifier.json"
+    freeze_window_hash = stable_json_hash(
+        {
+            "research_conjecture_sha256": sha256_file(protocol_paths["conjecture"]),
+            "search_trial_ledger_sha256": sha256_file(proof_paths["search_ledger"]),
+            "threshold_registration_sha256": sha256_file(proof_paths["threshold"]),
+            "metric_verifier_spec_sha256": sha256_file(proof_paths["spec"]),
+        }
+    )
+    freeze_verifier = {
+        "contract_version": "factorforge_evo_v2_prediction_freeze_verifier_v1",
+        "report_id": report_id,
+        "verifier_id": "factorforge_evo_v2_prediction_freeze_verifier_v1",
+        "verifier_status": "PASS",
+        "dataset_snapshot_hash": catalog_sha256,
+        "window_hash": freeze_window_hash,
+        "information_set": "PREREGISTRATION_ONLY_NO_EMPIRICAL_EVIDENCE",
+        "oos_accessed": False,
+        "plan_sha256": sha256_file(plan_path),
+        "formula_hash": str(formula_ir["formula_hash"]),
+    }
+    write_json_atomic(freeze_verifier_path, freeze_verifier)
+    freeze_ref = {
+        "path": str(freeze_verifier_path.relative_to(workspace)),
+        "sha256": sha256_file(freeze_verifier_path),
+        "dataset_snapshot_hash": catalog_sha256,
+        "window_hash": freeze_window_hash,
+        "verifier_id": "factorforge_evo_v2_prediction_freeze_verifier_v1",
+        "verifier_status": "PASS",
+    }
+    lifecycle = build_epistemic_evolution_lifecycle(
+        report_id=report_id,
+        to_state="PREDICTIONS_FROZEN",
+        evidence_refs=[freeze_ref],
+    )
+    write_json_atomic(protocol_paths["evo_lifecycle"], lifecycle)
+    write_json_atomic(
+        epistemic_evolution_lifecycle_snapshot_path(workspace, report_id, 1),
+        lifecycle,
     )
 
     validations = [
@@ -193,6 +378,7 @@ def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
         "trusted_codegen_only": True,
         "semantic_projection_only": True,
         "empirical_evidence_created": False,
+        "research_organization_runtime": runtime_gate,
         "validations": validations,
         "artifacts": {
             "alpha_idea_master": str(step1_paths["alpha_idea_master"].relative_to(workspace)),
@@ -203,6 +389,12 @@ def materialize(*, workspace: Path, plan_path: Path) -> dict[str, Any]:
             "factor_proof_preregistration": (
                 f"objects/research_protocol/"
                 f"web_factor_proof_preregistration__{report_id}.json"
+            ),
+            "evo_v2_prediction_freeze_verifier": str(
+                freeze_verifier_path.relative_to(workspace)
+            ),
+            "evo_v2_lifecycle": str(
+                protocol_paths["evo_lifecycle"].relative_to(workspace)
             ),
             "metric_verifier_spec": str(
                 proof_preregistration["metric_verifier_spec_ref"]
@@ -231,11 +423,45 @@ def main() -> int:
     )
     parser.add_argument("--workspace-root", required=True)
     parser.add_argument("--plan", required=True)
+    parser.add_argument(
+        "--research-org-runtime-mode",
+        choices=["off", "formal-complete"],
+        default="off",
+    )
+    parser.add_argument("--research-org-runtime-private-root", default=None)
+    parser.add_argument("--research-org-runtime-trust-root", default=None)
+    parser.add_argument("--research-org-runtime-installation-id", default=None)
+    parser.add_argument("--incident-trust-root", default=None)
+    parser.add_argument("--incident-installation-id", default=None)
+    parser.add_argument(
+        "--allow-preformal-contract-smoke",
+        action="store_true",
+        help="Allow contract-only materialization under the system temp directory; never formal proof.",
+    )
     args = parser.parse_args()
     try:
         result = materialize(
             workspace=Path(args.workspace_root),
             plan_path=Path(args.plan),
+            runtime_mode=args.research_org_runtime_mode,
+            private_root=(
+                Path(args.research_org_runtime_private_root)
+                if args.research_org_runtime_private_root
+                else None
+            ),
+            trust_root=(
+                Path(args.research_org_runtime_trust_root)
+                if args.research_org_runtime_trust_root
+                else None
+            ),
+            installation_id=args.research_org_runtime_installation_id,
+            incident_trust_root=(
+                Path(args.incident_trust_root)
+                if args.incident_trust_root
+                else None
+            ),
+            incident_installation_id=args.incident_installation_id,
+            allow_preformal_contract_smoke=args.allow_preformal_contract_smoke,
         )
     except (OSError, UnicodeError, json.JSONDecodeError, ValueError, WebResearchPlanError) as exc:
         token = exc.token if isinstance(exc, WebResearchPlanError) else "BLOCK_FACTORFORGE_WEB_RESEARCH_MATERIALIZATION_FAILED"

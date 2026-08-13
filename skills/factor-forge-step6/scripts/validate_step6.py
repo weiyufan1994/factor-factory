@@ -913,6 +913,8 @@ def revision_council_attachment_checks(iteration: dict, research_memo: dict, ste
                     measurement_program=packet.get(
                         'mechanism_conditioned_measurement_program'
                     ),
+                    evo_v2_required=packet.get('evo_v2') is not None,
+                    workspace_root=FF,
                 )
             )
             checks.append(check(
@@ -938,6 +940,7 @@ def revision_council_attachment_checks(iteration: dict, research_memo: dict, ste
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
+    ap.add_argument('--expected-host-trust-manifest-sha256', default=None)
     args = ap.parse_args()
     rid = args.report_id
 
@@ -967,6 +970,71 @@ if __name__ == '__main__':
         all_record = load_json(all_library_path)
         knowledge = load_json(knowledge_path)
         frm = load_json(frm_path)
+        from factor_factory.evo_child_execution import validate_evo_child_execution_gate
+
+        evo_gate_reasons = validate_evo_child_execution_gate(
+            workspace_root=FF,
+            report_id=rid,
+            factor_run_master=frm,
+            expected_host_trust_manifest_sha256=(
+                args.expected_host_trust_manifest_sha256
+            ),
+        )
+        checks.append(check(
+            'evo_child_execution_gate',
+            not evo_gate_reasons,
+            ';'.join(evo_gate_reasons) if evo_gate_reasons else None,
+        ))
+        iteration_tension = (
+            ((iteration.get('research_judgment') or {}).get('research_memo') or {})
+            .get('evo_transfer_tension_ledger')
+        )
+        knowledge_tension = (
+            (knowledge.get('research_memo') or {})
+            .get('evo_transfer_tension_ledger')
+        )
+        transfer_review_gate = knowledge.get(
+            'evo_transfer_tension_review_gate'
+        )
+        checks.append(check(
+            'evo_unreviewed_tension_not_copied_to_reusable_knowledge',
+            knowledge_tension is None,
+            'raw EVO transfer tension ledger requires a separate Host adjudication before reusable knowledge writeback',
+        ))
+        if iteration_tension is not None:
+            expected_test_ids = [
+                item.get('test_id')
+                for item in (iteration_tension.get('tests') or [])
+                if isinstance(item, dict)
+            ] if isinstance(iteration_tension, dict) else []
+            checks.append(check(
+                'evo_pending_tension_review_gate',
+                isinstance(transfer_review_gate, dict)
+                and transfer_review_gate.get('status')
+                == 'HOST_ADJUDICATION_REQUIRED_NOT_REUSABLE'
+                and transfer_review_gate.get('diagnostic_contract_sha256')
+                == iteration_tension.get('diagnostic_contract_sha256')
+                and transfer_review_gate.get('execution_result_ref')
+                == iteration_tension.get('execution_result_ref')
+                and transfer_review_gate.get('ordered_test_ids')
+                == expected_test_ids
+                and transfer_review_gate.get(
+                    'raw_tension_ledger_copied_to_knowledge'
+                ) is False
+                and transfer_review_gate.get('reusable_as_analogy') is False
+                and transfer_review_gate.get(
+                    'canonical_memory_promotion_allowed'
+                ) is False
+                and transfer_review_gate.get('factor_acceptance_affected')
+                is False,
+                'pending EVO transfer diagnostics must remain non-reusable and exact-bound to the iteration evidence',
+            ))
+        else:
+            checks.append(check(
+                'evo_pending_tension_review_gate_absent_without_diagnostic',
+                transfer_review_gate is None,
+                'EVO transfer review gate cannot appear without an iteration diagnostic ledger',
+            ))
         case = load_json(case_path)
         official_record = load_json(official_library_path) if official_library_path.exists() else None
         checks.extend(check_identity_transition('factor_run_master', frm, 'factor_case_master', case, 'factor_case_master'))

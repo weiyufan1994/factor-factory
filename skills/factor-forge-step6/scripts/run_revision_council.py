@@ -17,6 +17,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from factor_factory.revision_council.schema import COUNCIL_AGENT_ROLES, COUNCIL_PROPOSAL_VERSION, REQUIRED_GUARDS
 from factor_factory.revision_council.validator import validate_revision_council_proposal
+from factor_factory.revision_council.evo_v2 import (
+    COUNCIL_EVO_V2_CONTRACT_VERSION,
+    NO_DERIVED_LAW_CONTRACT_VERSION,
+)
+from factor_factory.revision_council.production import validate_formal_evo_packet
 
 OBJ = FF / "objects"
 TOKEN_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING_INPUT"
@@ -150,6 +155,90 @@ def base_proposal(packet: dict[str, Any], role: str) -> dict[str, Any]:
         "confidence": "low",
         "risk_notes": "Proposal is not evidence and cannot promote or modify canonical artifacts.",
         "derivation_record": {},
+    }
+
+
+def deterministic_no_derived_evo(
+    packet: dict[str, Any],
+) -> dict[str, Any]:
+    context = packet.get("evo_v2") or {}
+    contradiction_id = context.get("contradiction_id")
+    feedback_ref = context.get("canonical_feedback_ref")
+    return {
+        "contract_version": COUNCIL_EVO_V2_CONTRACT_VERSION,
+        "intake_gate": {
+            "contradiction_id": contradiction_id,
+            "source_state": "QUALIFIED_CONTRADICTION",
+            "validity_quarantine": {
+                "state": "VALIDITY_QUARANTINE",
+                "status": "CLEARED",
+                "unresolved_blockers": [],
+                "qualified_feedback_ref": feedback_ref,
+            },
+        },
+        "authority": {
+            "mode": "review_only",
+            "human_approval_required": True,
+            "human_approval_status": "PENDING_EXTERNAL_HUMAN_APPROVAL",
+            "execution_allowed": False,
+            "canonical_write_allowed": False,
+            "factor_verdict_authority": False,
+            "selection_policy": "contradiction_resolution_and_model_discrimination_only",
+            "score_based_selection_allowed": False,
+            "majority_vote_allowed": False,
+            "regime_shortcut_allowed": False,
+            "consumed_oos_reuse_allowed": False,
+            "constitutional_mutation_allowed": False,
+            "protected_surfaces": [
+                "skill",
+                "validator",
+                "permissions",
+                "thresholds",
+                "oos_policy",
+                "estimand",
+                "trial_budget",
+            ],
+        },
+        "feedback_ledger": feedback_ref,
+        "derivation_outcome": {
+            "outcome": "NO_DERIVED_LAW",
+            "mechanism_delta": None,
+            "economic_backprojection": None,
+            "no_derived_law": {
+                "contract_version": NO_DERIVED_LAW_CONTRACT_VERSION,
+                "contradiction_id": contradiction_id,
+                "attempted_derivations": [
+                    {
+                        "operator_family": "deterministic_scaffold",
+                        "assumption_or_boundary_tested": "mechanism-specific minimality",
+                        "attempted_minimal_extension": "none; deterministic scaffold cannot derive one",
+                        "baseline_recovery_test": "not established by an independent agent",
+                        "discriminating_prediction_test": "not established by an independent agent",
+                        "failure_reason": "deterministic scaffold has no authority to derive an EVO mechanism law",
+                    },
+                    {
+                        "operator_family": "economic_backprojection",
+                        "assumption_or_boundary_tested": "payer and constrained action mapping",
+                        "attempted_minimal_extension": "none; no independent economic derivation was performed",
+                        "baseline_recovery_test": "not established by an independent agent",
+                        "discriminating_prediction_test": "not established by an independent agent",
+                        "failure_reason": "deterministic scaffold has no authority to assert a payer-backed extension",
+                    },
+                ],
+                "unresolved_proof_obligations": [
+                    "obtain an independent mechanism derivation",
+                    "obtain an independent economic backprojection",
+                ],
+                "additional_evidence_required": [
+                    "real-agent public derivation under the purged-IS evidence view"
+                ],
+                "status": "NO_DERIVED_LAW_REVIEW_ONLY",
+                "factor_verdict": "NOT_ISSUED",
+                "branch_execution_allowed": False,
+                "human_approval_required": True,
+            },
+        },
+        "proposal_law_binding": None,
     }
 
 
@@ -415,15 +504,38 @@ def main() -> None:
         print(TOKEN_MISSING + ": " + str(packet_path), file=sys.stderr)
         raise SystemExit(1)
     packet = load_json(packet_path)
+    evo_required = packet.get("evo_v2") is not None
+    packet_reasons = validate_formal_evo_packet(
+        packet,
+        workspace_root=FF,
+        report_id=rid,
+    )
+    if packet_reasons:
+        print(
+            "BLOCK_COUNCIL_EVO_V2_FORMAL_PACKET_INVALID: "
+            + json.dumps(
+                {"report_id": rid, "block_reasons": packet_reasons},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     written = []
     for role in sorted(COUNCIL_AGENT_ROLES):
         proposal = role_proposal(packet, role)
+        if evo_required:
+            proposal["candidate_revision_laws"] = []
+            proposal["revision_type"] = "no_action"
+            proposal["expression_change"] = ""
+            proposal["evo_v2"] = deterministic_no_derived_evo(packet)
         proposal["derivation_record"] = build_derivation_record(packet, proposal)
         reasons = validate_revision_council_proposal(
             proposal,
             measurement_program=packet.get(
                 "mechanism_conditioned_measurement_program"
             ),
+            evo_v2_required=evo_required,
+            workspace_root=FF,
         )
         if reasons:
             proposal["proposal_status"] = "blocked"

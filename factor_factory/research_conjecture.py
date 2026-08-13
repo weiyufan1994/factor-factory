@@ -7,7 +7,7 @@ import subprocess
 import sys
 from datetime import date
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from factor_factory.research_evidence import (
     resolve_workspace_evidence_path,
@@ -26,9 +26,33 @@ from factor_factory.research_obligation_verifier import (
     validate_component_obligation_report,
     verifier_source_sha256 as component_verifier_source_sha256,
 )
+from factor_factory.evo_v2 import (
+    ARTIFACT_FILENAMES as EVO_V2_ARTIFACT_FILENAMES,
+    evo_v2_paths,
+    load_json_object as load_evo_v2_json,
+    validate_economic_backprojection as validate_evo_v2_backprojection,
+    validate_feedback_ledger as validate_evo_v2_feedback,
+    validate_materialized_evo_v2,
+    validate_mechanism_delta as validate_evo_v2_delta,
+)
+from factor_factory.research_org.runtime_trust import (
+    validate_public_trust_manifest,
+    verify_signed_receipt_with_manifest,
+)
 
 
 PROTOCOL_VERSION = "factorforge_research_conjecture_protocol_v1"
+EPISTEMIC_EVOLUTION_POLICY_VERSION = "factorforge_epistemic_evolution_policy_v2"
+EPISTEMIC_EVOLUTION_LIFECYCLE_VERSION = "factorforge_epistemic_evolution_lifecycle_v2"
+EPISTEMIC_EVOLUTION_STATES = {
+    "PREDICTIONS_FROZEN",
+    "NO_QUALIFIED_CONTRADICTION",
+    "QUALIFIED_CONTRADICTION",
+    "MINIMAL_MECHANISM_DELTA",
+    "NO_DERIVED_LAW",
+    "TRANSFER_RECORDED",
+    "COLD_START_RECORDED",
+}
 CLAIM_LEVELS = (
     "none",
     "narrative_only",
@@ -98,6 +122,466 @@ TRUSTED_OBLIGATION_VERIFIERS = {
     "measurement_validity": COMPONENT_VERIFIER_ID,
     "component_ablation": COMPONENT_VERIFIER_ID,
 }
+
+
+def validate_epistemic_evolution_policy(payload: Any) -> list[str]:
+    """Validate the opt-in EVO V2 constitutional boundary.
+
+    Historical v1 conjectures may omit this object. Once present, every field
+    is exact and fail-closed so a child branch cannot silently relax the
+    research constitution while claiming epistemic evolution.
+    """
+
+    token = "BLOCK_FACTORFORGE_EPISTEMIC_EVOLUTION_POLICY_INVALID"
+    expected = {
+        "contract_version",
+        "enabled",
+        "mode",
+        "prediction_registry_required",
+        "qualified_contradiction_required_before_revision_council",
+        "lower_layer_quarantine_required",
+        "mechanism_first_retrieval_required",
+        "market_state_role",
+        "score_based_selection_allowed",
+        "majority_vote_allowed",
+        "skill_or_validator_mutation_allowed",
+        "estimand_or_threshold_mutation_allowed",
+        "consumed_oos_reuse_allowed",
+        "fresh_sealed_oos_required_for_child",
+        "human_approval_required_for_child",
+        "initial_state",
+    }
+    if not isinstance(payload, dict) or set(payload) != expected:
+        return [token]
+    if (
+        payload.get("contract_version") != EPISTEMIC_EVOLUTION_POLICY_VERSION
+        or payload.get("enabled") is not True
+        or payload.get("mode")
+        != "constitutional_invariance_epistemic_evolution_only"
+        or payload.get("market_state_role")
+        != "falsification_axis_or_preregistered_boundary_only"
+        or payload.get("initial_state") != "PREDICTIONS_FROZEN"
+    ):
+        return [token]
+    required_true = {
+        "prediction_registry_required",
+        "qualified_contradiction_required_before_revision_council",
+        "lower_layer_quarantine_required",
+        "mechanism_first_retrieval_required",
+        "fresh_sealed_oos_required_for_child",
+        "human_approval_required_for_child",
+    }
+    required_false = {
+        "score_based_selection_allowed",
+        "majority_vote_allowed",
+        "skill_or_validator_mutation_allowed",
+        "estimand_or_threshold_mutation_allowed",
+        "consumed_oos_reuse_allowed",
+    }
+    if any(payload.get(field) is not True for field in required_true):
+        return [token]
+    if any(payload.get(field) is not False for field in required_false):
+        return [token]
+    return []
+
+
+def epistemic_evolution_enabled(conjecture: Any) -> bool:
+    return (
+        isinstance(conjecture, dict)
+        and isinstance(conjecture.get("epistemic_evolution"), dict)
+        and conjecture["epistemic_evolution"].get("enabled") is True
+    )
+
+
+def epistemic_evolution_lifecycle_path(root: Path, report_id: str) -> Path:
+    return (
+        root
+        / "objects"
+        / "evo_v2"
+        / report_id
+        / "lifecycle.json"
+    )
+
+
+def epistemic_evolution_lifecycle_snapshot_path(
+    root: Path,
+    report_id: str,
+    generation: int,
+) -> Path:
+    if type(generation) is not int or generation < 1:
+        raise ValueError("lifecycle generation must be a positive integer")
+    return (
+        epistemic_evolution_lifecycle_path(root, report_id).parent
+        / "lifecycle_history"
+        / f"lifecycle__{generation:04d}.json"
+    )
+
+
+def build_epistemic_evolution_lifecycle(
+    *,
+    report_id: str,
+    to_state: str,
+    evidence_refs: list[dict[str, Any]],
+    existing: Mapping[str, Any] | None = None,
+    actor_receipt_ref: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Build one append-only lifecycle transition.
+
+    This builder is deliberately semantic-free: callers must supply a
+    state-specific verifier report and a Host-signed actor receipt.  It cannot
+    invent a contradiction or advance a state on prose alone.
+    """
+
+    allowed = {
+        None: {"PREDICTIONS_FROZEN"},
+        "PREDICTIONS_FROZEN": {
+            "NO_QUALIFIED_CONTRADICTION",
+            "QUALIFIED_CONTRADICTION",
+        },
+        "QUALIFIED_CONTRADICTION": {
+            "MINIMAL_MECHANISM_DELTA",
+            "NO_DERIVED_LAW",
+        },
+        "MINIMAL_MECHANISM_DELTA": {
+            "TRANSFER_RECORDED",
+            "COLD_START_RECORDED",
+        },
+    }
+    current = dict(existing) if isinstance(existing, Mapping) else None
+    from_state = current.get("current_state") if current else None
+    if to_state not in allowed.get(from_state, set()):
+        raise ValueError(f"invalid epistemic evolution transition:{from_state}->{to_state}")
+    event = {
+        "sequence": len(current.get("events") or []) + 1 if current else 1,
+        "from_state": from_state,
+        "to_state": to_state,
+        "evidence_refs": [dict(item) for item in evidence_refs],
+        "actor": "Ultimate Host",
+        "actor_receipt_ref": dict(actor_receipt_ref) if actor_receipt_ref else None,
+    }
+    event["event_sha256"] = stable_obligation_hash(event)
+    payload = {
+        "contract_version": EPISTEMIC_EVOLUTION_LIFECYCLE_VERSION,
+        "report_id": report_id,
+        "current_state": to_state,
+        "events": [*((current.get("events") or []) if current else []), event],
+        "host_authority": "ULTIMATE_HOST_APPEND_ONLY_CAS",
+    }
+    payload["content_sha256"] = stable_obligation_hash(payload)
+    return payload
+
+
+def workspace_runtime_trust_manifest(
+    workspace_root: Path | None,
+    *,
+    report_id: str,
+) -> dict[str, Any] | None:
+    """Read the Host-projected public trust manifest for this report.
+
+    Private-key/ledger verification remains a formal Ultimate entry gate.  The
+    lifecycle only consumes the public projection so it can verify individual
+    Host signatures without exposing the trust root to research agents.
+    """
+
+    if workspace_root is None:
+        return None
+    root = workspace_root.expanduser().resolve(strict=False)
+    plan_path = root / "identity" / "research_organization_plan.json"
+    if not plan_path.is_file() or plan_path.is_symlink():
+        return None
+    try:
+        plan = load_json(plan_path)
+    except Exception:
+        return None
+    identity = plan.get("identity") if isinstance(plan.get("identity"), dict) else {}
+    policy = (
+        plan.get("workspace_policy")
+        if isinstance(plan.get("workspace_policy"), dict)
+        else {}
+    )
+    organization_root = policy.get("organization_root")
+    if identity.get("report_id") != report_id or not isinstance(organization_root, str):
+        return None
+    runtime_state = resolve_workspace_evidence_path(
+        root, f"{organization_root}/runtime/runtime_state.json"
+    )
+    if runtime_state is None or not runtime_state.is_file() or runtime_state.is_symlink():
+        return None
+    try:
+        state = load_json(runtime_state)
+    except Exception:
+        return None
+    unsigned_state = dict(state)
+    state_sha256 = unsigned_state.pop("state_sha256", None)
+    if state_sha256 != stable_obligation_hash(unsigned_state):
+        return None
+    state_identity = state.get("identity") if isinstance(state.get("identity"), dict) else {}
+    authority = state.get("authority") if isinstance(state.get("authority"), dict) else {}
+    manifest = authority.get("trust_manifest")
+    if (
+        state_identity.get("report_id") != report_id
+        or authority.get("signed_adapter_receipts_required") is not True
+        or validate_public_trust_manifest(manifest)
+    ):
+        return None
+    return dict(manifest)
+
+
+def _validate_lifecycle_actor_receipt(
+    reference: Any,
+    *,
+    event: Mapping[str, Any],
+    previous_lifecycle_sha256: str | None,
+    report_id: str,
+    workspace_root: Path | None,
+    trust_manifest: Mapping[str, Any] | None,
+    token: str,
+) -> list[str]:
+    fields = {"path", "sha256", "receipt_id", "trust_manifest_sha256"}
+    if not isinstance(reference, dict) or set(reference) != fields:
+        return [f"{token}:REFERENCE_INVALID"]
+    if workspace_root is None:
+        return [f"{token}:WORKSPACE_ROOT_MISSING"]
+    manifest = (
+        dict(trust_manifest)
+        if isinstance(trust_manifest, Mapping)
+        else workspace_runtime_trust_manifest(workspace_root, report_id=report_id)
+    )
+    if manifest is None or validate_public_trust_manifest(manifest):
+        return [f"{token}:TRUST_MANIFEST_INVALID"]
+    if reference.get("trust_manifest_sha256") != manifest.get("manifest_sha256"):
+        return [f"{token}:TRUST_MANIFEST_MISMATCH"]
+    path = resolve_workspace_evidence_path(workspace_root, reference.get("path"))
+    if path is None or not path.is_file() or path.is_symlink():
+        return [f"{token}:PATH_INVALID"]
+    if reference.get("sha256") != sha256_file(path):
+        return [f"{token}:SHA256_MISMATCH"]
+    try:
+        receipt = load_json(path)
+    except Exception:
+        return [f"{token}:RECEIPT_INVALID"]
+    if reference.get("receipt_id") != receipt.get("receipt_id"):
+        return [f"{token}:RECEIPT_ID_MISMATCH"]
+    signature_reasons = verify_signed_receipt_with_manifest(
+        receipt,
+        trust_manifest=manifest,
+        expected_issuer="host_admission",
+    )
+    if signature_reasons:
+        return [f"{token}:{reason}" for reason in signature_reasons]
+    expected_fields = {
+        "contract_version",
+        "issuer",
+        "receipt_id",
+        "signature",
+        "receipt_type",
+        "report_id",
+        "sequence",
+        "from_state",
+        "to_state",
+        "lifecycle_parent_sha256",
+        "evidence_refs_sha256",
+        "trust_manifest_sha256",
+        "authority_scope",
+        "oos_accessed",
+    }
+    if set(receipt) != expected_fields:
+        return [f"{token}:RECEIPT_SHAPE"]
+    if (
+        receipt.get("receipt_type") != "EVO_V2_LIFECYCLE_TRANSITION"
+        or receipt.get("report_id") != report_id
+        or receipt.get("sequence") != event.get("sequence")
+        or receipt.get("from_state") != event.get("from_state")
+        or receipt.get("to_state") != event.get("to_state")
+        or receipt.get("lifecycle_parent_sha256") != previous_lifecycle_sha256
+        or receipt.get("evidence_refs_sha256")
+        != stable_obligation_hash(event.get("evidence_refs"))
+        or receipt.get("trust_manifest_sha256") != manifest.get("manifest_sha256")
+        or receipt.get("authority_scope")
+        != "HOST_LIFECYCLE_TRANSITION_ONLY_NO_RESEARCH_SEMANTIC_AUTHORITY"
+        or receipt.get("oos_accessed") is not False
+    ):
+        return [f"{token}:RECEIPT_BINDING_MISMATCH"]
+    return []
+
+
+def validate_epistemic_evolution_lifecycle(
+    payload: Any,
+    *,
+    report_id: str,
+    workspace_root: Path | None = None,
+    trust_manifest: Mapping[str, Any] | None = None,
+    require_signed_host_receipts: bool = False,
+) -> list[str]:
+    token = "BLOCK_FACTORFORGE_EPISTEMIC_EVOLUTION_LIFECYCLE_INVALID"
+    fields = {
+        "contract_version",
+        "report_id",
+        "current_state",
+        "events",
+        "host_authority",
+        "content_sha256",
+    }
+    if not isinstance(payload, dict) or set(payload) != fields:
+        return [token]
+    if (
+        payload.get("contract_version") != EPISTEMIC_EVOLUTION_LIFECYCLE_VERSION
+        or payload.get("report_id") != report_id
+        or payload.get("host_authority") != "ULTIMATE_HOST_APPEND_ONLY_CAS"
+        or payload.get("current_state") not in EPISTEMIC_EVOLUTION_STATES
+    ):
+        return [token]
+    events = payload.get("events")
+    if not isinstance(events, list) or not events:
+        return [token]
+    event_fields = {
+        "sequence",
+        "from_state",
+        "to_state",
+        "evidence_refs",
+        "actor",
+        "actor_receipt_ref",
+        "event_sha256",
+    }
+    allowed = {
+        "PREDICTIONS_FROZEN": {
+            "NO_QUALIFIED_CONTRADICTION",
+            "QUALIFIED_CONTRADICTION",
+        },
+        "QUALIFIED_CONTRADICTION": {
+            "MINIMAL_MECHANISM_DELTA",
+            "NO_DERIVED_LAW",
+        },
+        "MINIMAL_MECHANISM_DELTA": {
+            "TRANSFER_RECORDED",
+            "COLD_START_RECORDED",
+        },
+        "NO_QUALIFIED_CONTRADICTION": set(),
+        "NO_DERIVED_LAW": set(),
+        "TRANSFER_RECORDED": set(),
+        "COLD_START_RECORDED": set(),
+    }
+    previous: str | None = None
+    prior_events: list[dict[str, Any]] = []
+    for index, event in enumerate(events):
+        if not isinstance(event, dict) or set(event) != event_fields:
+            return [token]
+        unsigned = dict(event)
+        digest = unsigned.pop("event_sha256", None)
+        if digest != stable_obligation_hash(unsigned):
+            return [token]
+        if (
+            event.get("sequence") != index + 1
+            or event.get("actor") != "Ultimate Host"
+            or not isinstance(event.get("evidence_refs"), list)
+            or not event.get("evidence_refs")
+        ):
+            return [token]
+        if event.get("actor_receipt_ref") is not None:
+            prior_payload = None
+            if prior_events:
+                prior_payload = {
+                    "contract_version": EPISTEMIC_EVOLUTION_LIFECYCLE_VERSION,
+                    "report_id": report_id,
+                    "current_state": prior_events[-1]["to_state"],
+                    "events": prior_events,
+                    "host_authority": "ULTIMATE_HOST_APPEND_ONLY_CAS",
+                }
+                prior_payload["content_sha256"] = stable_obligation_hash(prior_payload)
+            actor_reference = event.get("actor_receipt_ref")
+            projected_manifest = (
+                dict(trust_manifest)
+                if isinstance(trust_manifest, Mapping)
+                else workspace_runtime_trust_manifest(
+                    workspace_root, report_id=report_id
+                )
+            )
+            signed_shape = isinstance(actor_reference, dict) and set(
+                actor_reference
+            ) == {"path", "sha256", "receipt_id", "trust_manifest_sha256"}
+            organization_plan_present = bool(
+                workspace_root is not None
+                and (workspace_root / "identity" / "research_organization_plan.json").is_file()
+            )
+            if signed_shape or require_signed_host_receipts or organization_plan_present:
+                actor_reasons = _validate_lifecycle_actor_receipt(
+                    actor_reference,
+                    event=event,
+                    previous_lifecycle_sha256=(
+                        stable_obligation_hash(prior_payload) if prior_payload else None
+                    ),
+                    report_id=report_id,
+                    workspace_root=workspace_root,
+                    trust_manifest=projected_manifest,
+                    token=f"{token}:event:{index}:actor_receipt",
+                )
+            else:
+                # Non-organization contract-smoke fixtures retain the v1
+                # verifier-reference shape. Formal Council callers set the
+                # strict flag and can never take this compatibility branch.
+                actor_reasons = validate_evidence_reference(
+                    actor_reference,
+                    workspace_root=workspace_root,
+                    token_prefix=f"{token}:event:{index}:actor_receipt",
+                    require_verifier_pass=True,
+                )
+            if actor_reasons:
+                return actor_reasons
+        elif index > 0:
+            # Initial prediction freeze is materialized directly by the Host
+            # after immutable preregistration. Every later state transition
+            # must carry a separately verifiable Host receipt.
+            return [f"{token}:event:{index}:HOST_RECEIPT_REQUIRED"]
+        for ref_index, reference in enumerate(event.get("evidence_refs") or []):
+            ref_reasons = validate_evidence_reference(
+                reference,
+                workspace_root=workspace_root,
+                token_prefix=f"{token}:event:{index}:evidence:{ref_index}",
+                require_verifier_pass=True,
+            )
+            if ref_reasons:
+                return ref_reasons
+        from_state = event.get("from_state")
+        to_state = event.get("to_state")
+        if index == 0:
+            if from_state is not None or to_state != "PREDICTIONS_FROZEN":
+                return [token]
+        elif from_state != previous or to_state not in allowed.get(str(from_state), set()):
+            return [token]
+        previous = str(to_state)
+        prior_events.append(dict(event))
+    if payload.get("current_state") != previous:
+        return [token]
+    unsigned_payload = dict(payload)
+    content_digest = unsigned_payload.pop("content_sha256", None)
+    if content_digest != stable_obligation_hash(unsigned_payload):
+        return [token]
+    return []
+
+
+def epistemic_evolution_policy_v2() -> dict[str, Any]:
+    """Return the immutable policy projection used by new formal materializers."""
+
+    return {
+        "contract_version": EPISTEMIC_EVOLUTION_POLICY_VERSION,
+        "enabled": True,
+        "mode": "constitutional_invariance_epistemic_evolution_only",
+        "prediction_registry_required": True,
+        "qualified_contradiction_required_before_revision_council": True,
+        "lower_layer_quarantine_required": True,
+        "mechanism_first_retrieval_required": True,
+        "market_state_role": "falsification_axis_or_preregistered_boundary_only",
+        "score_based_selection_allowed": False,
+        "majority_vote_allowed": False,
+        "skill_or_validator_mutation_allowed": False,
+        "estimand_or_threshold_mutation_allowed": False,
+        "consumed_oos_reuse_allowed": False,
+        "fresh_sealed_oos_required_for_child": True,
+        "human_approval_required_for_child": True,
+        # This is constitutional/preregistration state, not mutable runtime
+        # state.  Every later transition is owned by lifecycle.json.
+        "initial_state": "PREDICTIONS_FROZEN",
+    }
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -548,6 +1032,9 @@ def validate_research_conjecture(payload: dict[str, Any]) -> list[str]:
     claim_level = payload.get("claim_level")
     if claim_level not in CLAIM_LEVELS:
         reasons.append("BLOCK_FACTORFORGE_RESEARCH_CLAIM_LEVEL_INVALID")
+    evolution_policy = payload.get("epistemic_evolution")
+    if evolution_policy is not None:
+        reasons.extend(validate_epistemic_evolution_policy(evolution_policy))
     return reasons
 
 
@@ -1252,10 +1739,98 @@ def validate_root_synthesis(
         "",
         "current_main_agent_default_approval",
         "automatic",
+        "ultimate_loop_auto_bridge",
+        "ultimate_loop_auto_multibranch_bridge",
+        "current_main_agent_orchestration_synthesis",
+        "agent",
+        "runtime",
     }:
         reasons.append("BLOCK_FACTORFORGE_ROOT_SYNTHESIS_EXPLICIT_APPROVAL_MISSING")
     if approval.get("synthesis_sha256") != sha256_file(synthesis_path):
         reasons.append("BLOCK_FACTORFORGE_ROOT_SYNTHESIS_APPROVAL_HASH_MISMATCH")
+    conjecture_path = research_protocol_paths(
+        workspace_root, str(synthesis.get("report_id") or "")
+    )["conjecture"]
+    evo_enabled = False
+    conjecture: dict[str, Any] = {}
+    if conjecture_path.is_file() and not conjecture_path.is_symlink():
+        try:
+            conjecture = load_json(conjecture_path)
+        except Exception:
+            conjecture = {}
+        evo_enabled = epistemic_evolution_enabled(conjecture)
+    if evo_enabled:
+        from factor_factory.human_approval import (
+            human_approval_trust_path,
+            validate_external_human_approval_receipt,
+        )
+
+        receipt_path = resolve_workspace_evidence_path(
+            workspace_root,
+            approval.get("external_human_approval_receipt_path"),
+        )
+        trust_path = human_approval_trust_path(workspace_root)
+        if (
+            receipt_path is None
+            or not receipt_path.is_file()
+            or receipt_path.is_symlink()
+            or not trust_path.is_file()
+            or trust_path.is_symlink()
+        ):
+            reasons.append(
+                "BLOCK_FACTORFORGE_ROOT_SYNTHESIS_EXTERNAL_HUMAN_RECEIPT_MISSING"
+            )
+        else:
+            try:
+                receipt = load_json(receipt_path)
+                trust_manifest = load_json(trust_path)
+            except Exception:
+                reasons.append(
+                    "BLOCK_FACTORFORGE_ROOT_SYNTHESIS_EXTERNAL_HUMAN_RECEIPT_INVALID"
+                )
+            else:
+                if (
+                    approval.get("external_human_approval_receipt_sha256")
+                    != sha256_file(receipt_path)
+                    or approval.get("external_human_approval_receipt_id")
+                    != receipt.get("receipt_id")
+                    or approval.get("external_human_trust_manifest_sha256")
+                    != sha256_file(trust_path)
+                ):
+                    reasons.append(
+                        "BLOCK_FACTORFORGE_ROOT_SYNTHESIS_EXTERNAL_HUMAN_BINDING_MISMATCH"
+                    )
+                run_id = approval.get("external_human_run_id")
+                if not nonempty_str(run_id) or run_id != receipt.get("run_id"):
+                    reasons.append(
+                        "BLOCK_FACTORFORGE_ROOT_SYNTHESIS_EXTERNAL_HUMAN_RUN_ID_MISMATCH"
+                    )
+                selected_law_id = str(selected.get("law_id") or "")
+                selected_law_hash = str(selected.get("law_or_formula_hash") or "")
+                child_formula_hash = str(approval.get("child_formula_hash") or "")
+                evo_paths = evo_v2_paths(
+                    workspace_root, str(synthesis.get("report_id") or "")
+                )
+                receipt_reasons = validate_external_human_approval_receipt(
+                    receipt,
+                    trust_manifest=trust_manifest,
+                    workspace_root=workspace_root,
+                    report_id=str(synthesis.get("report_id") or ""),
+                    run_id=str(run_id or ""),
+                    synthesis_path=synthesis_path,
+                    selected_law_id=selected_law_id,
+                    selected_law_hash=selected_law_hash,
+                    child_formula_hash=child_formula_hash,
+                    mechanism_delta_path=evo_paths["mechanism_delta"],
+                    economic_backprojection_path=evo_paths[
+                        "economic_backprojection"
+                    ],
+                )
+                reasons.extend(
+                    "BLOCK_FACTORFORGE_ROOT_SYNTHESIS_EXTERNAL_HUMAN_RECEIPT_INVALID:"
+                    + reason
+                    for reason in receipt_reasons
+                )
     return reasons
 
 
@@ -1562,6 +2137,7 @@ def validate_terminal_council_rejection(
 
 def research_protocol_paths(root: Path, report_id: str) -> dict[str, Path]:
     base = root / "objects" / "research_protocol"
+    evo_base = root / "objects" / "evo_v2" / report_id
     return {
         "state": base / f"research_state__{report_id}.json",
         "conjecture": base / f"research_conjecture__{report_id}.json",
@@ -1602,6 +2178,13 @@ def research_protocol_paths(root: Path, report_id: str) -> dict[str, Path]:
             / f"revision_council_summary__{report_id}.json"
         ),
         "verifier": base / f"semantic_verifier_report__{report_id}.json",
+        "evo_lifecycle": epistemic_evolution_lifecycle_path(root, report_id),
+        "evo_staging_manifest": evo_base / "staging_manifest.json",
+        "evo_no_derived_law": evo_base / "no_derived_law.json",
+        **{
+            f"evo_{name}": path
+            for name, path in evo_v2_paths(root, report_id).items()
+        },
     }
 
 
@@ -1690,6 +2273,269 @@ def validate_protocol_bundle(
             reasons.extend(factor_proof_report.get("block_reasons") or [])
     conjecture = artifacts.get("conjecture")
     if isinstance(conjecture, dict):
+        if epistemic_evolution_enabled(conjecture):
+            lifecycle_path = paths["evo_lifecycle"]
+            lifecycle: dict[str, Any] | None = None
+            if not lifecycle_path.is_file():
+                reasons.append(
+                    "BLOCK_FACTORFORGE_EPISTEMIC_EVOLUTION_LIFECYCLE_MISSING"
+                )
+                evolution_state = ""
+            else:
+                try:
+                    lifecycle = load_json(lifecycle_path)
+                except Exception as exc:
+                    reasons.append(
+                        "BLOCK_FACTORFORGE_EPISTEMIC_EVOLUTION_LIFECYCLE_INVALID:"
+                        f"{type(exc).__name__}"
+                    )
+                    evolution_state = ""
+                else:
+                    reasons.extend(
+                        validate_epistemic_evolution_lifecycle(
+                            lifecycle,
+                            report_id=report_id,
+                            workspace_root=root,
+                        )
+                    )
+                    evolution_state = str(lifecycle.get("current_state") or "")
+            if stage in {"pre_revision", "pre_promotion", "final"} and evolution_state == "PREDICTIONS_FROZEN":
+                reasons.append(
+                    "BLOCK_FACTORFORGE_EPISTEMIC_EVOLUTION_DIAGNOSIS_NOT_CLOSED"
+                )
+            qualified = evolution_state == "QUALIFIED_CONTRADICTION"
+            derived = evolution_state == "MINIMAL_MECHANISM_DELTA"
+            no_derived = evolution_state == "NO_DERIVED_LAW"
+            transfer_recorded = evolution_state in {
+                "TRANSFER_RECORDED",
+                "COLD_START_RECORDED",
+            }
+            evo_required_by_stage = {
+                "pre_council": ("feedback_ledger",) if qualified else (),
+                "pre_revision": (
+                    tuple(EVO_V2_ARTIFACT_FILENAMES)
+                    if transfer_recorded
+                    else (
+                        "feedback_ledger",
+                        "mechanism_delta",
+                        "economic_backprojection",
+                    )
+                    if derived
+                    else (("feedback_ledger",) if qualified or no_derived else ())
+                ),
+                "pre_promotion": (
+                    tuple(EVO_V2_ARTIFACT_FILENAMES)
+                    if transfer_recorded
+                    else ()
+                ),
+                "final": (
+                    tuple(EVO_V2_ARTIFACT_FILENAMES)
+                    if transfer_recorded
+                    else ()
+                ),
+            }
+            for evo_name in evo_required_by_stage[stage]:
+                evo_path = paths[f"evo_{evo_name}"]
+                if not evo_path.is_file():
+                    reasons.append(
+                        "BLOCK_FACTORFORGE_EVO_V2_STAGE_ARTIFACT_MISSING:"
+                        f"{stage}:{evo_name}"
+                    )
+            staged_evo: dict[str, dict[str, Any]] = {}
+            for evo_name in evo_required_by_stage[stage]:
+                evo_path = paths[f"evo_{evo_name}"]
+                if not evo_path.is_file():
+                    continue
+                try:
+                    staged_evo[evo_name] = load_evo_v2_json(evo_path)
+                except Exception as exc:
+                    reasons.append(
+                        "BLOCK_FACTORFORGE_EVO_V2_STAGE_ARTIFACT_INVALID:"
+                        f"{stage}:{evo_name}:{type(exc).__name__}"
+                    )
+            if "feedback_ledger" in staged_evo:
+                reasons.extend(
+                    f"BLOCK_FACTORFORGE_EVO_V2_INVALID:{reason}"
+                    for reason in validate_evo_v2_feedback(
+                        staged_evo["feedback_ledger"],
+                        workspace_root=root,
+                        verify_refs=True,
+                    )
+                )
+            if "mechanism_delta" in staged_evo:
+                reasons.extend(
+                    f"BLOCK_FACTORFORGE_EVO_V2_INVALID:{reason}"
+                    for reason in validate_evo_v2_delta(
+                        staged_evo["mechanism_delta"],
+                        feedback_ledger=staged_evo.get("feedback_ledger"),
+                        workspace_root=root,
+                        verify_refs=True,
+                    )
+                )
+            if "economic_backprojection" in staged_evo:
+                reasons.extend(
+                    f"BLOCK_FACTORFORGE_EVO_V2_INVALID:{reason}"
+                    for reason in validate_evo_v2_backprojection(
+                        staged_evo["economic_backprojection"],
+                        mechanism_delta=staged_evo.get("mechanism_delta"),
+                        workspace_root=root,
+                        verify_refs=True,
+                    )
+                )
+            if (
+                transfer_recorded
+                and stage in {"pre_revision", "pre_promotion", "final"}
+                and not any(
+                reason.startswith("BLOCK_FACTORFORGE_EVO_V2_STAGE_ARTIFACT_MISSING")
+                for reason in reasons
+                )
+            ):
+                _evo_artifacts, evo_reasons = validate_materialized_evo_v2(
+                    root, report_id
+                )
+                reasons.extend(
+                    f"BLOCK_FACTORFORGE_EVO_V2_INVALID:{reason}"
+                    for reason in evo_reasons
+                )
+            staged_states = {
+                "QUALIFIED_CONTRADICTION",
+                "MINIMAL_MECHANISM_DELTA",
+                "NO_DERIVED_LAW",
+                "TRANSFER_RECORDED",
+                "COLD_START_RECORDED",
+            }
+            if evolution_state in staged_states:
+                # Local imports avoid a module cycle: the staged writer itself
+                # consumes the lifecycle validator defined in this module.
+                from factor_factory.evo_staging import (
+                    no_derived_law_path,
+                    staging_manifest_path,
+                    validate_evo_v2_staging_manifest,
+                )
+                from factor_factory.revision_council.evo_v2 import (
+                    validate_no_derived_law,
+                )
+
+                manifest_path = staging_manifest_path(root, report_id)
+                manifest: dict[str, Any] | None = None
+                if not manifest_path.is_file() or manifest_path.is_symlink():
+                    reasons.append(
+                        "BLOCK_FACTORFORGE_EVO_V2_STAGING_MANIFEST_MISSING"
+                    )
+                else:
+                    try:
+                        manifest = load_json(manifest_path)
+                    except Exception as exc:
+                        reasons.append(
+                            "BLOCK_FACTORFORGE_EVO_V2_STAGING_MANIFEST_INVALID:"
+                            f"{type(exc).__name__}"
+                        )
+                    else:
+                        reasons.extend(
+                            "BLOCK_FACTORFORGE_EVO_V2_STAGING_INVALID:"
+                            f"{reason}"
+                            for reason in validate_evo_v2_staging_manifest(
+                                manifest,
+                                root=root,
+                                report_id=report_id,
+                                verify_readback=True,
+                            )
+                        )
+                if isinstance(manifest, dict):
+                    events = manifest.get("events")
+                    observed_count = len(events) if isinstance(events, list) else 0
+                    minimum_count = {
+                        "QUALIFIED_CONTRADICTION": 1,
+                        "MINIMAL_MECHANISM_DELTA": 2,
+                        "NO_DERIVED_LAW": 2,
+                        "TRANSFER_RECORDED": 3,
+                        "COLD_START_RECORDED": 3,
+                    }[evolution_state]
+                    if transfer_recorded and stage in {
+                        "pre_revision",
+                        "pre_promotion",
+                        "final",
+                    }:
+                        minimum_count = 4
+                    terminal_count = 2 if no_derived else None
+                    if observed_count < minimum_count or (
+                        terminal_count is not None and observed_count != terminal_count
+                    ):
+                        reasons.append(
+                            "BLOCK_FACTORFORGE_EVO_V2_STAGING_SEQUENCE_INCOMPLETE:"
+                            f"{evolution_state}:{observed_count}:{minimum_count}"
+                        )
+                    if lifecycle is not None and isinstance(events, list) and events:
+                        binding = events[-1].get("lifecycle_binding")
+                        if (
+                            not isinstance(binding, dict)
+                            or binding.get("current_state") != evolution_state
+                            or binding.get("content_sha256")
+                            != lifecycle.get("content_sha256")
+                            or binding.get("sha256") != sha256_file(lifecycle_path)
+                        ):
+                            reasons.append(
+                                "BLOCK_FACTORFORGE_EVO_V2_STAGING_LIFECYCLE_MISMATCH"
+                            )
+                if no_derived:
+                    proof_path = no_derived_law_path(root, report_id)
+                    if not proof_path.is_file() or proof_path.is_symlink():
+                        reasons.append(
+                            "BLOCK_FACTORFORGE_EVO_V2_NO_DERIVED_LAW_MISSING"
+                        )
+                    else:
+                        try:
+                            no_derived_proof = load_json(proof_path)
+                        except Exception as exc:
+                            reasons.append(
+                                "BLOCK_FACTORFORGE_EVO_V2_NO_DERIVED_LAW_INVALID:"
+                                f"{type(exc).__name__}"
+                            )
+                        else:
+                            feedback = staged_evo.get("feedback_ledger")
+                            contradiction_id = (
+                                feedback.get("contradiction_id")
+                                if isinstance(feedback, dict)
+                                else no_derived_proof.get("contradiction_id")
+                            )
+                            reasons.extend(
+                                "BLOCK_FACTORFORGE_EVO_V2_NO_DERIVED_LAW_INVALID:"
+                                f"{reason}"
+                                for reason in validate_no_derived_law(
+                                    no_derived_proof,
+                                    contradiction_id=contradiction_id,
+                                )
+                            )
+            if (
+                evolution_state in {
+                    "MINIMAL_MECHANISM_DELTA",
+                    "NO_DERIVED_LAW",
+                    "TRANSFER_RECORDED",
+                    "COLD_START_RECORDED",
+                }
+                and stage in {"pre_revision", "pre_promotion", "final"}
+            ):
+                from factor_factory.revision_council.pre_oos_outcome import (
+                    pre_oos_outcome_evidence_reference,
+                )
+
+                expected_council_state = (
+                    "NO_DERIVED_LAW"
+                    if evolution_state == "NO_DERIVED_LAW"
+                    else "MINIMAL_MECHANISM_DELTA"
+                )
+                _outcome_ref, outcome_reasons = (
+                    pre_oos_outcome_evidence_reference(
+                        workspace_root=root,
+                        report_id=report_id,
+                        expected_transition_state=expected_council_state,
+                    )
+                )
+                reasons.extend(
+                    "BLOCK_FACTORFORGE_EVO_V2_PRE_OOS_COUNCIL_OUTCOME_INVALID:"
+                    f"{reason}"
+                    for reason in outcome_reasons
+                )
         expected_factor_id = conjecture.get("factor_id")
         conjecture_identity = (
             conjecture.get("identity")

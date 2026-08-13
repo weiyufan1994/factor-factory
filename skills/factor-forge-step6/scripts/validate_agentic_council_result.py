@@ -15,6 +15,16 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from factor_factory.revision_council.evo_v2 import (
+    BLOCK_MISSING as BLOCK_EVO_V2_MISSING,
+    validate_council_evo_v2_intake,
+)
+from factor_factory.revision_council.production import (
+    CouncilEvoProductionError,
+    load_formal_evo_packet_context,
+    validate_result_evo_identity,
+)
+
 OBJ = FF / "objects"
 RESULT_VERSION = "factorforge_agentic_revision_council_result_v1"
 RESEARCH_PROTOCOL_VERSION = "factorforge_research_conjecture_protocol_v1"
@@ -207,8 +217,14 @@ def validate_dispatch_identity(
         ("source_task_packet_sha256", expected.get("task_packet_sha256")),
         ("route_fingerprint", expected.get("route_fingerprint")),
         ("blind_context_hash", expected.get("blind_context_hash")),
+        (
+            "evo_v2_task_identity_sha256",
+            (expected.get("evo_v2_task_identity") or {}).get("identity_sha256")
+            if isinstance(expected.get("evo_v2_task_identity"), dict)
+            else None,
+        ),
     ):
-        if binding.get(field) != expected_value:
+        if expected_value is not None and binding.get(field) != expected_value:
             reasons.append(f"BLOCK_COUNCIL_RESULT_DISPATCH_BINDING_MISMATCH:{field}")
     return reasons
 
@@ -466,6 +482,7 @@ def validate_agentic_result(
     *,
     expected_task: dict[str, Any] | None = None,
     expected_report_id: str | None = None,
+    workspace_root: Path | str | None = None,
 ) -> list[str]:
     reasons: list[str] = []
     if not isinstance(result, dict):
@@ -480,6 +497,49 @@ def validate_agentic_result(
         )
         reasons.extend(
             validate_measurement_program_result_binding(result, expected_task)
+        )
+    evo_required = isinstance(expected_task, dict) and expected_task.get(
+        "evo_v2_required"
+    ) is True
+    try:
+        expected_context = (
+            (expected_task or {}).get("evo_v2_packet_context")
+            if evo_required
+            else None
+        )
+        formal_context, _formal_feedback = load_formal_evo_packet_context(
+            workspace_root or FF,
+            str(expected_report_id or result.get("report_id") or ""),
+            bound_context=(expected_context if isinstance(expected_context, dict) else None),
+        )
+    except CouncilEvoProductionError as exc:
+        reasons.extend(exc.reasons)
+        formal_context = None
+    if formal_context is not None and not evo_required:
+        reasons.append("BLOCK_COUNCIL_EVO_V2_RESULT_REQUIRED_FLAG_MISSING")
+    if evo_required:
+        expected_context = (expected_task or {}).get("evo_v2_packet_context")
+        if formal_context is None or formal_context != expected_context:
+            reasons.append("BLOCK_COUNCIL_EVO_V2_RESULT_CURRENT_CONTEXT_MISMATCH")
+        reasons.extend(validate_result_evo_identity(result, expected_task or {}))
+        evo_payload = result.get("evo_v2")
+        if evo_payload is None:
+            reasons.append(BLOCK_EVO_V2_MISSING)
+        else:
+            reasons.extend(
+                validate_council_evo_v2_intake(
+                    evo_payload,
+                    proposal=result,
+                    workspace_root=workspace_root or FF,
+                )
+            )
+    elif result.get("evo_v2") is not None:
+        reasons.extend(
+            validate_council_evo_v2_intake(
+                result.get("evo_v2"),
+                proposal=result,
+                workspace_root=workspace_root or FF,
+            )
         )
     if result.get("result_version") != RESULT_VERSION:
         reasons.append("agentic_result_version_invalid")
@@ -560,7 +620,19 @@ def validate_agentic_result(
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_OVERCLAIM_GUARD_MISSING")
 
     laws = result.get("candidate_revision_laws")
-    if not nonempty_object_list(laws):
+    evo_outcome = (
+        ((result.get("evo_v2") or {}).get("derivation_outcome") or {}).get(
+            "outcome"
+        )
+        if isinstance(result.get("evo_v2"), dict)
+        else None
+    )
+    if evo_required and evo_outcome == "NO_DERIVED_LAW":
+        if laws != []:
+            reasons.append(
+                "BLOCK_COUNCIL_EVO_V2_NO_DERIVED_LAW_CANDIDATE_LAWS_NOT_EMPTY"
+            )
+    elif not nonempty_object_list(laws):
         reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_REVISION_LAWS_MISSING")
     else:
         for idx, law in enumerate(laws):

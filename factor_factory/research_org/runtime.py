@@ -86,7 +86,6 @@ MAX_PRIVATE_OUTPUT_BYTES = 2 * 1024 * 1024
 MAX_STAGED_CONTEXT_BYTES = 16 * 1024 * 1024
 STRONG_ISOLATION_CLASSES = {
     "container_staged_context",
-    "codex_subagent_isolated",
 }
 VALID_RUNTIME_LIFECYCLES = {
     "READY",
@@ -250,6 +249,32 @@ class ResearchOrgSessionRunner(Protocol):
 def build_research_org_session_prompt(
     invocation: ResearchOrgSessionInvocation,
 ) -> str:
+    if invocation.role_id == "evo_child_independent_reviewer":
+        from factor_factory.console.evo_child_assurance import (
+            build_evo_child_review_prompt,
+        )
+
+        return build_evo_child_review_prompt(invocation)
+    if invocation.role_id == "evo_child_preregistration_author":
+        from factor_factory.evo_child_authoring import (
+            build_evo_child_authoring_prompt,
+        )
+
+        return build_evo_child_authoring_prompt(invocation)
+    evo_search_request = (
+        invocation.context_root
+        / "identity/evo_v2_cold_start_search_request.json"
+    )
+    if (
+        invocation.role_id == "knowledge_librarian"
+        and evo_search_request.is_file()
+        and not evo_search_request.is_symlink()
+    ):
+        from factor_factory.knowledge_context import (
+            build_evo_v2_cold_start_search_prompt,
+        )
+
+        return build_evo_v2_cold_start_search_prompt(invocation)
     if invocation.role_id == "researcher_memory_reviewer":
         from factor_factory.researcher_memory_review import (
             build_researcher_memory_review_prompt,
@@ -550,7 +575,15 @@ Allowed `claim_type` values are {claim_types}. Select only the semantic class;
 there is no Agent-authored claim identifier or statement field. Every claim
 must copy `source_text` exactly from the selected retrieved node at the JSON
 `source_path` and hash those exact UTF-8 text bytes. The Host resolves the path
-inside the captured summary and rejects any mismatch. Put every numeric
+inside the captured summary and rejects any mismatch. Claim `source_path` must
+start with one of `title`, `summary`, `mechanism`, `evidence`,
+`reuse_guidance`, or `research_status`; metadata such as `overlap_terms`, ids,
+factor ids, and report ids is not claim evidence. When the captured payload has
+nodes, return at least one claim from an allowed path. For the required first
+claim, prefer the first retrieved node's scalar
+`["summary"]` path so no list-index coercion is involved. If a later path does
+index a JSON list, the path segment must be a JSON integer such as `2`, never
+the string `"2"`. Put every numeric
 historical metric only in `historical_metrics`: `source_path` must be exactly
 `["evidence","key_metrics","<key>"]`, and `metric_value` must equal that
 source number. Its subject is fixed to `prior_artifact`, its node must be one of
@@ -601,6 +634,11 @@ from the matching `task.input_artifacts` entry. That SHA is the declared
 `json_content` hash; do not substitute the file-byte SHA from
 `runtime_context.json.files`, the inner source-catalog hash, or a recomputed
 hash. This rule is specific to `catalog_snapshot_ref`.
+An `approved_catalog_snapshot_member` is valid on this pre-formal-only route
+when the frozen entry carries a valid `factorforge_host_catalog_qa_attestation_v1`
+with verdict ACCEPT. Do not demand or invent active transport admission for
+that workspace-local Host QA snapshot; copy its membership literally and keep
+formal execution deferred to Step3.
 For PASS, `permissions_boundary` must be exactly catalog read-only true and
 catalog/data writes plus pipeline execution false.
 

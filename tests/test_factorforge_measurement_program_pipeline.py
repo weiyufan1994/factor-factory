@@ -13,10 +13,13 @@ from factor_factory.measurement_program import (
     validate_measurement_program,
 )
 from factor_factory.mechanism_math.formula_specific import (
+    _normalize_baseline_model_family,
+    _select_baseline_model,
     validate_formula_specific_derivation,
 )
 from factor_factory.mechanism_math.main_agent_memo import (
     formula_specific_derivation_from_main_agent_memo,
+    normalize_derivation_model_family,
     validate_main_agent_mechanism_memo,
 )
 from factor_factory.research_conjecture import validate_research_conjecture
@@ -377,7 +380,7 @@ def test_dcf_main_agent_memo_and_derivation_need_no_stochastic_schema() -> None:
         },
         "formula_component_map": [
             {
-                "component_id": "dcf_value_gap",
+                "component_id": "formula_root",
                 "formula_subexpression": formula,
                 "operators": ["divide", "minus"],
                 "observable_estimator": "forecast_fcf capitalized by wacc minus terminal_growth and scaled by close",
@@ -433,7 +436,7 @@ def test_dcf_main_agent_memo_and_derivation_need_no_stochastic_schema() -> None:
                 "Forward return from t+1 to t+2 is increasing in valuation_gap_t under the declared convergence mechanism."
             ),
             "observation_mapping": (
-                "forecast_fcf/(wacc-terminal_growth)/close-1 estimates the legal-time valuation gap"
+                "forecast_fcf/(wacc-terminal_growth)/close-1 estimates intrinsic-value-to-market-price gap"
             ),
             "expected_metric_signature": dict(signature),
         },
@@ -450,9 +453,11 @@ def test_dcf_main_agent_memo_and_derivation_need_no_stochastic_schema() -> None:
             "necessary_market_structure": "price convergence follows public fundamental revision without lookahead",
         },
         "mathematical_object_mapping": {
-            "mathematical_object": "discounted intrinsic-value functional and value-price gap",
-            "observation_mapping": "forecast_fcf, wacc, terminal_growth, and close map to the DCF value gap",
-            "component_links": ["dcf_value_gap"],
+            "mathematical_object": "intrinsic value and intrinsic-value-to-market-price gap",
+            "observation_mapping": (
+                "forecast_fcf/(wacc-terminal_growth)/close-1 estimates intrinsic-value-to-market-price gap"
+            ),
+            "component_links": ["formula_root"],
         },
         "expected_metric_signature": dict(signature),
         "falsification_tests": [
@@ -489,6 +494,576 @@ def test_dcf_main_agent_memo_and_derivation_need_no_stochastic_schema() -> None:
     }
 
     assert validate_main_agent_mechanism_memo(memo, spec) == []
+
+    expectation_memo = deepcopy(memo)
+    expectation_memo["math_hypothesis"][
+        "mechanism_equation_or_functional"
+    ] = f"valuation_gap_{{i,t}}={formula}"
+    expectation_memo["math_hypothesis"]["market_outcome_projection"] = (
+        "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, valuation_gap_{i,t}] "
+        "positive for high-factor deciles; entry t+1 close, exit t+2 close"
+    )
+    assert validate_main_agent_mechanism_memo(expectation_memo, spec) == []
+
+    for indexed_observation in (
+        "forecast_fcf_{oracle,t}/(wacc_{oracle,t}-terminal_growth_{oracle,t})/"
+        "close_{oracle,t}-1 estimates intrinsic-value-to-market-price gap",
+        "forecast_fcf_{i,j,t}/(wacc_{i,j,t}-terminal_growth_{i,j,t})/"
+        "close_{i,j,t}-1 estimates intrinsic-value-to-market-price gap",
+    ):
+        indexed_memo = deepcopy(memo)
+        indexed_memo["math_hypothesis"]["observation_mapping"] = indexed_observation
+        indexed_memo["mathematical_object_mapping"][
+            "observation_mapping"
+        ] = indexed_observation
+        failures = validate_main_agent_mechanism_memo(indexed_memo, spec)
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in failures
+    for unsafe_projection in (
+        "Forward return from t+1 to t+2 is increasing in future_close_t under convergence.",
+        "Forward return from t+1 to t+2 is increasing in valuation_gap_t using oracle_t.",
+        "Forward return from t+1 to t+2 is increasing in valuation_gap_t with formula_state_t.",
+        "Forward return from t+1 to t+2 is increasing in valuation_gap_t and tomorrow close under convergence.",
+        "Forward return from t+1 to t+2 is increasing in oracle(valuation_gap_t) under convergence.",
+        "Forward return from t+1 to t+2 is increasing in valuation_gap_t + oracle under convergence.",
+        (
+            "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, valuation_gap_{i,t}] "
+            "positive for high-factor deciles; "
+            "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, future_close_{i,t}]"
+        ),
+        "Forward return from t+1 to t+2 is increasing in valuation_gap_t under the declared convergence mechanism.\ud800",
+    ):
+        unsafe_memo = deepcopy(memo)
+        unsafe_memo["math_hypothesis"][
+            "market_outcome_projection"
+        ] = unsafe_projection
+        failures = validate_main_agent_mechanism_memo(unsafe_memo, spec)
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    incomplete_equation = deepcopy(memo)
+    incomplete_equation["math_hypothesis"][
+        "mechanism_equation_or_functional"
+    ] = "valuation_gap_t=close"
+    failures = validate_main_agent_mechanism_memo(incomplete_equation, spec)
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in failures
+
+    for unsafe_equation in (
+        (
+            "valuation_gap_t=close; "
+            "decoy_t=forecast_fcf/(wacc-terminal_growth)/close-1"
+        ),
+        (
+            "valuation_gap_t=forecast_fcf/(wacc-terminal_growth)/close-1; "
+            "valuation_gap_t=close"
+        ),
+    ):
+        decoy_memo = deepcopy(memo)
+        decoy_memo["math_hypothesis"][
+            "mechanism_equation_or_functional"
+        ] = unsafe_equation
+        failures = validate_main_agent_mechanism_memo(decoy_memo, spec)
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    for wrong_projected_state in ("close_t", "forecast_fcf_t"):
+        wrong_projection = deepcopy(memo)
+        wrong_projection["math_hypothesis"][
+            "market_outcome_projection"
+        ] = (
+            "Forward return from t+1 to t+2 is increasing in "
+            f"{wrong_projected_state} under the declared convergence mechanism."
+        )
+        failures = validate_main_agent_mechanism_memo(wrong_projection, spec)
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    for mismatched_projection_state in (
+        "valuation_gap_{oracle,t}",
+        "valuation_gap_{j,t}",
+        "valuation_gap_{i,j,t}",
+    ):
+        mismatched_index = deepcopy(memo)
+        mismatched_index["math_hypothesis"][
+            "mechanism_equation_or_functional"
+        ] = f"valuation_gap_{{i,t}}={formula}"
+        mismatched_index["math_hypothesis"]["market_outcome_projection"] = (
+            "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, "
+            f"{mismatched_projection_state}] positive for high-factor deciles; "
+            "entry t+1 close, exit t+2 close"
+        )
+        failures = validate_main_agent_mechanism_memo(mismatched_index, spec)
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    for hidden_current_state in (
+        "oracle.shift(0)",
+        "oracle_t-0",
+        "oracle_{i,t-0}",
+    ):
+        zero_lag_alias = deepcopy(memo)
+        zero_lag_alias["math_hypothesis"][
+            "mechanism_equation_or_functional"
+        ] = f"valuation_gap_t={formula}; oracle_t=close"
+        zero_lag_alias["math_hypothesis"]["market_outcome_projection"] = (
+            "E[close_{i,t+2}/close_{i,t+1}-1 | F_t, valuation_gap_t, "
+            f"{hidden_current_state}] positive for high-factor deciles; "
+            "entry t+1 close, exit t+2 close"
+        )
+        failures = validate_main_agent_mechanism_memo(zero_lag_alias, spec)
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    for shadowed_observable in ("close", "forecast_fcf"):
+        shadowed_state = deepcopy(memo)
+        shadowed_state["math_hypothesis"][
+            "mechanism_equation_or_functional"
+        ] = f"{shadowed_observable}_t={formula}"
+        shadowed_state["math_hypothesis"]["market_outcome_projection"] = (
+            "Forward return from t+1 to t+2 is increasing in "
+            f"{shadowed_observable}_t under the declared convergence mechanism."
+        )
+        failures = validate_main_agent_mechanism_memo(shadowed_state, spec)
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    def memo_for_formula(
+        candidate_formula: str,
+        required_inputs: list[str],
+        operators: list[str],
+    ) -> tuple[dict, dict]:
+        candidate_spec = {
+            "canonical_spec": {
+                "formula_text": candidate_formula,
+                "required_inputs": required_inputs,
+                "operators": operators,
+            }
+        }
+        candidate_memo = deepcopy(memo)
+        candidate_memo["formula"] = candidate_formula
+        candidate_memo["formula_understanding"]["formula_features"] = {
+            "fields": required_inputs,
+            "operators": operators,
+        }
+        candidate_memo["formula_component_map"][0][
+            "formula_subexpression"
+        ] = candidate_formula
+        candidate_mapping = (
+            f"{candidate_formula} estimates intrinsic-value-to-market-price gap"
+        )
+        candidate_memo["math_hypothesis"][
+            "mechanism_equation_or_functional"
+        ] = f"valuation_gap_t={candidate_formula}"
+        candidate_memo["math_hypothesis"][
+            "observation_mapping"
+        ] = candidate_mapping
+        candidate_memo["mathematical_object_mapping"][
+            "observation_mapping"
+        ] = candidate_mapping
+        return candidate_memo, candidate_spec
+
+    topology_attack_memo, topology_attack_spec = memo_for_formula(
+        "sales + volume / amount + close",
+        ["sales", "volume", "amount", "close"],
+        ["plus", "divide"],
+    )
+    failures = validate_main_agent_mechanism_memo(
+        topology_attack_memo,
+        topology_attack_spec,
+    )
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in failures
+
+    dimensional_attack_memo, dimensional_attack_spec = memo_for_formula(
+        "close + dividend_yield",
+        ["close", "dividend_yield"],
+        ["plus"],
+    )
+    failures = validate_main_agent_mechanism_memo(
+        dimensional_attack_memo,
+        dimensional_attack_spec,
+    )
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in failures
+
+    for valuation_formula, valuation_field in (
+        ("rank(dividend_yield)", "dividend_yield"),
+        ("rank(ev_to_ebitda)", "ev_to_ebitda"),
+    ):
+        ratio_memo, ratio_spec = memo_for_formula(
+            valuation_formula,
+            [valuation_field],
+            ["rank"],
+        )
+        failures = validate_main_agent_mechanism_memo(ratio_memo, ratio_spec)
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" not in failures
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            not in failures
+        )
+
+    for valuation_formula, valuation_inputs in (
+        (
+            "(book_value + residual_income / cost_of_equity) / market_cap - 1",
+            ["book_value", "residual_income", "cost_of_equity", "market_cap"],
+        ),
+        (
+            "(forecast_fcf / (wacc - terminal_growth) - net_debt) / "
+            "shares_outstanding / close - 1",
+            [
+                "forecast_fcf",
+                "wacc",
+                "terminal_growth",
+                "net_debt",
+                "shares_outstanding",
+                "close",
+            ],
+        ),
+    ):
+        derived_value_memo, derived_value_spec = memo_for_formula(
+            valuation_formula,
+            valuation_inputs,
+            ["divide", "minus", "plus"],
+        )
+        failures = validate_main_agent_mechanism_memo(
+            derived_value_memo,
+            derived_value_spec,
+        )
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" not in failures
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            not in failures
+        )
+
+    for dead_valuation_formula in (
+        "0 * (forecast_fcf / close)",
+        "(forecast_fcf / close) - (forecast_fcf / close)",
+        "(forecast_fcf / close) / (forecast_fcf / close)",
+    ):
+        dead_memo, dead_spec = memo_for_formula(
+            dead_valuation_formula,
+            ["forecast_fcf", "close"],
+            ["multiply", "divide", "minus"],
+        )
+        failures = validate_main_agent_mechanism_memo(dead_memo, dead_spec)
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in failures
+
+    for fake_valuation_formula, fake_field in (
+        ("rank(volume_yield)", "volume_yield"),
+        ("rank(oracle_yield)", "oracle_yield"),
+        ("noise_sales / close", "noise_sales"),
+    ):
+        fake_ratio_memo, fake_ratio_spec = memo_for_formula(
+            fake_valuation_formula,
+            [fake_field, "close"] if "/" in fake_valuation_formula else [fake_field],
+            ["divide"] if "/" in fake_valuation_formula else ["rank"],
+        )
+        failures = validate_main_agent_mechanism_memo(
+            fake_ratio_memo,
+            fake_ratio_spec,
+        )
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    def dcf_program(observation_map: str) -> dict:
+        program = _program()
+        selected = program["model_selection"]["candidate_models"][0]
+        selected_object = "valuation_gap_t"
+        projection = (
+            "Forward return from t+1 to t+2 is increasing in valuation_gap_t "
+            "under the declared convergence mechanism."
+        )
+        program["observation_and_estimation"]["estimand"] = selected_object
+        program["observation_and_estimation"][
+            "observation_map"
+        ] = observation_map
+        program["market_outcome_projection"][
+            "source_math_object"
+        ] = selected_object
+        program["market_outcome_projection"][
+            "projection_equation_or_map"
+        ] = projection
+        selected.update(
+            {
+                "model_family": "discounted cash-flow valuation",
+                "mathematical_object": selected_object,
+                "target_functional": selected_object,
+                "market_outcome_projection": projection,
+                "observation_mapping": observation_map,
+            }
+        )
+        return program
+
+    program_only_memo = deepcopy(memo)
+    program_only_memo["mathematical_object_mapping"]["component_links"] = []
+    valid_program = dcf_program(f"valuation_gap_t={formula}")
+    assert validate_measurement_program(
+        valid_program,
+        require_web_executable=False,
+    ) == []
+    valid_program_spec = deepcopy(spec)
+    valid_program_spec["mechanism_conditioned_measurement_program"] = valid_program
+    valid_program_spec["canonical_spec"][
+        "mechanism_conditioned_measurement_program"
+    ] = valid_program
+    failures = validate_main_agent_mechanism_memo(
+        program_only_memo,
+        valid_program_spec,
+    )
+    assert failures == []
+
+    for invalid_lhs in (
+        "future_close_{i,t+1}",
+        "Q_{i,t-1}",
+        "oracle_{i,u}",
+        "valuation_gap_{oracle,t}",
+    ):
+        invalid_program = dcf_program(f"{invalid_lhs}={formula}")
+        assert validate_measurement_program(
+            invalid_program,
+            require_web_executable=False,
+        ) == []
+        invalid_program_spec = deepcopy(spec)
+        invalid_program_spec[
+            "mechanism_conditioned_measurement_program"
+        ] = invalid_program
+        invalid_program_spec["canonical_spec"][
+            "mechanism_conditioned_measurement_program"
+        ] = invalid_program
+        failures = validate_main_agent_mechanism_memo(
+            program_only_memo,
+            invalid_program_spec,
+        )
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    for indexed_rhs in (
+        "valuation_gap_t=forecast_fcf_{oracle,t}/"
+        "(wacc_{oracle,t}-terminal_growth_{oracle,t})/close_{oracle,t}-1",
+        "valuation_gap_t=forecast_fcf_{i,j,t}/"
+        "(wacc_{i,j,t}-terminal_growth_{i,j,t})/close_{i,j,t}-1",
+    ):
+        invalid_program = dcf_program(indexed_rhs)
+        invalid_program_spec = deepcopy(spec)
+        invalid_program_spec[
+            "mechanism_conditioned_measurement_program"
+        ] = invalid_program
+        invalid_program_spec["canonical_spec"][
+            "mechanism_conditioned_measurement_program"
+        ] = invalid_program
+        failures = validate_main_agent_mechanism_memo(
+            program_only_memo,
+            invalid_program_spec,
+        )
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in failures
+
+    for shadowed_observable in ("close", "forecast_fcf"):
+        shadow_program = dcf_program(f"{shadowed_observable}_t={formula}")
+        selected = shadow_program["model_selection"]["candidate_models"][0]
+        selected["mathematical_object"] = f"{shadowed_observable}_t"
+        selected["target_functional"] = f"{shadowed_observable}_t"
+        shadow_program["observation_and_estimation"][
+            "estimand"
+        ] = f"{shadowed_observable}_t"
+        shadow_program["market_outcome_projection"][
+            "source_math_object"
+        ] = f"{shadowed_observable}_t"
+        shadow_program_spec = deepcopy(spec)
+        shadow_program_spec[
+            "mechanism_conditioned_measurement_program"
+        ] = shadow_program
+        shadow_program_spec["canonical_spec"][
+            "mechanism_conditioned_measurement_program"
+        ] = shadow_program
+        failures = validate_main_agent_mechanism_memo(
+            program_only_memo,
+            shadow_program_spec,
+        )
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    invented_knowledge_program = dcf_program(f"valuation_gap_t={formula}")
+    invented_knowledge_program["implementation"]["components"][0][
+        "knowledge_node_ids"
+    ] = ["invented"]
+    self_authorized_spec = deepcopy(spec)
+    self_authorized_spec["cited_node_ids"] = ["invented"]
+    self_authorized_spec["research_contract"] = {
+        "factor_knowledge_context": {
+            "schema_version": "factor_knowledge_context_v1",
+            "node_count": 1,
+            "query": {"text": "invented", "top_k": 1},
+            "nodes": [{"id": "invented"}],
+        }
+    }
+    self_authorized_spec[
+        "mechanism_conditioned_measurement_program"
+    ] = invented_knowledge_program
+    self_authorized_spec["canonical_spec"][
+        "mechanism_conditioned_measurement_program"
+    ] = invented_knowledge_program
+    failures = validate_main_agent_mechanism_memo(
+        program_only_memo,
+        self_authorized_spec,
+    )
+    assert (
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MEASUREMENT_PROGRAM_INVALID"
+        in failures
+    )
+
+    admitted_knowledge_program = dcf_program(f"valuation_gap_t={formula}")
+    admitted_knowledge_program["implementation"]["components"][0][
+        "knowledge_node_ids"
+    ] = ["admitted-node"]
+    admitted_knowledge_spec = deepcopy(spec)
+    admitted_knowledge_spec["research_contract"] = {
+        "factor_knowledge_context": {
+            "schema_version": "factor_knowledge_context_v1",
+            "node_count": 1,
+            "query": {"text": "cash-flow valuation", "top_k": 1},
+            "nodes": [{"id": "admitted-node"}],
+        },
+        "knowledge_reference_contract": {
+            "contract_version": "factorforge_knowledge_reference_contract_v1",
+            "producer": "host_retrieval",
+            "retrieval_required": True,
+            "retrieval_status": "retrieved",
+            "query_hash": "a" * 64,
+            "indexes_available": ["knowledge/retrieval/index.jsonl"],
+            "hit_count": 1,
+            "retrieved_case_ids": ["admitted-node"],
+        },
+    }
+    admitted_knowledge_spec[
+        "mechanism_conditioned_measurement_program"
+    ] = admitted_knowledge_program
+    admitted_knowledge_spec["canonical_spec"][
+        "mechanism_conditioned_measurement_program"
+    ] = admitted_knowledge_program
+    assert validate_main_agent_mechanism_memo(
+        program_only_memo,
+        admitted_knowledge_spec,
+    ) == []
+
+    non_dict_copy_spec = deepcopy(valid_program_spec)
+    non_dict_copy_spec["canonical_spec"][
+        "mechanism_conditioned_measurement_program"
+    ] = "bad"
+    failures = validate_main_agent_mechanism_memo(
+        program_only_memo,
+        non_dict_copy_spec,
+    )
+    assert (
+        "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MEASUREMENT_PROGRAM_INVALID"
+        in failures
+    )
+
+    for invalid_formula, required_inputs, operators in (
+        ("future_fcf / close - 1", ["future_fcf", "close"], ["divide", "minus"]),
+        ("close + sales", ["close", "sales"], ["plus"]),
+    ):
+        invalid_spec = {
+            "canonical_spec": {
+                "formula_text": invalid_formula,
+                "required_inputs": required_inputs,
+                "operators": operators,
+            }
+        }
+        invalid_memo = deepcopy(memo)
+        invalid_memo["formula"] = invalid_formula
+        invalid_memo["formula_understanding"]["formula_features"] = {
+            "fields": required_inputs,
+            "operators": operators,
+        }
+        invalid_memo["formula_component_map"][0][
+            "formula_subexpression"
+        ] = invalid_formula
+        invalid_mapping = (
+            f"{invalid_formula} estimates intrinsic-value-to-market-price gap"
+        )
+        invalid_memo["math_hypothesis"][
+            "mechanism_equation_or_functional"
+        ] = f"valuation_gap_t={invalid_formula.replace(' ', '')}"
+        invalid_memo["math_hypothesis"][
+            "observation_mapping"
+        ] = invalid_mapping
+        invalid_memo["mathematical_object_mapping"][
+            "observation_mapping"
+        ] = invalid_mapping
+        failures = validate_main_agent_mechanism_memo(invalid_memo, invalid_spec)
+        assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+        assert (
+            "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID"
+            in failures
+        )
+
+    valid_but_irrelevant_program = _program()
+    valid_but_irrelevant_program["model_selection"]["candidate_models"][0][
+        "model_family"
+    ] = "discounted cash-flow valuation"
+    irrelevant_spec = {
+        "mechanism_conditioned_measurement_program": valid_but_irrelevant_program,
+        "canonical_spec": {
+            "formula_text": "rank(close)",
+            "required_inputs": ["close"],
+            "operators": ["rank"],
+            "mechanism_conditioned_measurement_program": valid_but_irrelevant_program,
+        },
+    }
+    irrelevant_memo = deepcopy(memo)
+    irrelevant_memo["formula"] = "rank(close)"
+    irrelevant_memo["formula_understanding"]["formula_features"] = {
+        "fields": ["close"],
+        "operators": ["rank"],
+    }
+    irrelevant_memo["formula_component_map"][0][
+        "formula_subexpression"
+    ] = "rank(close)"
+    irrelevant_memo["math_hypothesis"][
+        "mechanism_equation_or_functional"
+    ] = "valuation_gap_t=close"
+    irrelevant_mapping = (
+        "rank(close) estimates intrinsic-value-to-market-price gap"
+    )
+    irrelevant_memo["math_hypothesis"][
+        "observation_mapping"
+    ] = irrelevant_mapping
+    irrelevant_memo["mathematical_object_mapping"][
+        "observation_mapping"
+    ] = irrelevant_mapping
+    failures = validate_main_agent_mechanism_memo(
+        irrelevant_memo,
+        irrelevant_spec,
+    )
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MODEL_FAMILY_MISMATCH" in failures
+    assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in failures
+
     derivation = formula_specific_derivation_from_main_agent_memo(memo, spec)
     assert derivation["selected_model_family"] == "valuation_identity"
     assert validate_formula_specific_derivation(derivation, spec, {}) == []
@@ -497,6 +1072,45 @@ def test_dcf_main_agent_memo_and_derivation_need_no_stochastic_schema() -> None:
     assert "latent_state" not in serialized
     assert "process_or_distribution" not in serialized
     assert "dcf" in serialized or "forecast_fcf" in serialized
+
+
+def test_fundamental_accounting_models_are_not_forced_into_dcf_valuation() -> None:
+    assert normalize_derivation_model_family("accounting identity") == "other"
+    assert normalize_derivation_model_family("accounting quality") == "other"
+    assert normalize_derivation_model_family("unit economics") == "other"
+    assert normalize_derivation_model_family("discounted cash-flow valuation") == (
+        "valuation_identity"
+    )
+    assert normalize_derivation_model_family("residual-income valuation") == (
+        "valuation_identity"
+    )
+    assert _normalize_baseline_model_family("accounting identity") == "other"
+    assert _normalize_baseline_model_family("unit economics") == "other"
+    neutral_features = {
+        "operators": [],
+        "has_sign_or_threshold": False,
+        "has_long_window": False,
+        "has_short_delay_or_delta": False,
+    }
+    for fundamental_mechanism in (
+        "earnings quality and accrual reversal",
+        "cash flow conversion under financing constraints",
+        "profit reinvestment and capital allocation",
+        "book-based accounting quality",
+        "unit economics and operating leverage",
+    ):
+        assert _select_baseline_model(fundamental_mechanism, neutral_features) == (
+            "other"
+        )
+    for explicit_valuation_mechanism in (
+        "discounted cash flow convergence",
+        "intrinsic value versus price",
+        "residual income valuation gap",
+    ):
+        assert _select_baseline_model(
+            explicit_valuation_mechanism,
+            neutral_features,
+        ) == "valuation_identity"
 
 
 def test_canonical_formula_formal_path_attaches_current_agent_program() -> None:

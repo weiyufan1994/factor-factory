@@ -14,7 +14,13 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.runtime_context import load_json, resolve_factorforge_context, utc_now
+from factor_factory.child_materialization import (
+    MATERIALIZATION_VERSION as CHILD_MATERIALIZATION_VERSION,
+    validate_child_materialization_readback,
+)
+from factor_factory.research_org.runtime_trust import load_runtime_trust_store
 from factor_factory.council_terminal import classify_terminal_rejection_result
+from factor_factory.research_org.contracts import ResearchOrganizationError
 from factor_factory.ultimate_loop.proof import (
     append_note,
     load_json_if_exists,
@@ -40,7 +46,67 @@ PAUSED_NOTE_STATES = {
     "awaiting_agent_results",
     "awaiting_main_agent_council_synthesis",
     "awaiting_next_derivation",
+    "WAITING_EXTERNAL_HUMAN_APPROVAL",
+    "WAITING_DATA_FRESH_SEALED_OOS_ALLOCATION",
+    "max_loops_reached",
 }
+
+BUDGET_EXHAUSTION_VERSION = "factorforge_ultimate_loop_budget_exhaustion_v1"
+BUDGET_EXHAUSTION_SEMANTICS = "research_budget_exhausted_not_factor_proof"
+OOS_HOST_TRUST_ROOT_ENV = "FACTORFORGE_OOS_HOST_TRUST_ROOT"
+OOS_HOST_INSTALLATION_ID_ENV = "FACTORFORGE_OOS_HOST_INSTALLATION_ID"
+BLOCK_INCIDENT_CONTEXT_REQUIRED = (
+    "BLOCK_FACTORFORGE_OOS_INCIDENT_HOST_CONTEXT_REQUIRED"
+)
+BLOCK_INCIDENT_CONTEXT_INCOMPLETE = (
+    "BLOCK_FACTORFORGE_OOS_INCIDENT_HOST_CONTEXT_INCOMPLETE"
+)
+BLOCK_INCIDENT_CONTEXT_INVALID = (
+    "BLOCK_FACTORFORGE_OOS_INCIDENT_HOST_CONTEXT_INVALID"
+)
+BLOCK_INCIDENT_CONTEXT_MISMATCH = (
+    "BLOCK_FACTORFORGE_OOS_INCIDENT_RUNTIME_TRUST_CONTEXT_MISMATCH"
+)
+
+
+def mark_budget_exhausted(
+    proof: dict[str, Any],
+    iteration: dict[str, Any] | None,
+) -> None:
+    """Close a bounded search budget without claiming factor-proof completion."""
+
+    pre_budget_can_continue = bool(
+        isinstance(iteration, dict) and iteration.get("can_continue") is True
+    )
+    exhaustion = {
+        "contract_version": BUDGET_EXHAUSTION_VERSION,
+        "reason": "max_loops_reached",
+        "configured_max_loops": proof.get("max_loops"),
+        "last_completed_loop_index": (
+            iteration.get("loop_index") if isinstance(iteration, dict) else None
+        ),
+        "pre_budget_state_can_continue": pre_budget_can_continue,
+        "completed_iteration_evidence_preserved": isinstance(iteration, dict),
+        "factor_proof_completed": False,
+        "continuation_requires_new_authorized_budget": True,
+    }
+    proof["status"] = "PAUSED"
+    proof["formal_proof_eligible"] = False
+    proof["factor_proof_completed"] = False
+    proof["completion_semantics"] = BUDGET_EXHAUSTION_SEMANTICS
+    proof["final_outcome"] = "max_loops_reached"
+    proof["stop_reason"] = "max_loops_reached"
+    proof["budget_exhaustion"] = exhaustion
+    proof["updated_at_utc"] = utc_now()
+    if isinstance(iteration, dict):
+        iteration["outcome"] = "max_loops_reached"
+        iteration["stop_reason"] = "max_loops_reached"
+        iteration["proof_status"] = "PAUSED"
+        iteration["can_continue"] = False
+        iteration["formal_proof_eligible"] = False
+        iteration["factor_proof_completed"] = False
+        iteration["completion_semantics"] = BUDGET_EXHAUSTION_SEMANTICS
+        iteration["budget_exhaustion"] = exhaustion.copy()
 
 
 def paused_note_paths(factorforge_root: Path, report_id: str) -> tuple[Path, Path]:
@@ -71,6 +137,21 @@ def _paused_next_questions(pause_state: str) -> list[str]:
         return [
             "Which research equation component failed?",
             "Should the next branch be bug fix, data artifact check, implementation artifact check, tradable anomaly, or new factor seed?",
+        ]
+    if pause_state == "WAITING_EXTERNAL_HUMAN_APPROVAL":
+        return [
+            "Has an external human reviewed the selected law, mechanism delta, economic backprojection, and child intent?",
+            "Is a signed approval receipt bound to a fresh sealed OOS allocation available?",
+        ]
+    if pause_state == "WAITING_DATA_FRESH_SEALED_OOS_ALLOCATION":
+        return [
+            "Has the Host allocated a fresh sealed OOS token and disjoint dataset/window for this child?",
+            "Are the child protocol, frozen trial ledger, threshold registration, and lifecycle preregistered?",
+        ]
+    if pause_state == "max_loops_reached":
+        return [
+            "Does an external research owner authorize a new bounded loop budget?",
+            "Which still-open mechanism test or branch justifies spending that new budget?",
         ]
     return ["What explicit human or agent decision is required before the loop may continue?"]
 
@@ -173,6 +254,31 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--factorforge-root", default=None)
     ap.add_argument("--factor-workspace", default=None)
     ap.add_argument("--runtime-manifest", default=None)
+    ap.add_argument(
+        "--expected-host-trust-manifest-sha256",
+        default=None,
+        help=(
+            "Externally pinned Host public trust-manifest digest. Formal EVO "
+            "child flows must receive it from the Host control plane; never "
+            "derive it from the mutable factor workspace."
+        ),
+    )
+    ap.add_argument(
+        "--incident-trust-root",
+        default=None,
+        help=(
+            "Host-private OOS incident trust root. Required together with "
+            "--incident-installation-id for every formal non-dry run."
+        ),
+    )
+    ap.add_argument(
+        "--incident-installation-id",
+        default=None,
+        help=(
+            "Host installation id bound to --incident-trust-root. Required "
+            "for every formal non-dry run."
+        ),
+    )
     ap.add_argument("--allow-legacy-global-runtime", action="store_true")
     ap.add_argument("--proof-path", default=None)
     ap.add_argument("--dry-run", action="store_true")
@@ -182,6 +288,50 @@ def parse_args() -> argparse.Namespace:
         help=argparse.SUPPRESS,
     )
     return ap.parse_args()
+
+
+def resolve_incident_host_context(
+    args: argparse.Namespace,
+) -> tuple[Path | None, str | None]:
+    """Resolve one explicit Host pair; never upgrade ambient state to authority."""
+
+    trust_raw = str(getattr(args, "incident_trust_root", None) or "").strip()
+    installation_id = str(
+        getattr(args, "incident_installation_id", None) or ""
+    ).strip()
+    if bool(trust_raw) != bool(installation_id):
+        raise ValueError(BLOCK_INCIDENT_CONTEXT_INCOMPLETE)
+    formal_non_dry = bool(
+        not getattr(args, "dry_run", False)
+        and not getattr(args, "allow_legacy_research_protocol_smoke", False)
+    )
+    if formal_non_dry and not trust_raw:
+        raise ValueError(BLOCK_INCIDENT_CONTEXT_REQUIRED)
+    if not trust_raw:
+        return None, None
+    try:
+        trust_root = Path(trust_raw).expanduser().resolve(strict=True)
+        load_runtime_trust_store(
+            trust_root,
+            installation_id=installation_id,
+        )
+    except (OSError, ValueError, ResearchOrganizationError) as exc:
+        raise ValueError(BLOCK_INCIDENT_CONTEXT_INVALID) from exc
+
+    ambient_trust = str(os.environ.get(OOS_HOST_TRUST_ROOT_ENV) or "").strip()
+    ambient_installation = str(
+        os.environ.get(OOS_HOST_INSTALLATION_ID_ENV) or ""
+    ).strip()
+    if bool(ambient_trust) != bool(ambient_installation):
+        raise ValueError(BLOCK_INCIDENT_CONTEXT_MISMATCH)
+    if ambient_trust:
+        try:
+            ambient_root = Path(ambient_trust).expanduser().resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise ValueError(BLOCK_INCIDENT_CONTEXT_MISMATCH) from exc
+        if ambient_root != trust_root or ambient_installation != installation_id:
+            raise ValueError(BLOCK_INCIDENT_CONTEXT_MISMATCH)
+    return trust_root, installation_id
 
 
 def run_command(command: list[str], *, env: dict[str, str], dry_run: bool) -> dict[str, Any]:
@@ -209,6 +359,57 @@ def run_command(command: list[str], *, env: dict[str, str], dry_run: bool) -> di
         }
     )
     return item
+
+
+def _redact_host_private_text(value: str, denied_values: tuple[str, ...]) -> str:
+    redacted = value
+    for denied in sorted(
+        {item for item in denied_values if item}, key=len, reverse=True
+    ):
+        redacted = redacted.replace(denied, "[HOST_PRIVATE]")
+    return redacted
+
+
+def public_command_result(
+    result: dict[str, Any],
+    *,
+    denied_values: tuple[str, ...],
+) -> dict[str, Any]:
+    """Project a command result without persisting Host-private control values."""
+
+    projected = dict(result)
+
+    command = projected.get("command")
+    if isinstance(command, list):
+        projected["command"] = [
+            _redact_host_private_text(item, denied_values)
+            if isinstance(item, str)
+            else item
+            for item in command
+        ]
+    for field in ("cwd", "stdout_tail", "stderr_tail"):
+        if isinstance(projected.get(field), str):
+            projected[field] = _redact_host_private_text(
+                projected[field], denied_values
+            )
+    return projected
+
+
+def public_loop_args(
+    args: argparse.Namespace,
+    *,
+    denied_values: tuple[str, ...],
+) -> dict[str, Any]:
+    """Return public loop arguments with Host authority coordinates removed."""
+
+    projected = dict(vars(args))
+    for key, value in tuple(projected.items()):
+        if isinstance(value, str):
+            projected[key] = _redact_host_private_text(value, denied_values)
+    for key in ("incident_trust_root", "incident_installation_id"):
+        if projected.get(key):
+            projected[key] = "[HOST_PRIVATE]"
+    return projected
 
 
 def wrapper_factor_workspace(args: argparse.Namespace, factorforge_root: Path) -> Path | None:
@@ -250,6 +451,13 @@ def ultimate_command(args: argparse.Namespace, report_id: str, start_step: str, 
         command.extend(["--factor-workspace", str(factor_workspace)])
     if args.allow_legacy_global_runtime:
         command.append("--allow-legacy-global-runtime")
+    if getattr(args, "expected_host_trust_manifest_sha256", None):
+        command.extend(
+            [
+                "--expected-host-trust-manifest-sha256",
+                args.expected_host_trust_manifest_sha256,
+            ]
+        )
     if args.runtime_dispatch:
         command.extend(["--runtime-dispatch", args.runtime_dispatch])
     if args.subagent_provider:
@@ -263,8 +471,18 @@ def ultimate_command(args: argparse.Namespace, report_id: str, start_step: str, 
     return command
 
 
-def materialization_command(parent_report_id: str, child_report_id: str, factorforge_root: Path) -> list[str]:
-    return [
+def materialization_command(
+    parent_report_id: str,
+    child_report_id: str,
+    factorforge_root: Path,
+    *,
+    expected_host_trust_manifest_sha256: str | None = None,
+    incident_trust_root: Path | str | None = None,
+    incident_installation_id: str | None = None,
+) -> list[str]:
+    if bool(incident_trust_root) != bool(incident_installation_id):
+        raise ValueError(BLOCK_INCIDENT_CONTEXT_INCOMPLETE)
+    command = [
         sys.executable,
         str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "materialize_step6_child_revision.py"),
         "--parent-report-id",
@@ -274,38 +492,38 @@ def materialization_command(parent_report_id: str, child_report_id: str, factorf
         "--factorforge-root",
         str(factorforge_root),
     ]
+    if expected_host_trust_manifest_sha256:
+        command.extend(
+            [
+                "--expected-host-trust-manifest-sha256",
+                expected_host_trust_manifest_sha256,
+            ]
+        )
+    if incident_trust_root is not None and incident_installation_id:
+        command.extend(
+            [
+                "--incident-trust-root",
+                str(incident_trust_root),
+                "--incident-installation-id",
+                incident_installation_id,
+            ]
+        )
+    return command
 
 
-def synthesis_approval_command(report_id: str, factorforge_root: Path) -> list[str]:
-    return [
-        sys.executable,
-        str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "approve_main_agent_council_synthesis.py"),
-        "--report-id",
-        report_id,
-        "--factorforge-root",
-        str(factorforge_root),
-        "--approval-source",
-        "ultimate_loop_auto_bridge",
-    ]
-
-
-def multibranch_synthesis_approval_command(report_id: str, factorforge_root: Path, loop_index: int) -> list[str]:
-    return [
-        sys.executable,
-        str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "approve_main_agent_multibranch_synthesis.py"),
-        "--report-id",
-        report_id,
-        "--factorforge-root",
-        str(factorforge_root),
-        "--loop-index",
-        str(loop_index),
-        "--approval-source",
-        "ultimate_loop_auto_multibranch_bridge",
-    ]
-
-
-def multibranch_materialization_command(report_id: str, factorforge_root: Path, loop_index: int) -> list[str]:
-    return [
+def multibranch_materialization_command(
+    report_id: str,
+    factorforge_root: Path,
+    loop_index: int,
+    *,
+    expected_host_trust_manifest_sha256: str | None = None,
+    incident_trust_root: Path | str | None = None,
+    incident_installation_id: str | None = None,
+    allow_legacy_incident_context_smoke: bool = False,
+) -> list[str]:
+    if bool(incident_trust_root) != bool(incident_installation_id):
+        raise ValueError(BLOCK_INCIDENT_CONTEXT_INCOMPLETE)
+    command = [
         sys.executable,
         str(REPO_ROOT / "skills" / "factor-forge-step6" / "scripts" / "materialize_step6_multibranch_children.py"),
         "--report-id",
@@ -315,6 +533,25 @@ def multibranch_materialization_command(report_id: str, factorforge_root: Path, 
         "--loop-index",
         str(loop_index),
     ]
+    if expected_host_trust_manifest_sha256:
+        command.extend(
+            [
+                "--expected-host-trust-manifest-sha256",
+                expected_host_trust_manifest_sha256,
+            ]
+        )
+    if incident_trust_root is not None and incident_installation_id:
+        command.extend(
+            [
+                "--incident-trust-root",
+                str(incident_trust_root),
+                "--incident-installation-id",
+                incident_installation_id,
+            ]
+        )
+    if allow_legacy_incident_context_smoke:
+        command.append("--allow-legacy-incident-context-smoke")
+    return command
 
 
 def branch_comparison_command(
@@ -446,6 +683,65 @@ def multibranch_synthesis_bridge_ready(factorforge_root: Path, report_id: str) -
     )
 
 
+def multibranch_manual_approval_ready(
+    factorforge_root: Path, report_id: str
+) -> bool:
+    council_dir = (
+        factorforge_root
+        / "objects"
+        / "research_iteration_master"
+        / "revision_council"
+        / report_id
+    )
+    synthesis_path = council_dir / f"main_agent_multibranch_synthesis__{report_id}.json"
+    approval_path = council_dir / f"main_agent_multibranch_synthesis_approval__{report_id}.json"
+    if not synthesis_path.is_file() or not approval_path.is_file():
+        return False
+    conjecture_path = (
+        factorforge_root
+        / "objects"
+        / "research_protocol"
+        / f"research_conjecture__{report_id}.json"
+    )
+    conjecture = load_json_if_exists(conjecture_path)
+    if (
+        isinstance(conjecture.get("epistemic_evolution"), dict)
+        and conjecture["epistemic_evolution"].get("enabled") is True
+    ):
+        # The legacy multibranch approval artifact has no per-child signed
+        # human receipt or fresh OOS allocation binding. EVO V2 therefore
+        # remains paused instead of treating that artifact as authorization.
+        return False
+    synthesis = load_json_if_exists(synthesis_path)
+    approval = load_json_if_exists(approval_path)
+    forbidden = {
+        "ultimate_loop_auto_bridge",
+        "ultimate_loop_auto_multibranch_bridge",
+        "current_main_agent_orchestration_synthesis",
+        "current_main_agent_default_approval",
+        "automatic",
+        "agent",
+        "runtime",
+    }
+    source = str(approval.get("approval_source") or "").strip().lower()
+    branches = approval.get("selected_branches")
+    return bool(
+        synthesis
+        and approval.get("contract_version")
+        == "factorforge_main_agent_multibranch_synthesis_approval_v1"
+        and approval.get("parent_report_id") == report_id
+        and approval.get("source_multibranch_synthesis_sha256")
+        == hashlib.sha256(synthesis_path.read_bytes()).hexdigest()
+        and source
+        and source not in forbidden
+        and approval.get("human_approval_required") is True
+        and approval.get("execution_allowed_by_default") is False
+        and isinstance(branches, list)
+        and bool(branches)
+        and approval.get("selected_branch_count") == len(branches)
+    )
+
+
 def terminal_rejection_bridge_ready(factorforge_root: Path, report_id: str) -> bool:
     council_dir = factorforge_root / "objects" / "research_iteration_master" / "revision_council" / report_id
     return (
@@ -459,10 +755,45 @@ def existing_materialization_report(factorforge_root: Path, parent_report_id: st
     report = load_json_if_exists(path)
     if not isinstance(report, dict) or not report:
         return {"ok": False, "report_path": str(path), "reason": "materialization_report_missing"}
-    if report.get("materialization_version") != "factorforge_step6_child_revision_materialization_v1":
+    if report.get("materialization_version") != CHILD_MATERIALIZATION_VERSION:
         return {"ok": False, "report_path": str(path), "reason": "materialization_version_mismatch"}
     if report.get("parent_report_id") != parent_report_id or report.get("child_report_id") != child_report_id:
         return {"ok": False, "report_path": str(path), "reason": "materialization_identity_mismatch"}
+    source_handoff = (
+        factorforge_root
+        / "objects"
+        / "handoff"
+        / f"handoff_to_step3b__{parent_report_id}.json"
+    )
+    if not source_handoff.is_file() or source_handoff.is_symlink():
+        return {
+            "ok": False,
+            "report_path": str(path),
+            "reason": "materialization_source_handoff_missing",
+        }
+    readback_reasons = validate_child_materialization_readback(
+        workspace_root=factorforge_root,
+        report_path=path,
+        parent_report_id=parent_report_id,
+        child_report_id=child_report_id,
+        source_handoff_sha256=hashlib.sha256(source_handoff.read_bytes()).hexdigest(),
+        required_target_kinds={
+            "alpha_idea_master",
+            "factor_spec_master",
+            "data_prep_master",
+            "executable_revision_spec",
+            "qlib_adapter_config",
+            "state_dependency_contract",
+            "state_resolution",
+        },
+    )
+    if readback_reasons:
+        return {
+            "ok": False,
+            "report_path": str(path),
+            "reason": "materialization_hash_readback_invalid",
+            "readback_reasons": readback_reasons,
+        }
     artifacts = report.get("materialized_artifacts")
     if not isinstance(artifacts, dict) or not artifacts:
         return {"ok": False, "report_path": str(path), "reason": "materialized_artifacts_missing"}
@@ -626,6 +957,37 @@ def write_aggregate_brief(path: Path, proof: dict[str, Any], factorforge_root: P
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def finalize_budget_exhaustion(
+    *,
+    proof: dict[str, Any],
+    iteration: dict[str, Any] | None,
+    proof_path: Path,
+    brief_path: Path,
+    factorforge_root: Path,
+    report_id: str,
+) -> int:
+    mark_budget_exhausted(proof, iteration)
+    append_note(
+        proof,
+        (
+            f"Research loop budget exhausted for {report_id}; completed iteration "
+            "evidence is retained, but no factor-proof completion is claimed"
+        ),
+    )
+    attach_paused_note_if_needed(
+        factorforge_root=factorforge_root,
+        report_id=report_id,
+        proof=proof,
+        iteration=iteration,
+        pause_state="max_loops_reached",
+        reason="max_loops_reached",
+    )
+    write_json_atomic(proof_path, proof)
+    write_aggregate_brief(brief_path, proof, factorforge_root)
+    print("max_loops_reached")
+    return 0
+
+
 def ancestor_generated_code_snapshots(factorforge_root: Path, ancestors: list[str]) -> dict[str, dict[str, Any]]:
     return {
         report_id: path_snapshot(factorforge_root / "generated_code" / report_id)
@@ -704,6 +1066,13 @@ def main() -> int:
     if not (1 <= args.max_loops <= 10):
         print("BLOCK_FACTORFORGE_LOOP_MAX_LOOPS_OUT_OF_RANGE")
         return 1
+    try:
+        incident_trust_root, incident_installation_id = (
+            resolve_incident_host_context(args)
+        )
+    except ValueError as exc:
+        print(str(exc))
+        return 1
 
     explicit_root = args.factorforge_root
     if not explicit_root and args.runtime_manifest:
@@ -718,6 +1087,15 @@ def main() -> int:
         factor_workspace=factor_workspace,
     )
     run_root = ctx.active_root
+    if incident_trust_root is not None:
+        resolved_run_root = run_root.expanduser().resolve(strict=False)
+        if (
+            incident_trust_root == resolved_run_root
+            or incident_trust_root in resolved_run_root.parents
+            or resolved_run_root in incident_trust_root.parents
+        ):
+            print(BLOCK_INCIDENT_CONTEXT_INVALID)
+            return 1
     legacy_protocol_smoke_root = str(run_root.resolve()).startswith(
         ("/tmp/", "/private/tmp/")
     )
@@ -727,6 +1105,15 @@ def main() -> int:
     ):
         print("BLOCK_FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE_SCOPE_INVALID")
         return 1
+    host_private_proof_values = tuple(
+        value
+        for value in (
+            str(getattr(args, "incident_trust_root", None) or ""),
+            str(incident_trust_root or ""),
+            str(incident_installation_id or ""),
+        )
+        if value
+    )
     proof_path = Path(args.proof_path) if args.proof_path else ctx.runtime_context_root / f"ultimate_loop_report__{args.report_id}.json"
     proof_path = proof_path.expanduser().resolve(strict=False)
     if (
@@ -742,7 +1129,10 @@ def main() -> int:
         root_report_id=args.report_id,
         factorforge_root=run_root,
         max_loops=args.max_loops,
-        args=vars(args),
+        args=public_loop_args(
+            args,
+            denied_values=host_private_proof_values,
+        ),
     )
     proof["dry_run"] = bool(args.dry_run)
     proof["contract_smoke_only"] = bool(
@@ -763,6 +1153,11 @@ def main() -> int:
     write_json_atomic(proof_path, proof)
 
     env = os.environ.copy()
+    env.pop(OOS_HOST_TRUST_ROOT_ENV, None)
+    env.pop(OOS_HOST_INSTALLATION_ID_ENV, None)
+    if incident_trust_root is not None and incident_installation_id:
+        env[OOS_HOST_TRUST_ROOT_ENV] = str(incident_trust_root)
+        env[OOS_HOST_INSTALLATION_ID_ENV] = incident_installation_id
     env["FACTORFORGE_ROOT"] = str(run_root)
     env["FACTORFORGE_ULTIMATE_RUN"] = "1"
     if args.allow_legacy_research_protocol_smoke:
@@ -831,7 +1226,10 @@ def main() -> int:
             "report_id": current_report_id,
             "parent_report_id": current_parent_report_id,
             "start_step": current_start_step,
-            "wrapper_command": command_result,
+            "wrapper_command": public_command_result(
+                command_result,
+                denied_values=host_private_proof_values,
+            ),
             "wrapper_proof_path": str(wrapper_proof_path),
             "terminal_protocol_validated": (
                 terminal_protocol_validated_from_wrapper(wrapper_proof)
@@ -848,43 +1246,77 @@ def main() -> int:
             and multibranch_synthesis_bridge_ready(run_root, current_report_id)
         ):
             if loop_index >= args.max_loops:
-                proof["status"] = "PASS"
-                proof["formal_proof_eligible"] = not (
-                    args.dry_run
-                    or args.allow_legacy_research_protocol_smoke
+                return finalize_budget_exhaustion(
+                    proof=proof,
+                    iteration=iteration,
+                    proof_path=proof_path,
+                    brief_path=brief_path,
+                    factorforge_root=run_root,
+                    report_id=current_report_id,
                 )
-                proof["final_outcome"] = "max_loops_reached"
-                proof["stop_reason"] = "max_loops_reached"
-                iteration["outcome"] = "max_loops_reached"
-                iteration["stop_reason"] = "max_loops_reached"
-                iteration["proof_status"] = "PASS"
-                write_json_atomic(proof_path, proof)
-                write_aggregate_brief(brief_path, proof, run_root)
-                print("max_loops_reached")
-                return 0
 
-            approval_cmd = multibranch_synthesis_approval_command(current_report_id, run_root, loop_index)
-            approval_result = run_command(approval_cmd, env=env, dry_run=args.dry_run)
-            iteration["multibranch_approval_command"] = approval_result
-            iteration["multibranch_approval_rc"] = approval_result.get("rc")
-            if approval_result.get("rc") != 0:
-                proof["status"] = "FAIL"
-                proof["final_outcome"] = "blocked"
-                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_SYNTHESIS_APPROVAL_FAILED"
+            if not multibranch_manual_approval_ready(
+                run_root, current_report_id
+            ):
+                iteration["outcome"] = "WAITING_EXTERNAL_HUMAN_APPROVAL"
+                iteration["stop_reason"] = "external_human_approval_receipt_required"
+                iteration["proof_status"] = "PAUSED"
+                iteration["human_approval_boundary"] = {
+                    "status": "WAITING_EXTERNAL_HUMAN_APPROVAL",
+                    "automatic_approval_allowed": False,
+                    "required_action": (
+                        "An external human must sign the selected multibranch synthesis "
+                        "and fresh sealed OOS child intents before materialization."
+                    ),
+                }
+                proof["status"] = "PAUSED"
+                proof["final_outcome"] = "WAITING_EXTERNAL_HUMAN_APPROVAL"
+                proof["stop_reason"] = "external_human_approval_receipt_required"
                 proof["updated_at_utc"] = utc_now()
+                append_note(
+                    proof,
+                    f"Completed multibranch synthesis for {current_report_id}; waiting for external human approval",
+                )
+                attach_paused_note_if_needed(
+                    factorforge_root=run_root,
+                    report_id=current_report_id,
+                    proof=proof,
+                    iteration=iteration,
+                    pause_state="WAITING_EXTERNAL_HUMAN_APPROVAL",
+                    reason="external_human_approval_receipt_required",
+                )
                 write_json_atomic(proof_path, proof)
                 write_aggregate_brief(brief_path, proof, run_root)
-                print("BLOCK_FACTORFORGE_LOOP_MULTIBRANCH_SYNTHESIS_APPROVAL_FAILED")
-                return 1
+                print("WAITING_EXTERNAL_HUMAN_APPROVAL")
+                return 0
 
             materialize_env = env.copy()
             materialize_env["FACTORFORGE_ULTIMATE_LOOP_MATERIALIZE"] = "1"
-            materialize_cmd = multibranch_materialization_command(current_report_id, run_root, loop_index)
+            materialize_cmd = multibranch_materialization_command(
+                current_report_id,
+                run_root,
+                loop_index,
+                expected_host_trust_manifest_sha256=getattr(
+                    args,
+                    "expected_host_trust_manifest_sha256",
+                    None,
+                ),
+                incident_trust_root=incident_trust_root,
+                incident_installation_id=incident_installation_id,
+                allow_legacy_incident_context_smoke=bool(
+                    args.allow_legacy_research_protocol_smoke
+                ),
+            )
             materialize_result = run_command(materialize_cmd, env=materialize_env, dry_run=args.dry_run)
             materialization_path = multibranch_materialization_report_path(run_root, current_report_id, loop_index)
             materialization = load_json_if_exists(materialization_path)
             children = materialization.get("children") if isinstance(materialization.get("children"), list) else []
-            iteration["multibranch_materialization_command"] = materialize_result
+            iteration["multibranch_materialization_command"] = (
+                public_command_result(
+                    materialize_result,
+                    denied_values=host_private_proof_values,
+                )
+            )
             iteration["multibranch_materialization_rc"] = materialize_result.get("rc")
             iteration["multibranch_materialization_report_path"] = str(materialization_path)
             iteration["multibranch_child_count"] = len(children)
@@ -914,7 +1346,10 @@ def main() -> int:
                         "branch_role": child.get("branch_role"),
                         "branch_index": child.get("branch_index"),
                         "law_id": child.get("law_id"),
-                        "wrapper_command": child_result,
+                        "wrapper_command": public_command_result(
+                            child_result,
+                            denied_values=host_private_proof_values,
+                        ),
                         "wrapper_proof_path": str(ctx.runtime_context_root / f"ultimate_run_report__{child_report_id}.json"),
                     }
                 )
@@ -986,7 +1421,10 @@ def main() -> int:
             )
             comparison_result = run_command(comparison_cmd, env=env, dry_run=args.dry_run)
             comparison_path = branch_comparison_path(run_root, current_report_id, loop_index)
-            iteration["branch_comparison_command"] = comparison_result
+            iteration["branch_comparison_command"] = public_command_result(
+                comparison_result,
+                denied_values=host_private_proof_values,
+            )
             iteration["branch_comparison_rc"] = comparison_result.get("rc")
             iteration["branch_comparison_path"] = str(comparison_path)
             iteration["selected_next_parent_child_report_id"] = selected_child_report_id
@@ -1013,47 +1451,43 @@ def main() -> int:
             state.get("outcome") in {"awaiting_agent_results", "exhausted"}
             and synthesis_bridge_ready(run_root, current_report_id)
         ):
-            approval_cmd = synthesis_approval_command(current_report_id, run_root)
-            approval_result = run_command(approval_cmd, env=env, dry_run=args.dry_run)
-            iteration["approval_bridge_command"] = approval_result
-            iteration["approval_bridge_rc"] = approval_result.get("rc")
-            iteration["approval_consumed_loop_slot"] = True
-            iteration["approval_bridge_budget_semantics"] = {
-                "version": "factorforge_approval_bridge_budget_semantics_v1",
-                "approval_consumed_loop_slot": True,
-                "child_materialization_requires_subsequent_loop_slot": True,
-                "reason": "completed Council synthesis approval mutates loop state before child materialization",
+            iteration["outcome"] = "WAITING_EXTERNAL_HUMAN_APPROVAL"
+            iteration["stop_reason"] = "external_human_approval_receipt_required"
+            iteration["proof_status"] = "PAUSED"
+            iteration["human_approval_boundary"] = {
+                "status": "WAITING_EXTERNAL_HUMAN_APPROVAL",
+                "automatic_approval_allowed": False,
+                "required_receipt_contract": "factorforge_external_human_approval_receipt_v3",
+                "required_bindings": [
+                    "report_id",
+                    "run_id",
+                    "synthesis_sha256",
+                    "selected_law",
+                    "mechanism_delta",
+                    "economic_backprojection",
+                    "fresh_oos_child_intent",
+                ],
             }
-            if approval_result.get("rc") != 0:
-                proof["status"] = "FAIL"
-                proof["final_outcome"] = "blocked"
-                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_COUNCIL_SYNTHESIS_APPROVAL_FAILED"
-                proof["updated_at_utc"] = utc_now()
-                write_json_atomic(proof_path, proof)
-                write_aggregate_brief(brief_path, proof, run_root)
-                print("BLOCK_FACTORFORGE_LOOP_COUNCIL_SYNTHESIS_APPROVAL_FAILED")
-                return 1
-            state = classify_loop_state(
-                run_root,
-                current_report_id,
-                int(command_result.get("rc") or 0),
-                max_reached=loop_index >= args.max_loops,
-                contract_smoke_mode=(
-                    args.allow_legacy_research_protocol_smoke
-                ),
-            )
-            iteration.update(state)
-            if loop_index >= args.max_loops and state.get("can_continue"):
-                iteration["approval_bridge_requires_additional_loop_for_child"] = True
-                proof["approval_consumed_loop_slot"] = True
-                proof["approval_bridge_requires_additional_loop_for_child"] = True
-                append_note(
-                    proof,
-                    f"Approval bridge consumed loop slot {loop_index}; rerun with additional max_loops to materialize child for {current_report_id}",
-                )
+            proof["status"] = "PAUSED"
+            proof["final_outcome"] = "WAITING_EXTERNAL_HUMAN_APPROVAL"
+            proof["stop_reason"] = "external_human_approval_receipt_required"
             proof["updated_at_utc"] = utc_now()
-            append_note(proof, f"Approved main-agent Council synthesis for {current_report_id}")
+            append_note(
+                proof,
+                f"Completed Council synthesis for {current_report_id}; waiting for external human approval",
+            )
+            attach_paused_note_if_needed(
+                factorforge_root=run_root,
+                report_id=current_report_id,
+                proof=proof,
+                iteration=iteration,
+                pause_state="WAITING_EXTERNAL_HUMAN_APPROVAL",
+                reason="external_human_approval_receipt_required",
+            )
             write_json_atomic(proof_path, proof)
+            write_aggregate_brief(brief_path, proof, run_root)
+            print("WAITING_EXTERNAL_HUMAN_APPROVAL")
+            return 0
 
         if (
             state.get("outcome") in {"awaiting_agent_results", "exhausted"}
@@ -1062,7 +1496,10 @@ def main() -> int:
         ):
             terminal_cmd = terminal_rejection_command(current_report_id, run_root, loop_index, args.max_loops)
             terminal_result = run_command(terminal_cmd, env=env, dry_run=args.dry_run)
-            iteration["terminal_reject_bridge_command"] = terminal_result
+            iteration["terminal_reject_bridge_command"] = public_command_result(
+                terminal_result,
+                denied_values=host_private_proof_values,
+            )
             iteration["terminal_reject_bridge_rc"] = terminal_result.get("rc")
             terminal_text = f"{terminal_result.get('stdout_tail') or ''}\n{terminal_result.get('stderr_tail') or ''}"
             terminal_state = classify_terminal_rejection_result(
@@ -1138,7 +1575,10 @@ def main() -> int:
                 dry_run=args.dry_run,
             )
             iteration["final_protocol_validation_command"] = (
-                final_protocol_result
+                public_command_result(
+                    final_protocol_result,
+                    denied_values=host_private_proof_values,
+                )
             )
             if final_protocol_result.get("rc") != 0:
                 proof["status"] = "FAIL"
@@ -1177,6 +1617,15 @@ def main() -> int:
             return 1
 
         if not state.get("can_continue"):
+            if state.get("outcome") == "max_loops_reached":
+                return finalize_budget_exhaustion(
+                    proof=proof,
+                    iteration=iteration,
+                    proof_path=proof_path,
+                    brief_path=brief_path,
+                    factorforge_root=run_root,
+                    report_id=current_report_id,
+                )
             proof["status"] = state.get("proof_status")
             terminal_rejection_closed = (
                 run_root
@@ -1200,7 +1649,10 @@ def main() -> int:
                     dry_run=args.dry_run,
                 )
                 iteration["raw_terminal_protocol_revalidation_command"] = (
-                    raw_final_protocol_result
+                    public_command_result(
+                        raw_final_protocol_result,
+                        denied_values=host_private_proof_values,
+                    )
                 )
                 if raw_final_protocol_result.get("rc") != 0:
                     proof["status"] = "FAIL"
@@ -1247,20 +1699,14 @@ def main() -> int:
             )
 
         if loop_index >= args.max_loops:
-            proof["status"] = "PASS"
-            proof["formal_proof_eligible"] = not (
-                args.dry_run
-                or args.allow_legacy_research_protocol_smoke
+            return finalize_budget_exhaustion(
+                proof=proof,
+                iteration=iteration,
+                proof_path=proof_path,
+                brief_path=brief_path,
+                factorforge_root=run_root,
+                report_id=current_report_id,
             )
-            proof["final_outcome"] = "max_loops_reached"
-            proof["stop_reason"] = "max_loops_reached"
-            iteration["outcome"] = "max_loops_reached"
-            iteration["stop_reason"] = "max_loops_reached"
-            iteration["proof_status"] = "PASS"
-            write_json_atomic(proof_path, proof)
-            write_aggregate_brief(brief_path, proof, run_root)
-            print("max_loops_reached")
-            return 0
 
         child = approved_child_revision_from_handoff(run_root, current_report_id, loop_index)
         if not child.get("ok"):
@@ -1277,41 +1723,75 @@ def main() -> int:
         iteration["selected_revision_id"] = child.get("revision_id")
         iteration["child_report_id"] = child.get("child_report_id")
         report_path = materialization_report_path(run_root, current_report_id, str(child["child_report_id"]))
-        existing_materialization = existing_materialization_report(run_root, current_report_id, str(child["child_report_id"]))
-        if existing_materialization.get("ok") is True:
-            materialization_report = existing_materialization.get("report") if isinstance(existing_materialization.get("report"), dict) else {}
-            iteration["materialization_command"] = {
-                "command": materialization_command(current_report_id, str(child["child_report_id"]), run_root),
-                "cwd": str(REPO_ROOT),
-                "started_at_utc": utc_now(),
-                "finished_at_utc": utc_now(),
-                "rc": 0,
-                "stdout_tail": "SKIPPED_EXISTING_MATERIALIZATION",
-                "stderr_tail": "",
-                "status": "SKIPPED_EXISTING_MATERIALIZATION",
-            }
-            iteration["materialization_rc"] = 0
-            iteration["materialization_reused"] = True
-            iteration["materialization_report_path"] = str(report_path)
-            iteration["materialized_artifact_paths"] = materialization_report.get("materialized_artifacts") or {}
-            append_note(proof, f"Reused existing child materialization for {child.get('child_report_id')}")
-        else:
-            materialize_cmd = materialization_command(current_report_id, str(child["child_report_id"]), run_root)
-            materialize_result = run_command(materialize_cmd, env=env, dry_run=args.dry_run)
-            materialization_report = load_json_if_exists(report_path)
-            iteration["materialization_command"] = materialize_result
-            iteration["materialization_rc"] = materialize_result.get("rc")
-            iteration["materialization_reused"] = False
-            iteration["materialization_report_path"] = str(report_path)
-            iteration["materialized_artifact_paths"] = materialization_report.get("materialized_artifacts") or {}
-            if materialize_result.get("rc") != 0:
-                proof["status"] = "FAIL"
-                proof["final_outcome"] = "blocked"
-                proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_CHILD_MATERIALIZATION_FAILED"
+        materialization_existed_before = report_path.is_file() and not report_path.is_symlink()
+        materialize_cmd = materialization_command(
+            current_report_id,
+            str(child["child_report_id"]),
+            run_root,
+            expected_host_trust_manifest_sha256=(
+                getattr(args, "expected_host_trust_manifest_sha256", None)
+            ),
+            incident_trust_root=incident_trust_root,
+            incident_installation_id=incident_installation_id,
+        )
+        # Never authorize reuse from the loop's structural readback alone.  The
+        # canonical materializer performs preregistration/OOS freshness replay
+        # and the idempotent report readback while its incident registry guard
+        # is the outermost lock.
+        materialize_result = run_command(
+            materialize_cmd,
+            env=env,
+            dry_run=args.dry_run,
+        )
+        materialization_report = load_json_if_exists(report_path)
+        iteration["materialization_command"] = public_command_result(
+            materialize_result,
+            denied_values=host_private_proof_values,
+        )
+        iteration["materialization_rc"] = materialize_result.get("rc")
+        iteration["materialization_reused"] = bool(
+            materialization_existed_before
+            and materialize_result.get("rc") == 0
+        )
+        iteration["materialization_report_path"] = str(report_path)
+        iteration["materialized_artifact_paths"] = materialization_report.get("materialized_artifacts") or {}
+        if iteration["materialization_reused"]:
+            append_note(
+                proof,
+                f"Current-authority replay accepted existing child materialization for {child.get('child_report_id')}",
+            )
+        if materialize_result.get("rc") != 0:
+            materialize_text = (
+                f"{materialize_result.get('stdout_tail') or ''}\n"
+                f"{materialize_result.get('stderr_tail') or ''}"
+            )
+            if "WAITING_DATA_FRESH_SEALED_OOS_ALLOCATION" in materialize_text:
+                iteration["outcome"] = "WAITING_DATA_FRESH_SEALED_OOS_ALLOCATION"
+                iteration["proof_status"] = "PAUSED"
+                iteration["stop_reason"] = "fresh_sealed_oos_allocation_or_child_preregistration_required"
+                proof["status"] = "PAUSED"
+                proof["final_outcome"] = "WAITING_DATA_FRESH_SEALED_OOS_ALLOCATION"
+                proof["stop_reason"] = "fresh_sealed_oos_allocation_or_child_preregistration_required"
+                proof["updated_at_utc"] = utc_now()
+                attach_paused_note_if_needed(
+                    factorforge_root=run_root,
+                    report_id=current_report_id,
+                    proof=proof,
+                    iteration=iteration,
+                    pause_state="WAITING_DATA_FRESH_SEALED_OOS_ALLOCATION",
+                    reason="fresh_sealed_oos_allocation_or_child_preregistration_required",
+                )
                 write_json_atomic(proof_path, proof)
                 write_aggregate_brief(brief_path, proof, run_root)
-                print("BLOCK_FACTORFORGE_LOOP_CHILD_MATERIALIZATION_FAILED")
-                return 1
+                print("WAITING_DATA_FRESH_SEALED_OOS_ALLOCATION")
+                return 0
+            proof["status"] = "FAIL"
+            proof["final_outcome"] = "blocked"
+            proof["stop_reason"] = "BLOCK_FACTORFORGE_LOOP_CHILD_MATERIALIZATION_FAILED"
+            write_json_atomic(proof_path, proof)
+            write_aggregate_brief(brief_path, proof, run_root)
+            print("BLOCK_FACTORFORGE_LOOP_CHILD_MATERIALIZATION_FAILED")
+            return 1
         append_note(proof, f"Continuing to child loop report {child.get('child_report_id')}")
         write_json_atomic(proof_path, proof)
 
@@ -1320,16 +1800,14 @@ def main() -> int:
         current_report_id = str(child["child_report_id"])
         current_start_step = "3b"
 
-    proof["status"] = "PASS"
-    proof["formal_proof_eligible"] = not (
-        args.dry_run or args.allow_legacy_research_protocol_smoke
+    return finalize_budget_exhaustion(
+        proof=proof,
+        iteration=(proof.get("iterations") or [None])[-1],
+        proof_path=proof_path,
+        brief_path=brief_path,
+        factorforge_root=run_root,
+        report_id=current_report_id,
     )
-    proof["final_outcome"] = "max_loops_reached"
-    proof["stop_reason"] = "max_loops_reached"
-    write_json_atomic(proof_path, proof)
-    write_aggregate_brief(brief_path, proof, run_root)
-    print("max_loops_reached")
-    return 0
 
 
 if __name__ == "__main__":

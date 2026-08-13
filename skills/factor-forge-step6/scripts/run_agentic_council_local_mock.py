@@ -242,6 +242,12 @@ def main() -> None:
     if manifest.get("dispatch_manifest_version") != MANIFEST_VERSION or manifest.get("report_id") != rid:
         print("BLOCK_AGENTIC_COUNCIL_DISPATCH_MANIFEST_INVALID", file=sys.stderr)
         raise SystemExit(1)
+    if manifest.get("evo_v2") is not None:
+        print(
+            "BLOCK_COUNCIL_EVO_V2_REAL_AGENT_DISPATCH_REQUIRED",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
     taskbook_tasks = {
         str(task.get("task_id")): task
         for task in taskbook.get("agent_tasks") or []

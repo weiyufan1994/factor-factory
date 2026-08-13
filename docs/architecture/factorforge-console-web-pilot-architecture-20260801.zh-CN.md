@@ -88,7 +88,7 @@ flowchart LR
   H --> S["S3 allowlist proxy"]
   S --> D["Data API / approved datamarts 只读"]
   AG --> B["固定模型 broker"]
-  B --> M["DeepSeek Reasoner"]
+  B --> M["DeepSeek V4 Flash（固定）"]
   FW --> V["官方 protocol/proof validator + isolation audit"]
   V --> L
   L --> W

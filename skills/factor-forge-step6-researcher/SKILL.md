@@ -43,12 +43,26 @@ factorforge/objects/research_iteration_master/researcher_memo__<report_id>.json
 7. Then run normal Step6:
 
 ```bash
+FACTORFORGE_OOS_HOST_TRUST_ROOT=<host-private-incident-trust-root> \
+FACTORFORGE_OOS_HOST_INSTALLATION_ID=<host-installation-id> \
 python3 scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 6 --end-step 6
 ```
 
 Step6 will preserve the external memo under `research_memo.researcher_agent_memo`.
 
 Direct `skills/factor-forge-step6/scripts/run_step6.py` or `validate_step6.py` commands are developer-debug only. They are not the normal flow and must not be used to claim a formal Step6 result outside the ultimate wrapper proof path.
+
+### EVO V2 pre-OOS exception
+
+Do not run this normal post-Step4/5 dossier flow for an EVO parent or child
+paused before OOS release. A pre-OOS revision researcher/Council may consume
+only the `PURGED_IS_ONLY` checkpoint, canonical feedback/tension ledger,
+preregistered predictions and the pre-OOS Council packet. It must not build a
+normal Step5/OOS dossier, inspect sealed OOS, or turn the diagnostic transfer
+ledger into reusable canonical knowledge. After OOS is consumed, revision is
+forbidden for that identity; terminal learning follows the non-revision
+closure. Any descendant must be separately authored, assured, preregistered
+and allocated fresh sealed OOS.
 
 ## Required Reasoning Order
 

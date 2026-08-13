@@ -25,6 +25,10 @@ from factor_factory.measurement_program import (
     build_measurement_program_binding,
     validate_measurement_program,
 )
+from factor_factory.revision_council.production import (
+    build_evo_task_identity,
+    validate_formal_evo_packet,
+)
 
 OBJ = FF / "objects"
 TASKBOOK_VERSION = "factorforge_agentic_revision_council_taskbook_v1"
@@ -32,6 +36,8 @@ RUNTIME_POLICY_VERSION = "factorforge_runtime_dispatch_policy_v1"
 RUNTIME_VALUES = {"codex", "openclaw", "manual_file", "unknown"}
 TOKEN_PACKET_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING"
 TOKEN_MEASUREMENT_PROGRAM_INVALID = "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID"
+TOKEN_EVO_V2_PACKET = "BLOCK_COUNCIL_EVO_V2_FORMAL_PACKET_INVALID"
+TOKEN_EVO_V2_EXECUTOR = "BLOCK_COUNCIL_EVO_V2_REAL_AGENT_DISPATCH_REQUIRED"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -76,8 +82,10 @@ def agent_task(
     *,
     route: dict[str, Any],
     visible_context: dict[str, Any],
+    evo_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     route_id = str(route.get("route_id") or role)
+    task_id = f"route_{safe_token(route_id)}"
     favored_visible = route.get("favored_thesis_visible") is True
     measurement_program = visible_context.get(
         "mechanism_conditioned_measurement_program"
@@ -85,9 +93,9 @@ def agent_task(
     measurement_program_binding = build_measurement_program_binding(
         measurement_program
     )
-    return {
+    task = {
         "agent_role": role,
-        "task_id": f"route_{safe_token(route_id)}",
+        "task_id": task_id,
         "research_protocol_version": PROTOCOL_VERSION,
         "route_id": route_id,
         "route_family": route.get("route_family"),
@@ -121,7 +129,7 @@ def agent_task(
         + " Do not reconstruct from a generic family label or repeat a falsified revision rule.",
         "main_agent_mechanism_memo_ref": (
             f"objects/research_iteration_master/main_agent_mechanism_memo__{report_id}.json"
-            if favored_visible
+            if favored_visible and evo_context is None
             else None
         ),
         "proof_obligation_ids": route.get("proof_obligation_ids") or [],
@@ -169,6 +177,34 @@ def agent_task(
         ],
         "write_scope": f"objects/research_iteration_master/revision_council/{report_id}/agent_results/",
     }
+    if evo_context is not None:
+        task["evo_v2_required"] = True
+        task["evo_v2_packet_context"] = evo_context
+        task["evo_v2_task_identity"] = build_evo_task_identity(
+            evo_context,
+            report_id=report_id,
+            task_id=task_id,
+            route_id=route_id,
+            route_fingerprint=route.get("route_fingerprint"),
+            blind_context_hash=route.get("blind_context_hash"),
+        )
+        task["required_outputs"] = [
+            *task["required_outputs"],
+            "evo_v2_task_identity",
+            "evo_v2_closed_derivation_outcome",
+        ]
+        task["forbidden_changes"] = [
+            *task["forbidden_changes"],
+            "read or reuse sealed or consumed OOS evidence",
+            "change the frozen estimand, thresholds, trial budget, or OOS policy",
+        ]
+        task["research_question"] += (
+            " Use only the PURGED_IS_ONLY evidence view. Return exactly one EVO V2 "
+            "outcome: MINIMAL_MECHANISM_DELTA with one bound law, delta, and "
+            "economic backprojection; or NO_DERIVED_LAW with zero laws and a "
+            "complete derivation-failure proof."
+        )
+    return task
 
 
 def default_routes(failure_signature: str | None) -> list[dict[str, Any]]:
@@ -364,13 +400,45 @@ def main() -> None:
         print(TOKEN_PACKET_MISSING + ": " + json.dumps({"packet_path": str(packet_path)}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1)
     packet = load_json(packet_path)
+    evo_context = packet.get("evo_v2")
+    evo_reasons = validate_formal_evo_packet(
+        packet,
+        workspace_root=FF,
+        report_id=rid,
+    )
+    if evo_reasons:
+        print(
+            TOKEN_EVO_V2_PACKET
+            + ": "
+            + json.dumps(
+                {"report_id": rid, "block_reasons": evo_reasons},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if evo_context is not None:
+        if args.executor != "dispatch_manifest":
+            print(
+                TOKEN_EVO_V2_EXECUTOR
+                + ": "
+                + json.dumps({"report_id": rid, "executor": args.executor}),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
     iteration = load_json(iteration_path) if iteration_path.exists() else {}
     memo = nested(iteration, "research_judgment", "research_memo")
     if not isinstance(memo, dict):
         memo = {}
     revision = nested(packet, "research_memo", "revision_strategy")
     mechanism = nested(packet, "research_memo", "mechanism_analysis")
-    brief_ref = (packet.get("loop_research_brief") or {}).get("reference") or iteration.get("loop_research_brief") or {}
+    brief_ref = (
+        {}
+        if evo_context is not None
+        else (packet.get("loop_research_brief") or {}).get("reference")
+        or iteration.get("loop_research_brief")
+        or {}
+    )
 
     protocol_gate: dict[str, Any] = {
         "mode": args.research_protocol,
@@ -464,7 +532,11 @@ def main() -> None:
         routes = default_routes(failure_signature)
 
     fact_context = {
-        "decision": (iteration.get("research_judgment") or {}).get("decision"),
+        "decision": (
+            None
+            if evo_context is not None
+            else (iteration.get("research_judgment") or {}).get("decision")
+        ),
         "mechanism_fit": mechanism.get("mechanism_fit") if isinstance(mechanism, dict) else None,
         "primary_failure_signature": failure_signature,
         "mechanism_conditioned_measurement_program": packet.get("mechanism_conditioned_measurement_program") or {},
@@ -481,6 +553,8 @@ def main() -> None:
         "key_metrics": packet.get("metrics") or {},
         "chart_evidence": packet.get("chart_evidence") or {},
     }
+    if evo_context is not None:
+        fact_context["evo_v2"] = evo_context
     tasks: list[dict[str, Any]] = []
     for route in routes:
         family = str(route.get("route_family") or "unclassified")
@@ -504,6 +578,7 @@ def main() -> None:
                         "exact_gap": route.get("exact_gap"),
                     },
                 },
+                evo_context=evo_context,
             )
         )
     taskbook = {
@@ -518,6 +593,7 @@ def main() -> None:
         "research_protocol_version": PROTOCOL_VERSION,
         "research_protocol_gate": protocol_gate,
         "research_protocol_artifacts": protocol_artifacts,
+        "evo_v2": evo_context,
         "route_selection_policy": {
             "selection_mode": (
                 "approach_registry"

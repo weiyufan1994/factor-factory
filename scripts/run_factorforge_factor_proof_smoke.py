@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import shutil
@@ -17,6 +18,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.research_evidence import sha256_file
+from factor_factory.oos_exposure_incident import (
+    ensure_empty_oos_exposure_private_registry,
+)
 from factor_factory.research_release import (
     write_oos_release_manifest,
     write_search_trial_ledger,
@@ -37,6 +41,21 @@ from factor_factory.research_proof import (
 )
 
 FIXTURE_SEQUENCE = 0
+
+
+def smoke_incident_context(root: Path) -> tuple[Path, str]:
+    """Create a real Host-private empty incident registry for formal writers."""
+
+    trust_root = root.parent / f".{root.name}.factorforge-smoke-host-trust"
+    installation_id = (
+        "smoke-"
+        + hashlib.sha256(os.fspath(root.resolve()).encode()).hexdigest()[:20]
+    )
+    ensure_empty_oos_exposure_private_registry(
+        trust_root,
+        installation_id=installation_id,
+    )
+    return trust_root, installation_id
 
 
 def write_evidence(
@@ -424,12 +443,15 @@ def valid_certificate(
         spec=spec,
     )
     spec.update(identities)
+    incident_trust_root, incident_installation_id = smoke_incident_context(root)
     write_oos_release_manifest(
         release_path,
         workspace_root=root,
         spec=spec,
         identities=identities,
         threshold_path=registration_path,
+        incident_trust_root=incident_trust_root,
+        incident_installation_id=incident_installation_id,
     )
     bundle = run_metric_verifier(
         workspace_root=root,
@@ -523,6 +545,10 @@ def has(report: dict[str, Any], token: str) -> bool:
 def main() -> int:
     root = Path("/tmp/factorforge_factor_proof_smoke")
     shutil.rmtree(root, ignore_errors=True)
+    shutil.rmtree(
+        root.parent / f".{root.name}.factorforge-smoke-host-trust",
+        ignore_errors=True,
+    )
     root.mkdir(parents=True)
     cases: dict[str, dict[str, Any]] = {}
 

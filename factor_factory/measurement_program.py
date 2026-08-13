@@ -53,6 +53,7 @@ PUBLIC_MEASUREMENT_PROGRAM_FIELDS = frozenset(
         "public_derivation_record",
         "implementation",
         "deterministic_validation_plan",
+        "evaluation_design",
         "search_policy",
     }
 )
@@ -97,6 +98,7 @@ PUBLIC_MEASUREMENT_SECTION_FIELDS = {
         {
             "estimand",
             "observation_map",
+            "executable_formula_projection",
             "estimator",
             "identification_assumptions",
             "bias_variance_and_noise",
@@ -117,10 +119,15 @@ PUBLIC_MEASUREMENT_SECTION_FIELDS = {
             "implementation_parity",
         }
     ),
+    "evaluation_design": frozenset(
+        {"primary_metrics", "portfolio_contract", "proof_plan"}
+    ),
     "search_policy": frozenset(
         {
             "invariant_estimand",
             "allowed_model_or_estimator_variations",
+            "registered_diagnostic_trials",
+            "quarantined_sensitivities",
             "forbidden_shortcuts",
             "objective_vector",
             "stop_rules",
@@ -351,6 +358,7 @@ def measurement_program_template(
         "observation_and_estimation": {
             "estimand": placeholder,
             "observation_map": placeholder,
+            "executable_formula_projection": placeholder,
             "estimator": placeholder,
             "identification_assumptions": [placeholder, placeholder],
             "bias_variance_and_noise": placeholder,
@@ -404,9 +412,40 @@ def measurement_program_template(
             "ablation_and_alias_tests": [placeholder],
             "implementation_parity": placeholder,
         },
+        "evaluation_design": {
+            "primary_metrics": [
+                {
+                    "metric": placeholder,
+                    "direction": placeholder,
+                    "candidate_threshold": placeholder,
+                    "official_threshold": placeholder,
+                    "evidence_role": "promotion_gate_evidence",
+                }
+            ],
+            "portfolio_contract": {
+                "long_side_definition": placeholder,
+                "weighting": placeholder,
+                "rebalance": placeholder,
+                "return_path": placeholder,
+                "nav_construction": placeholder,
+                "turnover_definition": placeholder,
+                "cost_model": placeholder,
+                "capacity_model": placeholder,
+                "minimum_eligible_names": 1,
+                "maximum_excluded_fraction": 0.99,
+            },
+            "proof_plan": {
+                "raw_evidence_artifacts": [placeholder],
+                "hash_policy": placeholder,
+                "replay_obligations": [placeholder],
+                "authority_boundary": placeholder,
+            },
+        },
         "search_policy": {
             "invariant_estimand": placeholder,
             "allowed_model_or_estimator_variations": [placeholder],
+            "registered_diagnostic_trials": [],
+            "quarantined_sensitivities": [],
             "forbidden_shortcuts": [
                 "choose a story because an operator already exists",
                 "change the estimand because an available field is convenient",
@@ -756,6 +795,7 @@ def validate_measurement_program(
         for field in (
             "estimand",
             "observation_map",
+            "executable_formula_projection",
             "estimator",
             "bias_variance_and_noise",
             "legal_information_time",
@@ -930,6 +970,70 @@ def validate_measurement_program(
                 "measurement_program.deterministic_validation_plan",
             )
 
+    evaluation = program.get("evaluation_design")
+    evaluation_prefix = "measurement_program.evaluation_design"
+    if not isinstance(evaluation, dict):
+        reasons.append(evaluation_prefix)
+    else:
+        reject_unexpected(
+            evaluation,
+            PUBLIC_MEASUREMENT_SECTION_FIELDS["evaluation_design"],
+            evaluation_prefix,
+        )
+        metrics = evaluation.get("primary_metrics")
+        metric_keys = {
+            "metric", "direction", "candidate_threshold",
+            "official_threshold", "evidence_role",
+        }
+        if not isinstance(metrics, list) or not metrics:
+            reasons.append(f"{evaluation_prefix}.primary_metrics")
+        else:
+            seen_metrics: set[str] = set()
+            for index, metric in enumerate(metrics):
+                prefix = f"{evaluation_prefix}.primary_metrics[{index}]"
+                if not isinstance(metric, dict) or set(metric) != metric_keys:
+                    reasons.append(prefix)
+                    continue
+                for field in metric_keys:
+                    require_string(metric, field, prefix)
+                name = str(metric.get("metric") or "")
+                if name in seen_metrics:
+                    reasons.append(f"{prefix}.duplicate")
+                seen_metrics.add(name)
+                if metric.get("evidence_role") != "promotion_gate_evidence":
+                    reasons.append(f"{prefix}.evidence_role")
+        portfolio = evaluation.get("portfolio_contract")
+        portfolio_keys = {
+            "long_side_definition", "weighting", "rebalance", "return_path",
+            "nav_construction", "turnover_definition", "cost_model",
+            "capacity_model", "minimum_eligible_names",
+            "maximum_excluded_fraction",
+        }
+        if not isinstance(portfolio, dict) or set(portfolio) != portfolio_keys:
+            reasons.append(f"{evaluation_prefix}.portfolio_contract")
+        else:
+            for field in portfolio_keys - {
+                "minimum_eligible_names", "maximum_excluded_fraction"
+            }:
+                require_string(portfolio, field, f"{evaluation_prefix}.portfolio_contract")
+            if type(portfolio.get("minimum_eligible_names")) is not int or portfolio["minimum_eligible_names"] < 1:
+                reasons.append(f"{evaluation_prefix}.portfolio_contract.minimum_eligible_names")
+            excluded = portfolio.get("maximum_excluded_fraction")
+            if isinstance(excluded, bool) or not isinstance(excluded, (int, float)) or not 0 <= float(excluded) < 1:
+                reasons.append(f"{evaluation_prefix}.portfolio_contract.maximum_excluded_fraction")
+        proof = evaluation.get("proof_plan")
+        proof_keys = {
+            "raw_evidence_artifacts", "hash_policy", "replay_obligations",
+            "authority_boundary",
+        }
+        if not isinstance(proof, dict) or set(proof) != proof_keys:
+            reasons.append(f"{evaluation_prefix}.proof_plan")
+        else:
+            require_string_list(proof, "raw_evidence_artifacts", f"{evaluation_prefix}.proof_plan")
+            require_string_list(proof, "replay_obligations", f"{evaluation_prefix}.proof_plan")
+            require_string(proof, "hash_policy", f"{evaluation_prefix}.proof_plan")
+            require_string(proof, "authority_boundary", f"{evaluation_prefix}.proof_plan")
+
     search = program.get("search_policy")
     if not isinstance(search, dict):
         reasons.append("measurement_program.search_policy")
@@ -950,5 +1054,56 @@ def validate_measurement_program(
         shortcuts = set(str(item) for item in search.get("forbidden_shortcuts") or [])
         if "choose a story because an operator already exists" not in shortcuts:
             reasons.append("measurement_program.search_policy.operator_first_forbidden")
+        diagnostics = search.get("registered_diagnostic_trials")
+        if not isinstance(diagnostics, list):
+            reasons.append("measurement_program.search_policy.registered_diagnostic_trials")
+        else:
+            for index, item in enumerate(diagnostics):
+                prefix = f"measurement_program.search_policy.registered_diagnostic_trials[{index}]"
+                if not isinstance(item, dict) or set(item) != {
+                    "trial_id",
+                    "role",
+                    "component_id",
+                    "formula_or_law",
+                    "affects_acceptance",
+                    "multiple_testing_family",
+                }:
+                    reasons.append(prefix)
+                    continue
+                for field in (
+                    "trial_id",
+                    "role",
+                    "component_id",
+                    "formula_or_law",
+                    "multiple_testing_family",
+                ):
+                    require_string(item, field, prefix)
+                if item.get("role") not in {
+                    "standalone_component",
+                    "leave_one_out",
+                    "sign_oracle",
+                    "alias_diagnostic",
+                    "regime_diagnostic",
+                }:
+                    reasons.append(f"{prefix}.role")
+                if item.get("affects_acceptance") is not False:
+                    reasons.append(f"{prefix}.affects_acceptance")
+        sensitivities = search.get("quarantined_sensitivities")
+        if not isinstance(sensitivities, list):
+            reasons.append("measurement_program.search_policy.quarantined_sensitivities")
+        else:
+            for index, item in enumerate(sensitivities):
+                prefix = f"measurement_program.search_policy.quarantined_sensitivities[{index}]"
+                if not isinstance(item, dict) or set(item) != {
+                    "sensitivity_id",
+                    "reason",
+                    "can_affect_acceptance",
+                }:
+                    reasons.append(prefix)
+                    continue
+                require_string(item, "sensitivity_id", prefix)
+                require_string(item, "reason", prefix)
+                if item.get("can_affect_acceptance") is not False:
+                    reasons.append(f"{prefix}.can_affect_acceptance")
 
     return list(dict.fromkeys(reasons))

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import platform
 import shlex
@@ -78,6 +79,14 @@ def git_sha(path: Path) -> str | None:
     return proc.stdout.strip() or None
 
 
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def ensure_task_spec(spec: dict[str, Any]) -> None:
     if spec.get("schema_version") != SCHEMA_VERSION:
         raise WorkerTaskError(TOKEN_TASK_SPEC_INVALID, f"schema_version must be {SCHEMA_VERSION}")
@@ -92,6 +101,9 @@ def ensure_task_spec(spec: dict[str, Any]) -> None:
 def build_initial_report(spec: dict[str, Any], spec_path: Path) -> dict[str, Any]:
     runtime = spec.get("runtime") if isinstance(spec.get("runtime"), dict) else {}
     transport = spec.get("transport") if isinstance(spec.get("transport"), dict) else {}
+    side_effect_contract = dict(DEFAULT_SIDE_EFFECTS)
+    if isinstance(spec.get("side_effect_contract"), dict):
+        side_effect_contract.update(spec["side_effect_contract"])
     return {
         "schema_version": REPORT_SCHEMA_VERSION,
         "task_spec_path": str(spec_path),
@@ -109,6 +121,13 @@ def build_initial_report(spec: dict[str, Any], spec_path: Path) -> dict[str, Any
             "workspace_path": runtime.get("workspace_path"),
             "git_sha": None,
             "git_sha_required": (spec.get("preflight") or {}).get("git_sha_required"),
+            "source_bundle_path": (spec.get("preflight") or {}).get(
+                "source_bundle_path"
+            ),
+            "source_bundle_sha256": None,
+            "source_bundle_sha256_required": (spec.get("preflight") or {}).get(
+                "source_bundle_sha256_required"
+            ),
             "python_path": runtime.get("python") or sys.executable,
             "python_version": None,
             "env_summary": {
@@ -135,6 +154,7 @@ def build_initial_report(spec: dict[str, Any], spec_path: Path) -> dict[str, Any
             "blocker_token": None,
             "artifact_paths": [],
         },
+        "side_effect_contract": side_effect_contract,
         "side_effects": dict(DEFAULT_SIDE_EFFECTS),
     }
 
@@ -191,6 +211,57 @@ def run_preflight(spec: dict[str, Any], report: dict[str, Any], spec_path: Path)
             raise WorkerTaskError(TOKEN_REPO_SHA_MISMATCH, "worker repo sha mismatch", {"required_sha": required_sha, "actual_sha": actual_sha})
         if required_sha:
             record_check(report, "git_sha_required", True, required_sha=required_sha, actual_sha=actual_sha)
+
+    source_bundle_path = resolve_path(
+        preflight.get("source_bundle_path"),
+        base=workspace_path or spec_path.parent,
+    )
+    source_bundle_required = preflight.get("source_bundle_sha256_required")
+    if source_bundle_path is not None or source_bundle_required:
+        if source_bundle_path is None or not source_bundle_path.is_file():
+            record_check(
+                report,
+                "source_bundle_exists",
+                False,
+                path=str(source_bundle_path) if source_bundle_path else None,
+            )
+            raise WorkerTaskError(
+                TOKEN_PATH_MISMATCH,
+                "source bundle path is missing or not a file",
+            )
+        actual_bundle_sha = file_sha256(source_bundle_path)
+        report["runtime"]["source_bundle_path"] = str(source_bundle_path)
+        report["runtime"]["source_bundle_sha256"] = actual_bundle_sha
+        record_check(
+            report,
+            "source_bundle_exists",
+            True,
+            path=str(source_bundle_path),
+            sha256=actual_bundle_sha,
+        )
+        if not source_bundle_required or actual_bundle_sha != source_bundle_required:
+            record_check(
+                report,
+                "source_bundle_sha256_required",
+                False,
+                required_sha=source_bundle_required,
+                actual_sha=actual_bundle_sha,
+            )
+            raise WorkerTaskError(
+                TOKEN_REPO_SHA_MISMATCH,
+                "worker source bundle sha mismatch",
+                {
+                    "required_sha": source_bundle_required,
+                    "actual_sha": actual_bundle_sha,
+                },
+            )
+        record_check(
+            report,
+            "source_bundle_sha256_required",
+            True,
+            required_sha=source_bundle_required,
+            actual_sha=actual_bundle_sha,
+        )
 
     if workspace_path is not None:
         if not workspace_path.exists():
@@ -423,10 +494,24 @@ def validate_worker_command_report(report: dict[str, Any]) -> dict[str, Any]:
 
     runtime = report.get("runtime") if isinstance(report.get("runtime"), dict) else {}
     check("runtime_python_present", bool(runtime.get("python_path")), "runtime.python_path is required")
-    check("runtime_git_sha_present", bool(runtime.get("git_sha")), "runtime.git_sha is required")
+    source_bundle_sha = runtime.get("source_bundle_sha256")
+    check(
+        "runtime_source_identity_present",
+        bool(runtime.get("git_sha")) or bool(source_bundle_sha),
+        "runtime requires git_sha or source_bundle_sha256",
+    )
     required_sha = runtime.get("git_sha_required")
     if required_sha:
         check("runtime_git_sha_matches_required", runtime.get("git_sha") == required_sha, "runtime.git_sha must match runtime.git_sha_required", required_sha=required_sha, actual_sha=runtime.get("git_sha"))
+    required_bundle_sha = runtime.get("source_bundle_sha256_required")
+    if required_bundle_sha:
+        check(
+            "runtime_source_bundle_sha_matches_required",
+            source_bundle_sha == required_bundle_sha,
+            "runtime.source_bundle_sha256 must match the required bundle identity",
+            required_sha=required_bundle_sha,
+            actual_sha=source_bundle_sha,
+        )
 
     preflight = report.get("preflight") if isinstance(report.get("preflight"), dict) else {}
     check("preflight_pass", preflight.get("status") == "PASS", "preflight.status must be PASS")
@@ -448,10 +533,20 @@ def validate_worker_command_report(report: dict[str, Any]) -> dict[str, Any]:
     check("business_validator_pass", business.get("validator_verdict") in {"PASS", "ACCEPT"}, "business_result.validator_verdict must be PASS/ACCEPT", validator_verdict=business.get("validator_verdict"))
 
     side_effects = report.get("side_effects") if isinstance(report.get("side_effects"), dict) else {}
+    expected_side_effects = dict(DEFAULT_SIDE_EFFECTS)
+    if isinstance(report.get("side_effect_contract"), dict):
+        expected_side_effects.update(report["side_effect_contract"])
     for key in sorted(DEFAULT_SIDE_EFFECTS):
         check(f"side_effect_{key}_declared", key in side_effects, f"side_effects.{key} must be declared")
         if key in side_effects:
-            check(f"side_effect_{key}_false", side_effects.get(key) is False, f"side_effects.{key} must be false by default", observed=side_effects.get(key))
+            expected = expected_side_effects[key]
+            check(
+                f"side_effect_{key}_matches_contract",
+                side_effects.get(key) == expected,
+                f"side_effects.{key} must match side_effect_contract",
+                expected=expected,
+                observed=side_effects.get(key),
+            )
 
     failed = [item for item in checks if not item.get("ok")]
     blocker = None

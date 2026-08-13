@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import re
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping, Sequence
+
+from factor_factory.research_org.contracts import (
+    SAFE_ID_RE,
+    SHA256_RE,
+    stable_json_hash,
+    with_content_hash,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_GRAPH_ROOT = REPO_ROOT / "knowledge" / "因子工厂" / "graph"
@@ -12,6 +22,25 @@ DEFAULT_NODE_INDEX = DEFAULT_GRAPH_ROOT / "factor_knowledge_nodes.jsonl"
 DEFAULT_EDGE_INDEX = DEFAULT_GRAPH_ROOT / "factor_knowledge_edges.jsonl"
 DEFAULT_TAXONOMY = REPO_ROOT / "knowledge" / "因子工厂" / "taxonomy" / "factor_taxonomy_v1.json"
 BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE = "BLOCK_FACTORFORGE_KNOWLEDGE_RETRIEVAL_UNAVAILABLE"
+BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID = (
+    "BLOCK_FACTORFORGE_EVO_V2_MEMORY_RETRIEVAL_INVALID"
+)
+EVO_V2_MEMORY_RETRIEVAL_PROJECTION_VERSION = (
+    "factorforge_researcher_memory_evo_v2_retrieval_projection_v1"
+)
+EVO_V2_COLD_START_SEARCH_RECEIPT_TYPE = (
+    "factorforge_researcher_memory_evo_v2_cold_start_search_receipt_v1"
+)
+EVO_V2_COLD_START_SEARCH_REQUEST_VERSION = (
+    "factorforge_researcher_memory_evo_v2_cold_start_search_request_v1"
+)
+EVO_V2_COLD_START_SEARCH_AGENT_RECORD_VERSION = (
+    "factorforge_researcher_memory_evo_v2_cold_start_search_agent_record_v1"
+)
+EVO_V2_COLD_START_SEARCH_ROLE_ID = "knowledge_librarian"
+EVO_V2_COLD_START_SEARCH_SESSIONS_ROOT = (
+    "researcher-memory-evo-v2-retrieval-sessions"
+)
 
 FORMULA_QUERY_EXPANSIONS = {
     "normalize": {"cross_sectional", "standardization", "zscore", "截面标准化"},
@@ -294,3 +323,1038 @@ def graph_node_to_similar_case(node: dict[str, Any], *, score: float = 0.0) -> d
         "reuse_guidance": node.get("reuse_guidance") or [],
         "not_same_factor_unless_identity_matches": True,
     }
+
+
+_EVO_V2_FINGERPRINT_FIELDS = {
+    "economic_claim",
+    "estimand_id",
+    "payer_or_constraint",
+    "mathematical_object",
+    "broken_invariant_or_boundary",
+    "observation_mapping",
+    "failure_signature",
+}
+_EVO_V2_RETRIEVAL_LANES = (
+    "structural_isomorph",
+    "cross_math_analogy",
+    "near_miss_failure",
+    "direct_counterexample",
+    "historical_episode_context",
+)
+_EVO_V2_IDENTITY_FIELDS = {
+    "factor_id",
+    "report_id",
+    "research_id",
+    "branch_id",
+    "run_id",
+}
+_EVO_V2_COLD_START_INDEX_IDS = {"role_memory", "factor_knowledge"}
+
+
+def _evo_v2_fingerprint_reasons(value: Any) -> list[str]:
+    if not isinstance(value, Mapping) or set(value) != _EVO_V2_FINGERPRINT_FIELDS:
+        return ["mechanism_fingerprint_fields"]
+    reasons: list[str] = []
+    for field in _EVO_V2_FINGERPRINT_FIELDS:
+        item = value.get(field)
+        if not isinstance(item, str) or not item.strip():
+            reasons.append(f"mechanism_fingerprint_{field}")
+    if not SAFE_ID_RE.fullmatch(str(value.get("estimand_id") or "")):
+        reasons.append("mechanism_fingerprint_estimand_id")
+    return reasons
+
+
+def _evo_v2_cold_start_query_hash(
+    mechanism_fingerprint: Mapping[str, Any],
+) -> str:
+    return stable_json_hash(
+        {
+            "query_mode": "MECHANISM_FIRST_AFTER_BLIND_DERIVATION",
+            "mechanism_fingerprint": dict(mechanism_fingerprint),
+        }
+    )
+
+
+def validate_evo_v2_cold_start_search_receipt(
+    receipt: Any,
+    *,
+    artifact_identity: Mapping[str, Any],
+    mechanism_fingerprint: Mapping[str, Any],
+    trust_store: Any,
+) -> list[str]:
+    """Validate zero-hit proof from a completed isolated retrieval session."""
+
+    from factor_factory.researcher_memory_review import (
+        _evo_v2_adapter_completion_reasons,
+    )
+
+    reasons: list[str] = []
+    if not isinstance(receipt, Mapping):
+        return ["cold_start_search_receipt_object"]
+    expected_fields = {
+        "contract_version",
+        "authority",
+        "artifact_identity",
+        "query",
+        "inventory",
+        "retrieval_runtime",
+        "authority_guard",
+        "receipt_sha256",
+    }
+    if set(receipt) != expected_fields:
+        reasons.append("cold_start_search_receipt_fields")
+    if (
+        receipt.get("contract_version") != EVO_V2_COLD_START_SEARCH_RECEIPT_TYPE
+        or receipt.get("authority")
+        != "runtime_attested_zero_hit_search_host_admission_required"
+    ):
+        reasons.append("cold_start_search_receipt_type")
+    if (
+        not isinstance(artifact_identity, Mapping)
+        or set(artifact_identity) != _EVO_V2_IDENTITY_FIELDS
+        or receipt.get("artifact_identity") != artifact_identity
+        or any(
+            not SAFE_ID_RE.fullmatch(str(artifact_identity.get(field) or ""))
+            for field in _EVO_V2_IDENTITY_FIELDS
+        )
+    ):
+        reasons.append("cold_start_search_identity")
+    reasons.extend(_evo_v2_fingerprint_reasons(mechanism_fingerprint))
+    expected_query = {
+        "query_mode": "MECHANISM_FIRST_AFTER_BLIND_DERIVATION",
+        "mechanism_fingerprint_sha256": stable_json_hash(
+            dict(mechanism_fingerprint)
+        ),
+        "query_sha256": _evo_v2_cold_start_query_hash(mechanism_fingerprint),
+    }
+    if receipt.get("query") != expected_query:
+        reasons.append("cold_start_search_query_binding")
+    runtime = receipt.get("retrieval_runtime")
+    if not isinstance(runtime, Mapping) or set(runtime) != {
+        "adapter_completion_receipt",
+        "search_request",
+        "search_output",
+        "search_output_bytes_b64",
+        "search_output_sha256",
+        "model_execution",
+    }:
+        reasons.append("cold_start_search_runtime_fields")
+        runtime = {}
+    request = runtime.get("search_request")
+    output = runtime.get("search_output")
+    request_reasons = _evo_v2_cold_search_request_reasons(
+        request,
+        artifact_identity=artifact_identity,
+        mechanism_fingerprint=mechanism_fingerprint,
+    )
+    reasons.extend(request_reasons)
+    try:
+        raw_output = base64.b64decode(
+            str(runtime.get("search_output_bytes_b64") or ""),
+            validate=True,
+        )
+        parsed_output = json.loads(raw_output.decode("utf-8"))
+    except (ValueError, TypeError, UnicodeError, json.JSONDecodeError):
+        raw_output = b""
+        parsed_output = None
+        reasons.append("cold_start_search_output_bytes")
+    if (
+        parsed_output != output
+        or hashlib.sha256(raw_output).hexdigest()
+        != runtime.get("search_output_sha256")
+    ):
+        reasons.append("cold_start_search_output_readback")
+    output_reasons, output_inventory = _evo_v2_cold_search_output_reasons(
+        output,
+        request=request if isinstance(request, Mapping) else {},
+    )
+    reasons.extend(output_reasons)
+    if receipt.get("inventory") != output_inventory:
+        reasons.append("cold_start_search_inventory_binding")
+    adapter = runtime.get("adapter_completion_receipt")
+    adapter_identity = (
+        adapter.get("identity") if isinstance(adapter, Mapping) else {}
+    )
+    adapter_session = (
+        adapter.get("session") if isinstance(adapter, Mapping) else {}
+    )
+    reviewer_runtime_instance_id = str(
+        (request or {}).get("runtime_instance_id") or ""
+    )
+    reasons.extend(
+        _evo_v2_adapter_completion_reasons(
+            adapter,
+            artifact_identity=artifact_identity,
+            trust_store=trust_store,
+            expected_role_id=EVO_V2_COLD_START_SEARCH_ROLE_ID,
+            expected_task_sha256=(request or {}).get("request_sha256"),
+            expected_session_id=(request or {}).get("retrieval_session_id"),
+            expected_runtime_instance_id=reviewer_runtime_instance_id,
+            expected_output_sha256=runtime.get("search_output_sha256"),
+            expected_output_size_bytes=len(raw_output),
+        )
+    )
+    if (
+        adapter_identity.get("task_id") != (request or {}).get("task_id")
+        or adapter_session.get("session_uid")
+        != (request or {}).get("retrieval_session_id")
+    ):
+        reasons.append("cold_start_search_runtime_identity")
+    model_execution = runtime.get("model_execution")
+    if (
+        not isinstance(model_execution, Mapping)
+        or set(model_execution)
+        != {
+            "provider",
+            "model",
+            "transport",
+            "isolation_class",
+            "owned_termination_supported",
+        }
+        or any(
+            not isinstance(model_execution.get(field), str)
+            or not model_execution.get(field)
+            for field in ("provider", "model", "transport", "isolation_class")
+        )
+        or model_execution.get("owned_termination_supported") is not True
+    ):
+        reasons.append("cold_start_search_model_execution")
+    if receipt.get("authority_guard") != {
+        "blind_derivation_completed": True,
+        "regime_shortcut_allowed": False,
+        "current_factor_proof_authority": False,
+        "host_admission_required": True,
+    }:
+        reasons.append("cold_start_search_authority_guard")
+    from factor_factory.research_org.contracts import validate_content_hash
+
+    reasons.extend(
+        validate_content_hash(
+            receipt,
+            hash_field="receipt_sha256",
+            label="evo_v2_cold_start_search_receipt",
+        )
+    )
+    return list(dict.fromkeys(reasons))
+
+
+def _evo_v2_cold_search_request_reasons(
+    request: Any,
+    *,
+    artifact_identity: Mapping[str, Any],
+    mechanism_fingerprint: Mapping[str, Any],
+) -> list[str]:
+    from factor_factory.research_org.contracts import validate_content_hash
+
+    if not isinstance(request, Mapping):
+        return ["cold_start_search_request_object"]
+    reasons: list[str] = []
+    if set(request) != {
+        "contract_version",
+        "artifact_identity",
+        "executor_role_id",
+        "task_id",
+        "retrieval_session_id",
+        "runtime_instance_id",
+        "query",
+        "mechanism_fingerprint",
+        "checked_indexes",
+        "blind_derivation_completed",
+        "policy",
+        "request_sha256",
+    }:
+        reasons.append("cold_start_search_request_fields")
+    if (
+        request.get("contract_version")
+        != EVO_V2_COLD_START_SEARCH_REQUEST_VERSION
+        or request.get("artifact_identity") != artifact_identity
+        or request.get("executor_role_id") != EVO_V2_COLD_START_SEARCH_ROLE_ID
+        or request.get("mechanism_fingerprint") != mechanism_fingerprint
+        or request.get("query")
+        != {
+            "query_mode": "MECHANISM_FIRST_AFTER_BLIND_DERIVATION",
+            "mechanism_fingerprint_sha256": stable_json_hash(
+                dict(mechanism_fingerprint)
+            ),
+            "query_sha256": _evo_v2_cold_start_query_hash(
+                mechanism_fingerprint
+            ),
+        }
+        or request.get("blind_derivation_completed") is not True
+        or request.get("policy")
+        != {
+            "must_inspect_every_bound_index_snapshot": True,
+            "regime_shortcut_allowed": False,
+            "historical_performance_ranking_allowed": False,
+            "current_factor_proof_authority": False,
+        }
+        or not SAFE_ID_RE.fullmatch(str(request.get("task_id") or ""))
+        or not SAFE_ID_RE.fullmatch(
+            str(request.get("retrieval_session_id") or "")
+        )
+        or not SAFE_ID_RE.fullmatch(
+            str(request.get("runtime_instance_id") or "")
+        )
+    ):
+        reasons.append("cold_start_search_request_binding")
+    indexes = request.get("checked_indexes")
+    observed_ids: set[str] = set()
+    if not isinstance(indexes, list) or len(indexes) != 2:
+        reasons.append("cold_start_search_request_indexes")
+    else:
+        for item in indexes:
+            if (
+                not isinstance(item, Mapping)
+                or set(item) != {"index_id", "path", "sha256"}
+                or not SAFE_ID_RE.fullmatch(str(item.get("index_id") or ""))
+                or not isinstance(item.get("path"), str)
+                or Path(str(item.get("path"))).is_absolute()
+                or ".." in Path(str(item.get("path"))).parts
+                or not SHA256_RE.fullmatch(str(item.get("sha256") or ""))
+            ):
+                reasons.append("cold_start_search_request_index_entry")
+                continue
+            observed_ids.add(str(item["index_id"]))
+    if observed_ids != _EVO_V2_COLD_START_INDEX_IDS:
+        reasons.append("cold_start_search_request_index_scope")
+    reasons.extend(
+        validate_content_hash(
+            request,
+            hash_field="request_sha256",
+            label="evo_v2_cold_start_search_request",
+        )
+    )
+    return list(dict.fromkeys(reasons))
+
+
+def _evo_v2_cold_search_output_reasons(
+    output: Any,
+    *,
+    request: Mapping[str, Any],
+) -> tuple[list[str], dict[str, Any]]:
+    from factor_factory.research_org.runtime import (
+        PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+    )
+
+    reasons: list[str] = []
+    empty_inventory = {"checked_indexes": [], "admissible_hit_count": -1}
+    if not isinstance(output, Mapping) or set(output) != {
+        "contract_version",
+        "status",
+        "public_research_record",
+    }:
+        return ["cold_start_search_output_fields"], empty_inventory
+    record = output.get("public_research_record")
+    if (
+        output.get("contract_version") != PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION
+        or output.get("status") != "PASS"
+        or not isinstance(record, Mapping)
+        or set(record)
+        != {
+            "contract_version",
+            "artifact_identity",
+            "executor_role_id",
+            "query_sha256",
+            "checked_indexes",
+            "admissible_hits",
+            "admissible_hit_count",
+            "memory_state",
+        }
+        or record.get("contract_version")
+        != EVO_V2_COLD_START_SEARCH_AGENT_RECORD_VERSION
+        or record.get("artifact_identity") != request.get("artifact_identity")
+        or record.get("executor_role_id") != EVO_V2_COLD_START_SEARCH_ROLE_ID
+        or record.get("query_sha256")
+        != (request.get("query") or {}).get("query_sha256")
+        or record.get("checked_indexes") != request.get("checked_indexes")
+        or record.get("admissible_hits") != []
+        or record.get("admissible_hit_count") != 0
+        or record.get("memory_state") != "COLD_START_NO_ADMISSIBLE_MEMORY"
+    ):
+        reasons.append("cold_start_search_output_binding")
+    inventory = {
+        "checked_indexes": [
+            {
+                "index_id": item.get("index_id"),
+                "snapshot_sha256": item.get("sha256"),
+            }
+            for item in (request.get("checked_indexes") or [])
+            if isinstance(item, Mapping)
+        ],
+        "admissible_hit_count": 0,
+    }
+    return reasons, inventory
+
+
+def prepare_evo_v2_cold_start_search_session(
+    *,
+    workspace: Path,
+    worktree: Path,
+    state_root: Path,
+    installation_id: str,
+    artifact_identity: Mapping[str, Any],
+    mechanism_fingerprint: Mapping[str, Any],
+    checked_indexes: Sequence[Mapping[str, Any]],
+    timeout_seconds: int = 1800,
+) -> tuple[Any, dict[str, Any], Path]:
+    """Stage exact index snapshots for an isolated Knowledge Librarian search."""
+
+    from factor_factory.research_org.contracts import (
+        normalize_workspace_relative_path,
+        read_workspace_bytes,
+    )
+    from factor_factory.research_org.runtime import ResearchOrgSessionInvocation
+    from factor_factory.researcher_memory import (
+        _assert_private_root,
+        _ensure_private_directory,
+    )
+    from factor_factory.researcher_memory_review import (
+        _json_bytes,
+        _private_write_bytes,
+    )
+
+    workspace = Path(workspace).expanduser().resolve(strict=True)
+    worktree = Path(worktree).expanduser().resolve(strict=True)
+    state_root = Path(state_root).expanduser().resolve(strict=True)
+    reasons = _evo_v2_fingerprint_reasons(mechanism_fingerprint)
+    if (
+        not isinstance(artifact_identity, Mapping)
+        or set(artifact_identity) != _EVO_V2_IDENTITY_FIELDS
+        or any(
+            not SAFE_ID_RE.fullmatch(str(artifact_identity.get(field) or ""))
+            for field in _EVO_V2_IDENTITY_FIELDS
+        )
+    ):
+        reasons.append("cold_start_search_identity")
+    resolved_indexes: list[dict[str, Any]] = []
+    observed_ids: set[str] = set()
+    for item in checked_indexes:
+        if not isinstance(item, Mapping) or set(item) != {
+            "index_id",
+            "path",
+            "sha256",
+        }:
+            reasons.append("cold_start_search_index_fields")
+            continue
+        relative = normalize_workspace_relative_path(
+            item.get("path"),
+            workspace=workspace,
+            label="cold_start_search_index",
+        )
+        raw = read_workspace_bytes(workspace, relative)
+        if hashlib.sha256(raw).hexdigest() != item.get("sha256"):
+            reasons.append("cold_start_search_index_readback")
+        resolved = {
+            "index_id": str(item.get("index_id") or ""),
+            "path": relative,
+            "sha256": str(item.get("sha256") or ""),
+        }
+        resolved_indexes.append(resolved)
+        observed_ids.add(resolved["index_id"])
+    if observed_ids != _EVO_V2_COLD_START_INDEX_IDS or len(resolved_indexes) != 2:
+        reasons.append("cold_start_search_index_scope")
+    if reasons:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: {'|'.join(reasons)}"
+        )
+    session_root_parent = _assert_private_root(
+        state_root / EVO_V2_COLD_START_SEARCH_SESSIONS_ROOT,
+        repo_root=worktree,
+        workspace=workspace,
+        create=True,
+    )
+    token = uuid.uuid4().hex
+    session_id = f"session_evo_v2_search_{token[:24]}"
+    runtime_instance_id = f"fforg-evo-v2-search-{token[:16]}"
+    task_id = f"evo_v2_memory_search_{token[:24]}"
+    session_root = _ensure_private_directory(session_root_parent, session_id)
+    context_root = _ensure_private_directory(session_root, "context")
+    _ensure_private_directory(session_root, "output")
+    for item in resolved_indexes:
+        raw = read_workspace_bytes(workspace, item["path"])
+        _private_write_bytes(context_root, item["path"], raw)
+    request = with_content_hash(
+        {
+            "contract_version": EVO_V2_COLD_START_SEARCH_REQUEST_VERSION,
+            "artifact_identity": dict(artifact_identity),
+            "executor_role_id": EVO_V2_COLD_START_SEARCH_ROLE_ID,
+            "task_id": task_id,
+            "retrieval_session_id": session_id,
+            "runtime_instance_id": runtime_instance_id,
+            "query": {
+                "query_mode": "MECHANISM_FIRST_AFTER_BLIND_DERIVATION",
+                "mechanism_fingerprint_sha256": stable_json_hash(
+                    dict(mechanism_fingerprint)
+                ),
+                "query_sha256": _evo_v2_cold_start_query_hash(
+                    mechanism_fingerprint
+                ),
+            },
+            "mechanism_fingerprint": dict(mechanism_fingerprint),
+            "checked_indexes": resolved_indexes,
+            "blind_derivation_completed": True,
+            "policy": {
+                "must_inspect_every_bound_index_snapshot": True,
+                "regime_shortcut_allowed": False,
+                "historical_performance_ranking_allowed": False,
+                "current_factor_proof_authority": False,
+            },
+        },
+        hash_field="request_sha256",
+    )
+    request_reasons = _evo_v2_cold_search_request_reasons(
+        request,
+        artifact_identity=artifact_identity,
+        mechanism_fingerprint=mechanism_fingerprint,
+    )
+    if request_reasons:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+            f"{'|'.join(request_reasons)}"
+        )
+    _private_write_bytes(
+        context_root,
+        "identity/evo_v2_cold_start_search_request.json",
+        _json_bytes(request),
+    )
+    invocation = ResearchOrgSessionInvocation(
+        identity=dict(artifact_identity),
+        role_id=EVO_V2_COLD_START_SEARCH_ROLE_ID,
+        task_id=task_id,
+        task_sha256=request["request_sha256"],
+        attempt_id=f"attempt_evo_v2_search_{token[:20]}",
+        attempt_number=1,
+        session_id=session_id,
+        runtime_instance_id=runtime_instance_id,
+        worktree=worktree,
+        workspace=workspace,
+        private_attempt_root=session_root,
+        context_root=context_root,
+        private_output_path=session_root / "output" / "agent_result.json",
+        cancel_request_path=session_root / "cancel_request.json",
+        context_manifest_sha256=request["request_sha256"],
+        required_skills=("factor-forge-researcher-memory",),
+        timeout_seconds=timeout_seconds,
+        runtime_id=f"runtime_evo_v2_search_{token[:20]}",
+        plan_sha256=stable_json_hash(
+            {
+                "query_sha256": request["query"]["query_sha256"],
+                "checked_indexes": resolved_indexes,
+            }
+        ),
+        scheduler_epoch=1,
+        dispatch_event_seq=1,
+        idempotency_key=stable_json_hash(
+            {"session_id": session_id, "request_sha256": request["request_sha256"]}
+        ),
+        adapter_challenge=uuid.uuid4().hex,
+        dependency_admissions=(),
+        parent_session_uid=None,
+    )
+    return invocation, request, session_root_parent
+
+
+def build_evo_v2_cold_start_search_prompt(invocation: Any) -> str:
+    """Return the closed-output prompt for the isolated zero-hit verifier.
+
+    The generic research-organization prompt expects a normal task packet.  An
+    EVO V2 retrieval session instead receives the purpose-built request staged
+    by :func:`prepare_evo_v2_cold_start_search_session`, so it needs a distinct
+    prompt.  The session is deliberately allowed to attest only a true zero
+    hit.  If it finds an admissible source it must BLOCK and leave transfer
+    authoring to a later, separately reviewed stage.
+    """
+
+    from factor_factory.research_org.runtime import (
+        PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION,
+    )
+
+    request_path = (
+        invocation.context_root
+        / "identity/evo_v2_cold_start_search_request.json"
+    )
+    return f"""# Factor Forge EVO V2 mechanism-first memory search
+
+You are a disposable Knowledge Librarian session. Read the frozen request at
+`{request_path}` and every hash-bound index snapshot named by `checked_indexes`.
+Search by the mechanism fingerprint, not by historical performance or a market
+regime label. Historical episodes are context only and cannot authorize the
+current factor.
+
+Write exactly one private-output JSON object to
+`{invocation.private_output_path}`. Use contract version
+`{PRIVATE_AGENT_OUTPUT_CONTRACT_VERSION}` for the outer object and
+`{EVO_V2_COLD_START_SEARCH_AGENT_RECORD_VERSION}` for the public record. The
+public record must contain exactly: `contract_version`, `artifact_identity`,
+`executor_role_id`, `query_sha256`, `checked_indexes`, `admissible_hits`,
+`admissible_hit_count`, and `memory_state`.
+
+You may return PASS only when `admissible_hits=[]`, `admissible_hit_count=0`,
+and `memory_state=COLD_START_NO_ADMISSIBLE_MEMORY`. Copy identity, query hash,
+and checked indexes exactly from the request. If any admissible experience or
+knowledge source exists, return status BLOCK instead of declaring a cold start;
+do not create a transfer mapping, lesson, factor verdict, or canonical write.
+Do not include private chain-of-thought or absolute Host paths.
+"""
+
+
+def complete_evo_v2_cold_start_search_session(
+    *,
+    invocation: Any,
+    outcome: Any,
+    state_root: Path,
+    installation_id: str,
+) -> dict[str, Any]:
+    """Admit a zero-hit result only after a real adapter-completed session."""
+
+    from factor_factory.research_org.runtime_trust import load_runtime_trust_store
+    from factor_factory.researcher_memory_review import (
+        _evo_v2_adapter_completion_reasons,
+        _read_private_review_output,
+    )
+
+    trust_store = load_runtime_trust_store(
+        Path(state_root) / "research-org-trust",
+        installation_id=installation_id,
+    )
+    if (
+        outcome.returncode != 0
+        or outcome.cancelled
+        or not outcome.owned_termination_supported
+        or outcome.session_id != invocation.session_id
+        or outcome.runtime_instance_id != invocation.runtime_instance_id
+    ):
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: search_runtime_outcome"
+        )
+    request_path = (
+        invocation.context_root
+        / "identity/evo_v2_cold_start_search_request.json"
+    )
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    request_reasons = _evo_v2_cold_search_request_reasons(
+        request,
+        artifact_identity=invocation.identity,
+        mechanism_fingerprint=request.get("mechanism_fingerprint") or {},
+    )
+    output, output_bytes = _read_private_review_output(
+        invocation.private_output_path
+    )
+    output_reasons, inventory = _evo_v2_cold_search_output_reasons(
+        output,
+        request=request,
+    )
+    output_sha256 = hashlib.sha256(output_bytes).hexdigest()
+    adapter_reasons = _evo_v2_adapter_completion_reasons(
+        outcome.adapter_receipt,
+        artifact_identity=invocation.identity,
+        trust_store=trust_store,
+        expected_role_id=EVO_V2_COLD_START_SEARCH_ROLE_ID,
+        expected_task_sha256=invocation.task_sha256,
+        expected_session_id=invocation.session_id,
+        expected_runtime_instance_id=invocation.runtime_instance_id,
+        expected_output_sha256=output_sha256,
+        expected_output_size_bytes=len(output_bytes),
+    )
+    reasons = [*request_reasons, *output_reasons, *adapter_reasons]
+    if reasons:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: {'|'.join(reasons)}"
+        )
+    receipt = with_content_hash(
+        {
+            "contract_version": EVO_V2_COLD_START_SEARCH_RECEIPT_TYPE,
+            "authority": "runtime_attested_zero_hit_search_host_admission_required",
+            "artifact_identity": dict(invocation.identity),
+            "query": dict(request["query"]),
+            "inventory": inventory,
+            "retrieval_runtime": {
+                "adapter_completion_receipt": dict(outcome.adapter_receipt),
+                "search_request": dict(request),
+                "search_output": dict(output),
+                "search_output_bytes_b64": base64.b64encode(
+                    output_bytes
+                ).decode("ascii"),
+                "search_output_sha256": output_sha256,
+                "model_execution": {
+                    "provider": outcome.provider,
+                    "model": outcome.model,
+                    "transport": outcome.transport,
+                    "isolation_class": outcome.isolation_class,
+                    "owned_termination_supported": (
+                        outcome.owned_termination_supported
+                    ),
+                },
+            },
+            "authority_guard": {
+                "blind_derivation_completed": True,
+                "regime_shortcut_allowed": False,
+                "current_factor_proof_authority": False,
+                "host_admission_required": True,
+            },
+        },
+        hash_field="receipt_sha256",
+    )
+    reasons = validate_evo_v2_cold_start_search_receipt(
+        receipt,
+        artifact_identity=invocation.identity,
+        mechanism_fingerprint=request["mechanism_fingerprint"],
+        trust_store=trust_store,
+    )
+    if reasons:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: {'|'.join(reasons)}"
+        )
+    return receipt
+
+
+def _evo_v2_query_terms(value: Any) -> set[str]:
+    if isinstance(value, str):
+        return tokenize(value) | semantic_query_terms(value)
+    if isinstance(value, Mapping):
+        output: set[str] = set()
+        for item in value.values():
+            output.update(_evo_v2_query_terms(item))
+        return output
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        output = set()
+        for item in value:
+            output.update(_evo_v2_query_terms(item))
+        return output
+    return set()
+
+
+def _evo_v2_mechanism_score(
+    source: Mapping[str, Any],
+    target: Mapping[str, Any],
+) -> tuple[int, list[str], bool]:
+    score = 0
+    dimensions: list[str] = []
+    mechanism_anchor = False
+    for field, weight in (
+        ("payer_or_constraint", 5),
+        ("estimand_id", 5),
+        ("economic_claim", 4),
+        ("broken_invariant_or_boundary", 3),
+        ("observation_mapping", 2),
+    ):
+        source_text = " ".join(str(source.get(field) or "").casefold().split())
+        target_text = " ".join(str(target.get(field) or "").casefold().split())
+        overlap = _evo_v2_query_terms(source_text) & _evo_v2_query_terms(target_text)
+        if source_text and source_text == target_text:
+            score += weight
+            dimensions.append(f"exact_{field}")
+            if field in {"payer_or_constraint", "estimand_id"}:
+                mechanism_anchor = True
+        elif overlap:
+            score += min(weight - 1, len(overlap))
+            dimensions.append(f"overlap_{field}")
+            if field in {"payer_or_constraint", "estimand_id"}:
+                mechanism_anchor = True
+    source_math = _evo_v2_query_terms(source.get("mathematical_object"))
+    target_math = _evo_v2_query_terms(target.get("mathematical_object"))
+    same_math = bool(source_math & target_math)
+    if same_math:
+        score += 3
+        dimensions.append("mathematical_object")
+    if not mechanism_anchor:
+        return 0, [], same_math
+    return score, sorted(set(dimensions)), same_math
+
+
+def _evo_v2_overlap_score(left: Any, right: Any) -> tuple[int, list[str]]:
+    overlap = sorted(_evo_v2_query_terms(left) & _evo_v2_query_terms(right))
+    return min(6, len(overlap)), overlap
+
+
+def retrieve_evo_v2_memory_projection(
+    *,
+    admissions: Sequence[Mapping[str, Any]],
+    historical_episode_candidates: Sequence[Mapping[str, Any]] = (),
+    target_mechanism_fingerprint: Mapping[str, Any],
+    blind_derivation_completed: bool,
+    trust_store: Any,
+    source_workspace: Path | None = None,
+    top_k_per_lane: int = 3,
+) -> dict[str, Any]:
+    """Project core EVO experiences into mechanism-first retrieval lanes.
+
+    This is a non-canonical routing projection.  It cannot promote memory or
+    validate a transfer; the selected experiences still have to enter the
+    authoritative ``factorforge_evo_experience_transfer_bundle_v2`` contract.
+    Market-state and event text is intentionally absent from every score.
+    """
+
+    from factor_factory.evo_v2 import EXPERIENCE_TRANSFER_BUNDLE_VERSION
+    from factor_factory.evo_memory_runtime import (
+        validate_terminal_historical_episode_candidate,
+    )
+    from factor_factory.researcher_memory import validate_evo_v2_memory_admission
+
+    if (
+        not isinstance(target_mechanism_fingerprint, Mapping)
+        or set(target_mechanism_fingerprint) != _EVO_V2_FINGERPRINT_FIELDS
+        or any(
+            not isinstance(target_mechanism_fingerprint.get(field), str)
+            or not str(target_mechanism_fingerprint.get(field)).strip()
+            for field in _EVO_V2_FINGERPRINT_FIELDS
+        )
+    ):
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: target_fingerprint"
+        )
+    if blind_derivation_completed is not True:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: blind_derivation_required"
+        )
+    if (
+        type(top_k_per_lane) is not int
+        or top_k_per_lane < 1
+        or top_k_per_lane > 20
+    ):
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: top_k_per_lane"
+        )
+    if not isinstance(admissions, Sequence) or isinstance(admissions, (str, bytes)):
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: admissions"
+        )
+    if not isinstance(historical_episode_candidates, Sequence) or isinstance(
+        historical_episode_candidates,
+        (str, bytes),
+    ):
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: historical_episode_candidates"
+        )
+    resolved_source_workspace = (
+        Path(source_workspace).expanduser().resolve(strict=True)
+        if source_workspace is not None
+        else None
+    )
+    lanes: dict[str, list[dict[str, Any]]] = {
+        lane: [] for lane in _EVO_V2_RETRIEVAL_LANES
+    }
+    observed_admissions: set[str] = set()
+    for admission_index, admission in enumerate(admissions):
+        reasons = validate_evo_v2_memory_admission(
+            admission,
+            trust_store=trust_store,
+            workspace=resolved_source_workspace,
+            verify_refs=resolved_source_workspace is not None,
+        )
+        if reasons:
+            raise KnowledgeRetrievalError(
+                f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+                f"admission_{admission_index}:{'|'.join(reasons)}"
+            )
+        admission_id = str(admission["admission_id"])
+        if admission_id in observed_admissions:
+            raise KnowledgeRetrievalError(
+                f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: duplicate_admission"
+            )
+        observed_admissions.add(admission_id)
+        transfer_bundle = admission["core_payloads"]["experience_transfer_bundle"]
+        if transfer_bundle.get("contract_version") != EXPERIENCE_TRANSFER_BUNDLE_VERSION:
+            raise KnowledgeRetrievalError(
+                f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: core_contract_drift"
+            )
+        source_fingerprint = transfer_bundle["mechanism_fingerprint"]
+        mechanism_score, mechanism_dimensions, same_math = _evo_v2_mechanism_score(
+            source_fingerprint,
+            target_mechanism_fingerprint,
+        )
+        if mechanism_score <= 0:
+            continue
+        target_failure = target_mechanism_fingerprint["failure_signature"]
+        for experience in transfer_bundle.get("experiences") or []:
+            layer = str(experience["layer"])
+            lesson = experience["lesson"]
+            base = {
+                "admission_id": admission_id,
+                "experience_id": experience["experience_id"],
+                "layer": layer,
+                "source_factor_id": experience["source_factor_id"],
+                "source_report_id": experience["source_report_id"],
+                "source_outcome": experience["source_outcome"],
+                "source_ref": dict(experience["source_ref"]),
+                "host_admission_ref": dict(experience["host_admission_ref"]),
+                "review_authority": dict(experience["review_authority"]),
+                "core_experience": dict(experience),
+                "mechanism_score": mechanism_score,
+                "mechanism_match_dimensions": mechanism_dimensions,
+                "performance_score_used_for_ranking": False,
+                "regime_match_required": False,
+                "current_factor_proof_authority": False,
+                "authoritative_next_contract": EXPERIENCE_TRANSFER_BUNDLE_VERSION,
+            }
+
+            def append_hit(
+                lane: str,
+                *,
+                diagnostic_score: int = 0,
+                diagnostic_terms: Sequence[str] = (),
+            ) -> None:
+                lanes[lane].append(
+                    {
+                        **base,
+                        "lane": lane,
+                        "diagnostic_score": diagnostic_score,
+                        "diagnostic_match_terms": list(diagnostic_terms),
+                    }
+                )
+
+            if layer == "structural_lesson":
+                append_hit(
+                    "structural_isomorph" if same_math else "cross_math_analogy"
+                )
+                counter_score, counter_terms = _evo_v2_overlap_score(
+                    [lesson.get("falsifier"), lesson.get("counterexample")],
+                    [
+                        target_mechanism_fingerprint["economic_claim"],
+                        target_failure,
+                    ],
+                )
+                if counter_score:
+                    append_hit(
+                        "direct_counterexample",
+                        diagnostic_score=counter_score,
+                        diagnostic_terms=counter_terms,
+                    )
+            elif layer == "conditional_realization":
+                miss_score, miss_terms = _evo_v2_overlap_score(
+                    [
+                        lesson.get("causal_condition"),
+                        lesson.get("expected_interaction_signature"),
+                        lesson.get("condition_falsifier"),
+                    ],
+                    target_failure,
+                )
+                if miss_score:
+                    append_hit(
+                        "near_miss_failure",
+                        diagnostic_score=miss_score,
+                        diagnostic_terms=miss_terms,
+                    )
+                else:
+                    append_hit("near_miss_failure")
+            else:
+                # event_timeline/state_variables/causal_role are retained in
+                # core_experience but never read by the scoring functions.
+                append_hit("historical_episode_context")
+
+    observed_episode_candidates: set[str] = set()
+    for episode_index, candidate in enumerate(historical_episode_candidates):
+        reasons = validate_terminal_historical_episode_candidate(
+            candidate,
+            trust_store=trust_store,
+        )
+        if reasons:
+            raise KnowledgeRetrievalError(
+                f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+                f"historical_episode_{episode_index}:{'|'.join(reasons)}"
+            )
+        candidate_id = str(candidate["candidate_id"])
+        if candidate_id in observed_episode_candidates:
+            raise KnowledgeRetrievalError(
+                f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: "
+                "duplicate_historical_episode_candidate"
+            )
+        observed_episode_candidates.add(candidate_id)
+        source_fingerprint = candidate["facts"]["mechanism_fingerprint"]
+        mechanism_score, mechanism_dimensions, _same_math = (
+            _evo_v2_mechanism_score(
+                source_fingerprint,
+                target_mechanism_fingerprint,
+            )
+        )
+        if mechanism_score <= 0:
+            continue
+        terminal = candidate["facts"]["terminal_outcome"]
+        lanes["historical_episode_context"].append(
+            {
+                "admission_id": f"episode_candidate:{candidate_id}",
+                "experience_id": candidate_id,
+                "layer": "historical_episode",
+                "source_factor_id": candidate["identity"]["factor_id"],
+                "source_report_id": candidate["identity"]["report_id"],
+                "source_outcome": terminal["factor_verdict"],
+                "source_ref": {
+                    "path": candidate["source_refs"]["outcome_event"]["path"],
+                    "sha256": candidate["source_refs"]["outcome_event"][
+                        "event_sha256"
+                    ],
+                },
+                "host_admission_ref": dict(
+                    candidate["source_refs"]["host_attestation"]
+                ),
+                "review_authority": {
+                    "required": False,
+                    "status": "HOST_SIGNED_EPISODE_NO_STRUCTURAL_AUTHORITY",
+                    "independent_session": False,
+                    "reviewer_receipt_ref": None,
+                },
+                "core_experience": None,
+                "historical_episode_candidate": dict(candidate),
+                "candidate_only": True,
+                "mechanism_score": mechanism_score,
+                "mechanism_match_dimensions": mechanism_dimensions,
+                "performance_score_used_for_ranking": False,
+                "regime_match_required": False,
+                "current_factor_proof_authority": False,
+                "authoritative_next_contract": EXPERIENCE_TRANSFER_BUNDLE_VERSION,
+                "lane": "historical_episode_context",
+                "diagnostic_score": 0,
+                "diagnostic_match_terms": [],
+            }
+        )
+
+    for lane in _EVO_V2_RETRIEVAL_LANES:
+        lanes[lane].sort(
+            key=lambda hit: (
+                -int(hit["mechanism_score"]),
+                -int(hit["diagnostic_score"]),
+                str(hit["experience_id"]),
+                str(hit["admission_id"]),
+            )
+        )
+        lanes[lane] = lanes[lane][:top_k_per_lane]
+    projection = with_content_hash(
+        {
+            "contract_version": EVO_V2_MEMORY_RETRIEVAL_PROJECTION_VERSION,
+            "authority": "noncanonical_retrieval_projection_only",
+            "semantic_authority": "factor_factory.evo_v2",
+            "target_mechanism_fingerprint": dict(target_mechanism_fingerprint),
+            "routing_policy": {
+                "query_mode": "MECHANISM_FIRST_AFTER_BLIND_DERIVATION",
+                "primary_retrieval_key": "mechanism_fingerprint",
+                "retrieval_lanes": list(_EVO_V2_RETRIEVAL_LANES),
+                "market_regime_role": (
+                    "historical_context_or_preregistered_boundary_only"
+                ),
+                "regime_shortcut_allowed": False,
+                "historical_score_used_for_ranking": False,
+                "current_factor_proof_authority": False,
+            },
+            "lanes": lanes,
+            "retrieved_experience_count": len(
+                {
+                    (hit["admission_id"], hit["experience_id"])
+                    for lane_hits in lanes.values()
+                    for hit in lane_hits
+                }
+            ),
+        },
+        hash_field="projection_sha256",
+    )
+    expected_projection_sha = stable_json_hash(
+        {
+            key: value
+            for key, value in projection.items()
+            if key != "projection_sha256"
+        }
+    )
+    if projection["projection_sha256"] != expected_projection_sha:
+        raise KnowledgeRetrievalError(
+            f"{BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID}: projection_hash"
+        )
+    return projection

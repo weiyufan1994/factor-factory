@@ -17,13 +17,14 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from factor_factory.console.agent_adapter import (
     BLOCK_AGENT_ORPHANED_WRITER,
     BLOCK_AGENT_RUNTIME_UNAVAILABLE,
     AgentResumeTask,
     AgentRunResult,
+    PreOosRootSynthesisTask,
     ResearchAgentAdapter,
     RESUME_MEMO_MAX_BYTES,
     RESUME_MEMO_COMPONENT_IDENTITY_FIELDS,
@@ -55,6 +56,54 @@ from factor_factory.console.council_ingress import (
     CouncilIngressTask,
     load_council_ingress_tasks,
 )
+from factor_factory.console.evo_resume import (
+    EVO_V2_EXTERNAL_PAUSES,
+    PROGRESS_CHILD_HANDOFF_AUTHORIZED,
+    PROGRESS_CHILD_HANDOFF_READY,
+    PROGRESS_HOST_CHECKPOINT_READY,
+    PROGRESS_TERMINAL_CHECKPOINT_READY,
+    PROGRESS_WAITING,
+    EvoV2ExternalResumeError,
+    assess_evo_v2_external_resume,
+    is_evo_v2_external_pause,
+)
+from factor_factory.console.evo_child_runtime import (
+    CHILD_EXECUTION_READY,
+    CHILD_QUALIFICATION_READY,
+    CHILD_QUALIFICATION_WAIT,
+    CHILD_PHASE_READY,
+    CHILD_RECOVERY_READY,
+    CHILD_RESUME_READY,
+    CHILD_TERMINAL,
+    execute_evo_child_ready,
+    load_evo_child_execution_baseline,
+    load_latest_evo_child_execution_baseline,
+    load_pending_evo_child_phase_inflight,
+    materialize_evo_child_phase_inflight,
+    materialize_evo_child_qualification_checkpoint,
+    materialize_evo_child_phase_checkpoint,
+    materialize_evo_child_terminal_checkpoint,
+    prepare_evo_child_execution,
+    validate_evo_child_execution_state,
+    validate_evo_child_phase_checkpoint,
+)
+from factor_factory.console.evo_child_container import (
+    resolve_evo_child_container_image_digest,
+)
+from factor_factory.console.evo_child_catalog import (
+    evo_child_calendar_projection_paths,
+    evo_child_catalog_projection_paths,
+    materialize_evo_child_calendar_projection,
+    materialize_evo_child_catalog_projection,
+    materialize_host_job_frozen_catalog_snapshot,
+    validate_materialized_evo_child_calendar_projection,
+    validate_materialized_evo_child_catalog_projection,
+)
+from factor_factory.console.private_job_root import (
+    PrivateJobRootError,
+    ensure_host_private_job_root,
+    ensure_host_private_job_subdirectory,
+)
 from factor_factory.console.models import (
     ResearchJob,
     ResearchRequest,
@@ -65,7 +114,11 @@ from factor_factory.console.model_broker import normalize_deepseek_openclaw_mode
 from factor_factory.console.runner_health import probe_runner_health
 from factor_factory.console.secret_safety import redact_secret_values
 from factor_factory.console.store import ResearchJobStore, utc_now
-from factor_factory.console.ultimate_reader import UltimateRunSummary, read_ultimate_workspace
+from factor_factory.console.ultimate_reader import (
+    UltimateRunSummary,
+    read_current_ultimate_workspace,
+    validate_current_ultimate_authority,
+)
 from factor_factory.console.web_research_plan import (
     required_web_resume_start_step,
     stable_json_hash,
@@ -90,13 +143,38 @@ from factor_factory.research_org import (
     validate_research_organization_runtime,
     write_research_organization_bundle,
 )
+from factor_factory.research_org.runtime_trust import (
+    ensure_runtime_trust_store,
+    load_runtime_trust_store,
+)
+from factor_factory.oos_exposure_incident import (
+    ensure_empty_oos_exposure_private_registry,
+    oos_exposure_private_registry_guard,
+)
 from factor_factory.research_org.contracts import with_content_hash
 from factor_factory.research_org.director import (
     DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
 )
+from factor_factory.research_conjecture import research_protocol_paths
 from factor_factory.researcher_memory import (
     BLOCK_MEMORY_STORE_INVALID,
     record_research_outcome,
+)
+from factor_factory.evo_memory_runtime import (
+    BLOCK_EVO_V2_HISTORICAL_EPISODE_INVALID,
+    BLOCK_EVO_V2_MEMORY_RUNTIME_INVALID,
+    is_validated_evo_v2_memory_runtime_enabled,
+    load_evo_v2_memory_round_state,
+    prepare_evo_v2_memory_round,
+    register_terminal_historical_episode_candidate,
+)
+from factor_factory.evo_child_preregistration import (
+    validate_and_resolve_evo_child_web_research_plan,
+)
+from factor_factory.pre_oos_human_bridge import (
+    pre_oos_child_handoff_path,
+    pre_oos_child_intent_path,
+    pre_oos_human_approval_path,
 )
 from factor_factory.mechanism_math.main_agent_memo import (
     CONTRACT_VERSION,
@@ -107,9 +185,24 @@ from factor_factory.mechanism_math.main_agent_memo import (
     validate_main_agent_mechanism_memo,
 )
 from factor_factory.mechanism_math.formula_specific import BASELINE_MODEL_FAMILIES
+from factor_factory.revision_council.pre_oos_outcome import (
+    PRE_OOS_ROOT_SYNTHESIS_VERSION,
+    pre_oos_root_synthesis_path,
+    validate_pre_oos_root_synthesis,
+)
+from factor_factory.revision_council.production import result_evo_outcome_summary
 
 
 _SYSTEM_SUBPROCESS_RUN = subprocess.run
+
+
+class EvoV2MemoryGatePause(RuntimeError):
+    def __init__(self, state: dict[str, Any], receipt: dict[str, Any]):
+        super().__init__(
+            f"{BLOCK_EVO_V2_MEMORY_RUNTIME_INVALID}: {state.get('stage')}"
+        )
+        self.state = state
+        self.receipt = receipt
 
 
 BLOCK_ISOLATION_AUDIT_FAILED = "BLOCK_FACTORFORGE_CONSOLE_ISOLATION_AUDIT_FAILED"
@@ -128,6 +221,15 @@ BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE = (
 )
 BLOCK_RESUME_TRUST_INVALID = "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
 EXPLICIT_HUMAN_DECISION_REQUIRED = "FACTORFORGE_CONSOLE_EXPLICIT_HUMAN_DECISION_REQUIRED"
+EVO_V2_EXTERNAL_CONTROL_REQUIRED = (
+    "FACTORFORGE_CONSOLE_EVO_V2_EXTERNAL_CONTROL_REQUIRED"
+)
+EVO_V2_CHILD_MATERIALIZATION_REQUIRED = (
+    "FACTORFORGE_CONSOLE_EVO_V2_CHILD_MATERIALIZATION_REQUIRED"
+)
+EVO_V2_CHILD_EXECUTION_READY = (
+    "FACTORFORGE_CONSOLE_EVO_V2_CHILD_EXECUTION_READY"
+)
 RESEARCH_ORG_CLARIFICATION_REQUIRED = (
     "FACTORFORGE_CONSOLE_RESEARCH_ORG_CLARIFICATION_REQUIRED"
 )
@@ -137,6 +239,9 @@ FORMAL_ENGINE_SCRIPTS = {
     "materialize_web_research": Path("scripts/materialize_factorforge_web_research.py"),
     "run_factorforge_ultimate": Path("scripts/run_factorforge_ultimate.py"),
 }
+EVO_CHILD_MATERIALIZER_RELATIVE = Path(
+    "skills/factor-forge-step6/scripts/materialize_step6_child_revision.py"
+)
 PRIVATE_LIFECYCLE_VERSION = "factorforge_console_private_job_lifecycle_v1"
 PRIVATE_LIFECYCLE_RUNNING = "RUNNING"
 PRIVATE_LIFECYCLE_RESUMABLE = "RESUMABLE"
@@ -169,8 +274,13 @@ RETRYABLE_AGENT_RESUME_BLOCKERS = frozenset(
 RESUME_KIND_HOST_FORMAL_CHECKPOINT = "host_formal_checkpoint"
 RESUME_KIND_MECHANISM_AGENT = "mechanism_agent"
 RESUME_KIND_COUNCIL_INGRESS = "council_ingress"
+RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS = "pre_oos_root_synthesis"
 RESUME_KIND_HUMAN_COUNCIL_SYNTHESIS = "human_council_synthesis"
 RESUME_KIND_HUMAN_NEXT_DERIVATION = "human_next_derivation"
+RESUME_KIND_EVO_V2_MEMORY_GATE = "evo_v2_memory_gate"
+RESUME_KIND_EVO_V2_EXTERNAL_WAIT = "evo_v2_external_wait"
+RESUME_KIND_EVO_V2_CHILD_HANDOFF_READY = "evo_v2_child_handoff_ready"
+RESUME_KIND_EVO_V2_TERMINAL_CHECKPOINT = "evo_v2_terminal_checkpoint"
 MECHANISM_MEMO_INITIAL_STATUS = "awaiting_main_agent_mechanism_memo"
 MECHANISM_MEMO_REVISION_STATUS = "awaiting_main_agent_mechanism_memo_revision"
 MECHANISM_MEMO_INITIAL_TOKEN = "AWAITING_MAIN_AGENT_MECHANISM_MEMO"
@@ -180,6 +290,12 @@ MECHANISM_MEMO_MANUAL_REVIEW_STATUS = (
 )
 MECHANISM_MEMO_MANUAL_REVIEW_TOKEN = (
     "AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW"
+)
+PRE_OOS_ROOT_SYNTHESIS_PAUSE_TOKEN = (
+    "AWAITING_PRE_OOS_COUNCIL_ROOT_SYNTHESIS"
+)
+PRE_OOS_ROOT_SYNTHESIS_TASK_VERSION = (
+    "factorforge_console_pre_oos_root_synthesis_task_v1"
 )
 @dataclass(frozen=True)
 class ResumeRoute:
@@ -491,6 +607,35 @@ def _require_resume_request_allowed(job: ResearchJob) -> None:
         )
 
 
+def _is_evo_v2_memory_gate_pause(job: ResearchJob) -> bool:
+    result = job.result if isinstance(job.result, dict) else {}
+    memory = result.get("evo_v2_memory")
+    return bool(
+        isinstance(memory, dict)
+        and memory.get("status") == "PAUSED_PRE_RESULT_MEMORY_GATE"
+        and memory.get("formal_execution_allowed") is False
+        and memory.get("results_or_oos_accessed") is False
+        and isinstance(memory.get("state_ref"), dict)
+    )
+
+
+def _is_evo_v2_child_runtime_pause(job: ResearchJob) -> bool:
+    result = job.result if isinstance(job.result, dict) else {}
+    child_runtime = result.get("evo_v2_child_runtime")
+    execution = (
+        child_runtime.get("execution")
+        if isinstance(child_runtime, dict)
+        and isinstance(child_runtime.get("execution"), dict)
+        else {}
+    )
+    return bool(
+        job.error_code == EVO_V2_CHILD_EXECUTION_READY
+        and execution.get("status") in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+        and isinstance(execution.get("child_report_id"), str)
+        and isinstance(execution.get("execution_receipt_path"), str)
+    )
+
+
 def _read_host_conversation_parent(
     *,
     state_root: Path,
@@ -743,6 +888,7 @@ def _classify_resume_route(
     *,
     start_step: str,
     trusted_proof_sha256: str,
+    evo_v2_external_progress: Mapping[str, Any] | None = None,
 ) -> ResumeRoute:
     proof_relative = (
         "objects/runtime_context/"
@@ -767,6 +913,91 @@ def _classify_resume_route(
     if status != "PAUSED" or start_step != "6":
         raise RuntimeError(
             f"{BLOCK_RESUME_TRUST_INVALID}: unsupported formal resume state"
+        )
+
+    pause_outcome = str(proof.get("final_outcome") or "")
+    if pause_outcome in EVO_V2_EXTERNAL_PAUSES:
+        try:
+            if evo_v2_external_progress is None:
+                raise EvoV2ExternalResumeError(
+                    ["attested external resume assessment is required"]
+                )
+            assessment = dict(evo_v2_external_progress)
+            if (
+                assessment.get("report_id") != report_id
+                or assessment.get("pause_outcome") != pause_outcome
+                or assessment.get("status")
+                not in {
+                    PROGRESS_WAITING,
+                    PROGRESS_CHILD_HANDOFF_AUTHORIZED,
+                    PROGRESS_HOST_CHECKPOINT_READY,
+                    PROGRESS_CHILD_HANDOFF_READY,
+                    PROGRESS_TERMINAL_CHECKPOINT_READY,
+                }
+            ):
+                raise EvoV2ExternalResumeError(
+                    ["external resume assessment binding mismatch"]
+                )
+        except (EvoV2ExternalResumeError, OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 external resume validation failed: {exc}"
+            ) from exc
+        if assessment["status"] == PROGRESS_HOST_CHECKPOINT_READY:
+            if assessment.get("start_step") != "6":
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 checkpoint step is invalid"
+                )
+            return ResumeRoute(
+                kind=RESUME_KIND_HOST_FORMAL_CHECKPOINT,
+                start_step="6",
+                pause_state=pause_outcome,
+                pause_token=str(assessment.get("reason") or ""),
+            )
+        if assessment["status"] in {
+            PROGRESS_CHILD_HANDOFF_AUTHORIZED,
+            PROGRESS_CHILD_HANDOFF_READY,
+        }:
+            if assessment.get("start_step") is not None:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: parent formal resume is forbidden after child approval"
+                )
+            return ResumeRoute(
+                kind=RESUME_KIND_EVO_V2_CHILD_HANDOFF_READY,
+                start_step="6",
+                pause_state=pause_outcome,
+                pause_token=str(assessment.get("child_report_id") or ""),
+            )
+        if assessment["status"] == PROGRESS_TERMINAL_CHECKPOINT_READY:
+            if (
+                assessment.get("start_step") is not None
+                or assessment.get("terminal_factor_verdict")
+                not in {"ACCEPT", "REJECT"}
+                or assessment.get("terminal_decision")
+                not in {"promote_official", "reject"}
+                or not isinstance(assessment.get("terminal_closure_path"), str)
+                or not re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(assessment.get("terminal_closure_sha256") or ""),
+                )
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 terminal checkpoint is invalid"
+                )
+            return ResumeRoute(
+                kind=RESUME_KIND_EVO_V2_TERMINAL_CHECKPOINT,
+                start_step="6",
+                pause_state=pause_outcome,
+                pause_token=str(assessment.get("terminal_closure_sha256") or ""),
+            )
+        if assessment.get("start_step") is not None:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: waiting EVO V2 pause carries execution authority"
+            )
+        return ResumeRoute(
+            kind=RESUME_KIND_EVO_V2_EXTERNAL_WAIT,
+            start_step="6",
+            pause_state=pause_outcome,
+            pause_token=str(assessment.get("reason") or ""),
         )
 
     mechanism = (
@@ -818,6 +1049,52 @@ def _classify_resume_route(
             start_step="6",
             pause_state="awaiting_agent_results",
             pause_token="AWAITING_REVISION_COUNCIL_AGENT_RESULTS",
+        )
+    if str(council.get("status") or "") == "awaiting_root_synthesis":
+        canonical = pre_oos_root_synthesis_path(
+            workspace.resolve(strict=True),
+            report_id,
+        ).resolve(strict=False)
+        declared_raw = str(council.get("root_synthesis_path") or "")
+        declared = Path(declared_raw)
+        council_commands = council.get("commands")
+        exact_pause = (
+            str(proof.get("proof_semantics") or "")
+            == "awaiting_agent_authored_pre_oos_root_synthesis"
+            and str(proof.get("final_outcome") or "")
+            == "awaiting_pre_oos_council_root_synthesis"
+            and proof.get("failure") is None
+            and proof.get("factor_verdict") == "NOT_ISSUED"
+            and proof.get("formal_proof_eligible") is False
+            and str(council.get("requested_mode") or "")
+            in {"agentic", "auto"}
+            and str(council.get("effective_mode") or "")
+            == "agentic_dispatch_manifest"
+            and str(council.get("evidence_view") or "") == "PURGED_IS_ONLY"
+            and str(council.get("oos_state") or "")
+            == "SEALED_NOT_ACCESSED"
+            and isinstance(council_commands, list)
+            and bool(council_commands)
+            and all(
+                isinstance(command, dict)
+                and command.get("status") == "PASS"
+                and command.get("returncode") == 0
+                for command in council_commands
+            )
+            and declared.is_absolute()
+            and declared.resolve(strict=False) == canonical
+            and not canonical.exists()
+            and not canonical.is_symlink()
+        )
+        if not exact_pause:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS root synthesis pause binding is invalid"
+            )
+        return ResumeRoute(
+            kind=RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS,
+            start_step="6",
+            pause_state="awaiting_root_synthesis",
+            pause_token=PRE_OOS_ROOT_SYNTHESIS_PAUSE_TOKEN,
         )
 
     pause_state = str(proof.get("final_outcome") or "")
@@ -890,6 +1167,336 @@ def _human_resume_message(route: ResumeRoute) -> tuple[str, str]:
             "请在专用下一轮推导入口选择问题分类和研究对象后再继续。",
         )
     raise ValueError("resume route does not require an explicit human decision")
+
+
+def _evo_v2_external_resume_message(
+    route: ResumeRoute,
+) -> tuple[str, str, str]:
+    if route.kind == RESUME_KIND_EVO_V2_CHILD_HANDOFF_READY:
+        child = route.pause_token or "fresh child"
+        return (
+            "外部 human 签名、Host fresh sealed OOS allocation 与 pre-OOS child "
+            "handoff 已通过重放；父报告没有继续执行权限。",
+            f"由受控 child materializer 重放当前 gates，并以 child report {child} 建立独立执行任务。",
+            EVO_V2_CHILD_MATERIALIZATION_REQUIRED,
+        )
+    if route.kind != RESUME_KIND_EVO_V2_EXTERNAL_WAIT:
+        raise ValueError("resume route is not an EVO V2 external-control pause")
+    next_actions = {
+        "awaiting_evo_v2_host_qualification": (
+            "由 Ultimate Host 基于 purged-IS checkpoint 完成 qualification，追加签名 "
+            "lifecycle CAS；QUALIFIED 分支还必须 admission feedback staging。"
+        ),
+        "awaiting_host_lifecycle_transition_and_staged_council_outcome": (
+            "由 Ultimate Host 重放 canonical pre-OOS outcome verifier，完成签名 "
+            "lifecycle transition 与 exact Council outcome staging。"
+        ),
+        "awaiting_evo_v2_transfer_and_actual_use": (
+            "由 Host 完成 canonical transfer-use orchestration、签名 lifecycle CAS 与"
+            "四事件 staging readback；found-memory 分支还必须绑定未执行的 preregistered "
+            "execution addendum，cold-start 分支必须保持 addendum absent。"
+        ),
+        "awaiting_evo_v2_external_approval_and_fresh_child": (
+            "由外部 human control plane 签发绑定 selected law 的 receipt，并由 Host "
+            "CAS 分配 fresh sealed child OOS 后运行 pre-OOS approval bridge。"
+        ),
+        "awaiting_evo_v2_non_revision_terminal_closure": (
+            "由 Ultimate Host 对已消费 OOS 的 NO_QUALIFIED_CONTRADICTION 路径签发"
+            "不可变 terminal closure；该签名只关闭终态，不授予修订或记忆提升权限。"
+        ),
+    }
+    return (
+        "EVO V2 的外部控制动作尚未形成完整可重放证明；任务保持暂停，未启动研究代理或 formal runner。",
+        next_actions.get(route.pause_state, "完成当前 EVO V2 外部控制动作后再续跑。"),
+        EVO_V2_EXTERNAL_CONTROL_REQUIRED,
+    )
+
+
+def _pre_oos_root_synthesis_runner(adapter: object):
+    runner = getattr(adapter, "run_pre_oos_root_synthesis", None)
+    if not callable(runner):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: isolated pre-OOS root synthesis adapter is missing"
+        )
+    return runner
+
+
+def _validate_evo_child_active_lineage(
+    *,
+    lineage: Mapping[str, Any],
+    signed_execution: Mapping[str, Any],
+    trusted_parent_checkpoint: Mapping[str, Any],
+    state_root: Path,
+    trust_root: Path,
+    installation_id: str,
+    job_id: str,
+    expected_host_pin: str,
+    workspace_root: Path,
+    replay_phase_receipts: bool,
+) -> dict[str, Any]:
+    """Validate root-to-active recursive child lineage without trusting the DB row.
+
+    The structural/hash pass is safe before a new Step6 semantic delta has been
+    admitted.  Full signed historical receipt replay is enabled only after the
+    active workspace is exact or a phase/qualification checkpoint has closed
+    that delta; historical receipts intentionally do not compare their old
+    evidence tree to the newer descendant workspace.
+    """
+
+    if not isinstance(replay_phase_receipts, bool):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: child lineage replay mode is invalid"
+        )
+    required_lineage = {
+        "root_report_id",
+        "phase_owner_parent_report_id",
+        "parent_report_id",
+        "child_report_id",
+        "parent_phase_receipt",
+        "ancestry",
+    }
+    if set(lineage) != required_lineage:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: active child lineage shape is invalid"
+        )
+    root_report_id = str(lineage.get("root_report_id") or "")
+    active_parent = str(lineage.get("parent_report_id") or "")
+    active_child = str(lineage.get("child_report_id") or "")
+    ancestry = lineage.get("ancestry")
+    if (
+        not root_report_id
+        or not active_parent
+        or not active_child
+        or active_parent == active_child
+        or active_parent != signed_execution.get("parent_report_id")
+        or active_child != signed_execution.get("child_report_id")
+        or not isinstance(ancestry, list)
+        or not ancestry
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: active child lineage identity is invalid"
+        )
+    normalized: list[dict[str, Any]] = []
+    seen_children: set[str] = set()
+    previous_child = ""
+    for index, raw_edge in enumerate(ancestry):
+        if not isinstance(raw_edge, Mapping) or set(raw_edge) != {
+            "root_report_id",
+            "phase_owner_parent_report_id",
+            "parent_report_id",
+            "child_report_id",
+            "parent_phase_receipt",
+        }:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child ancestry edge shape is invalid"
+            )
+        edge = dict(raw_edge)
+        owner_parent = str(edge.get("phase_owner_parent_report_id") or "")
+        edge_parent = str(edge.get("parent_report_id") or "")
+        edge_child = str(edge.get("child_report_id") or "")
+        phase_ref = edge.get("parent_phase_receipt")
+        if (
+            edge.get("root_report_id") != root_report_id
+            or not owner_parent
+            or not edge_parent
+            or not edge_child
+            or edge_parent == edge_child
+            or (index > 0 and previous_child != edge_parent)
+            or edge_child in seen_children
+            or not isinstance(phase_ref, Mapping)
+            or set(phase_ref) != {"path", "sha256", "receipt_id"}
+            or not re.fullmatch(r"[0-9a-f]{64}", str(phase_ref.get("sha256") or ""))
+            or not isinstance(phase_ref.get("receipt_id"), str)
+            or not phase_ref.get("receipt_id")
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child ancestry edge binding is invalid"
+            )
+        raw_phase_path = Path(str(phase_ref.get("path") or "")).expanduser()
+        if raw_phase_path.is_symlink():
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child ancestry receipt changed"
+            )
+        try:
+            phase_path = raw_phase_path.resolve(strict=True)
+            expected_phase_root = (
+                state_root.resolve(strict=True)
+                / "jobs"
+                / job_id
+                / "evo-child-runtime"
+                / edge_parent
+            ).resolve(strict=True)
+            phase_path.relative_to(expected_phase_root)
+        except (OSError, ValueError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child ancestry receipt is missing"
+            ) from exc
+        if (
+            not phase_path.is_file()
+            or _sha256(phase_path) != phase_ref.get("sha256")
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child ancestry receipt changed"
+            )
+        if replay_phase_receipts:
+            validated = validate_evo_child_phase_checkpoint(
+                state_root=state_root,
+                trust_root=trust_root,
+                installation_id=installation_id,
+                job_id=job_id,
+                parent_report_id=owner_parent,
+                child_report_id=edge_parent,
+                expected_host_trust_manifest_sha256=expected_host_pin,
+                phase_receipt_path=phase_path,
+                workspace_root=workspace_root,
+                verify_workspace_exact=False,
+            )
+            receipt = validated.get("receipt")
+            phase_context = (
+                receipt.get("phase_context") if isinstance(receipt, Mapping) else None
+            )
+            assessment = (
+                phase_context.get("external_resume_assessment")
+                if isinstance(phase_context, Mapping)
+                else None
+            )
+            if (
+                validated.get("phase") != "HOST_CHILD_HANDOFF"
+                or validated.get("phase_receipt_sha256") != phase_ref.get("sha256")
+                or not isinstance(receipt, Mapping)
+                or receipt.get("receipt_id") != phase_ref.get("receipt_id")
+                or not isinstance(assessment, Mapping)
+                or assessment.get("report_id") != edge_parent
+                or assessment.get("child_report_id") != edge_child
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child ancestry handoff receipt is invalid"
+                )
+        normalized.append(edge)
+        previous_child = edge_child
+        seen_children.add(edge_child)
+    last = normalized[-1]
+    if (
+        last.get("parent_report_id") != active_parent
+        or last.get("child_report_id") != active_child
+        or lineage.get("phase_owner_parent_report_id")
+        != last.get("phase_owner_parent_report_id")
+        or lineage.get("parent_phase_receipt") != last.get("parent_phase_receipt")
+        or trusted_parent_checkpoint.get("parent_phase_receipt_path")
+        != last["parent_phase_receipt"]["path"]
+        or trusted_parent_checkpoint.get("parent_phase_receipt_sha256")
+        != last["parent_phase_receipt"]["sha256"]
+        or trusted_parent_checkpoint.get("parent_phase_receipt_id")
+        != last["parent_phase_receipt"]["receipt_id"]
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: active child ancestry tail is invalid"
+        )
+    return {**dict(lineage), "ancestry": normalized}
+
+
+def _extend_evo_child_lineage(
+    *,
+    root_report_id: str,
+    phase_owner_parent_report_id: str,
+    parent_report_id: str,
+    child_report_id: str,
+    phase_checkpoint: Mapping[str, Any],
+    descendant_runtime: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Prepend one closed handoff edge while retaining the deepest active child."""
+
+    receipt = phase_checkpoint.get("receipt")
+    phase_path = str(phase_checkpoint.get("phase_receipt_path") or "")
+    phase_sha = str(phase_checkpoint.get("phase_receipt_sha256") or "")
+    phase_receipt_id = (
+        str(receipt.get("receipt_id") or "") if isinstance(receipt, Mapping) else ""
+    )
+    if (
+        not all(
+            isinstance(value, str) and value
+            for value in (
+                root_report_id,
+                phase_owner_parent_report_id,
+                parent_report_id,
+                child_report_id,
+                phase_path,
+                phase_receipt_id,
+            )
+        )
+        or parent_report_id == child_report_id
+        or not re.fullmatch(r"[0-9a-f]{64}", phase_sha)
+        or phase_checkpoint.get("phase") != "HOST_CHILD_HANDOFF"
+        or phase_checkpoint.get("status") != CHILD_PHASE_READY
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: recursive child handoff receipt is invalid"
+        )
+    current_edge = {
+        "root_report_id": root_report_id,
+        "phase_owner_parent_report_id": phase_owner_parent_report_id,
+        "parent_report_id": parent_report_id,
+        "child_report_id": child_report_id,
+        "parent_phase_receipt": {
+            "path": phase_path,
+            "sha256": phase_sha,
+            "receipt_id": phase_receipt_id,
+        },
+    }
+    existing_lineage = descendant_runtime.get("lineage")
+    if not isinstance(existing_lineage, Mapping):
+        return {**current_edge, "ancestry": [current_edge]}
+    ancestry = existing_lineage.get("ancestry")
+    if (
+        existing_lineage.get("root_report_id") != root_report_id
+        or not isinstance(ancestry, list)
+        or not ancestry
+        or not all(isinstance(edge, Mapping) for edge in ancestry)
+        or ancestry[0].get("parent_report_id") != child_report_id
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: recursive child ancestry is discontinuous"
+        )
+    return {
+        **dict(existing_lineage),
+        "root_report_id": root_report_id,
+        "ancestry": [current_edge, *[dict(edge) for edge in ancestry]],
+    }
+
+
+def _current_authority_report_id(job: ResearchJob) -> str:
+    result = job.result if isinstance(job.result, dict) else {}
+    child_runtime = result.get("evo_v2_child_runtime")
+    execution = (
+        child_runtime.get("execution")
+        if isinstance(child_runtime, dict)
+        and isinstance(child_runtime.get("execution"), dict)
+        else {}
+    )
+    child_report_id = str(execution.get("child_report_id") or "")
+    return child_report_id or job.report_id
+
+
+@contextmanager
+def _host_current_authority_transaction(
+    *,
+    state_root: Path,
+    workspace_root: Path,
+    installation_id: str,
+):
+    """Lock incident registry before workspace for one Host authority commit."""
+
+    trust_root = state_root / "research-org-trust"
+    with oos_exposure_private_registry_guard(
+        trust_root,
+        installation_id=installation_id,
+    ) as incident_guard:
+        with workspace_transaction_lock(
+            state_root,
+            workspace_root,
+            error_code=BLOCK_RESUME_TRUST_INVALID,
+        ):
+            yield incident_guard
 
 
 class ResearchQueueService:
@@ -1066,14 +1673,126 @@ class ResearchRunService:
             persisted_workspace_path=job.workspace_path,
             persisted_base_commit=job.base_commit,
         )
-        self._validate_trusted_resume_context(
-            job,
-            worktree=allocation.worktree_path,
-            workspace=allocation.workspace_path,
-        )
-        job = self.store.request_resume(job_id)
+        active_report_id = _current_authority_report_id(job)
+        with _host_current_authority_transaction(
+            state_root=self.config.state_root,
+            workspace_root=allocation.workspace_path,
+            installation_id=self.config.installation_id,
+        ) as incident_guard:
+            current_authority = validate_current_ultimate_authority(
+                allocation.workspace_path,
+                report_id=active_report_id,
+                expected_factor_verdict=job.factor_verdict,
+                formal_proof_eligible=False,
+                incident_trust_root=(
+                    self.config.state_root / "research-org-trust"
+                ),
+                incident_installation_id=self.config.installation_id,
+                _incident_guard=incident_guard,
+            )
+            if current_authority.get("status") == "BLOCK":
+                raise RuntimeError(
+                    ";".join(
+                        current_authority.get("block_reasons")
+                        or [BLOCK_HOST_FORMAL_EXECUTION_FAILED]
+                    )
+                )
+            if _is_evo_v2_child_runtime_pause(job):
+                self._validate_evo_v2_child_runtime_resume(job)
+            elif _is_evo_v2_memory_gate_pause(job):
+                self._validate_evo_v2_memory_resume_context(
+                    job,
+                    worktree=allocation.worktree_path,
+                    workspace=allocation.workspace_path,
+                )
+            else:
+                self._validate_trusted_resume_context(
+                    job,
+                    worktree=allocation.worktree_path,
+                    workspace=allocation.workspace_path,
+                )
+            job = self.store.request_resume(job_id)
         self._wake.set()
         return job
+
+    def _validate_evo_v2_child_runtime_resume(
+        self, job: ResearchJob
+    ) -> dict[str, Any]:
+        result = job.result if isinstance(job.result, dict) else {}
+        child_runtime = result.get("evo_v2_child_runtime")
+        execution = (
+            child_runtime.get("execution")
+            if isinstance(child_runtime, dict)
+            and isinstance(child_runtime.get("execution"), dict)
+            else {}
+        )
+        child_report_id = str(execution.get("child_report_id") or "")
+        parent_report_id = str(execution.get("parent_report_id") or job.report_id)
+        trust_root = self.config.state_root / "research-org-trust"
+        store = load_runtime_trust_store(
+            trust_root, installation_id=self.config.installation_id
+        )
+        common = {
+            "state_root": self.config.state_root,
+            "trust_root": trust_root,
+            "installation_id": self.config.installation_id,
+            "job_id": job.job_id,
+            "parent_report_id": parent_report_id,
+            "child_report_id": child_report_id,
+            "expected_host_trust_manifest_sha256": store.public_manifest[
+                "manifest_sha256"
+            ],
+            "execution_receipt_path": str(
+                execution.get("execution_receipt_path") or ""
+            ),
+            "workspace_root": job.workspace_path,
+        }
+        baseline = load_latest_evo_child_execution_baseline(
+            **{
+                key: value
+                for key, value in common.items()
+                if key != "execution_receipt_path"
+            }
+        )
+        common["execution_receipt_path"] = baseline["execution_receipt_path"]
+        if (
+            baseline.get("status") == CHILD_RESUME_READY
+            and baseline.get("resume_start_step") == "6"
+        ):
+            phase_recovery = load_pending_evo_child_phase_inflight(
+                **{
+                    key: value
+                    for key, value in common.items()
+                    if key != "execution_receipt_path"
+                },
+                execution_receipt_path=baseline["execution_receipt_path"],
+            )
+            if phase_recovery is not None:
+                baseline["phase_recovery"] = phase_recovery
+        # Step4/5 have no legitimate external writer between executions, so
+        # their whole workspace stays byte-exact. Step6 is different: signed
+        # lifecycle, Council and terminal-closure deltas are intentionally
+        # written before the next Console turn and are admitted by the
+        # phase-specific closed-delta validators. Partial-OOS recovery is also
+        # classified against its signed inflight state, not the old tree.
+        if (
+            baseline.get("status") == CHILD_RESUME_READY
+            and baseline.get("resume_start_step") in {"4", "5"}
+        ):
+            return validate_evo_child_execution_state(**common)
+        if (
+            baseline.get("status") == CHILD_RESUME_READY
+            and baseline.get("resume_start_step") == "6"
+        ) or baseline.get("status") == CHILD_RECOVERY_READY:
+            return baseline
+        if (
+            baseline.get("status") == CHILD_TERMINAL
+            and baseline.get("host_execution_receipt_verified") is True
+        ):
+            return baseline
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: child execution has no resumable state"
+        )
 
     def cancel_queued(self, job_id: str) -> ResearchJob:
         return self.store.cancel_queued(job_id)
@@ -1114,15 +1833,22 @@ class ResearchRunService:
             "研究组织正在执行隔离 specialist sessions",
             {"stage": stage},
         )
+        try:
+            research_org_private = ensure_host_private_job_subdirectory(
+                self.config.state_root,
+                job.job_id,
+                ("research_org_private",),
+                create=True,
+            )
+        except PrivateJobRootError as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESEARCH_ORG_RUNTIME_INCOMPLETE}: "
+                "Host-private job root is unsafe"
+            ) from exc
         result = run_research_organization_runtime(
             workspace=workspace,
             worktree=worktree,
-            private_root=(
-                self.config.state_root
-                / "jobs"
-                / job.job_id
-                / "research_org_private"
-            ),
+            private_root=research_org_private,
             runner=self.agent_adapter,
             max_attempts=2,
             max_concurrency=1,
@@ -1465,8 +2191,10 @@ class ResearchRunService:
             )
         try:
             receipt = json.loads(resolved_receipt.read_text(encoding="utf-8"))
-            expected_model = normalize_deepseek_openclaw_model(
-                self.config.openclaw_model
+            expected_model = (
+                normalize_deepseek_openclaw_model(self.config.openclaw_model)
+                if self.config.openclaw_auth_provider == "deepseek"
+                else self.config.openclaw_model
             )
             started = datetime.fromisoformat(
                 agent_result.started_at_utc.replace("Z", "+00:00")
@@ -1655,6 +2383,120 @@ class ResearchRunService:
         )
         return attestation_path.relative_to(self.config.state_root).as_posix()
 
+    def _pause_for_evo_v2_memory_gate(
+        self,
+        *,
+        job: ResearchJob,
+        workspace: Path,
+        state: dict[str, Any],
+        formal_receipt: dict[str, Any],
+    ) -> str:
+        """Publish a nonterminal pre-result pause without issuing a verdict."""
+
+        stage = str(state.get("stage") or "")
+        event_sha256 = str(state.get("event_sha256") or "")
+        if (
+            state.get("formal_execution_allowed") is not False
+            or not stage
+            or not re.fullmatch(r"[0-9a-f]{64}", event_sha256)
+            or not isinstance(state.get("pause"), dict)
+            or state["pause"].get("required") is not True
+        ):
+            raise RuntimeError(
+                f"{BLOCK_EVO_V2_MEMORY_RUNTIME_INVALID}: invalid pause state"
+            )
+        message = (
+            "EVO V2 已在读取任何研究结果或 OOS 前暂停："
+            f"{state['pause'].get('reason') or stage}"
+        )
+        state_relative = (
+            f"objects/evo_v2/{job.report_id}/memory_runtime/"
+            "memory_runtime_state.json"
+        )
+        state_path = workspace / state_relative
+        if state_path.is_symlink() or not state_path.is_file():
+            raise RuntimeError(
+                f"{BLOCK_EVO_V2_MEMORY_RUNTIME_INVALID}: pause state readback"
+            )
+        try:
+            observed_state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_EVO_V2_MEMORY_RUNTIME_INVALID}: pause state readback"
+            ) from exc
+        if observed_state != state:
+            raise RuntimeError(
+                f"{BLOCK_EVO_V2_MEMORY_RUNTIME_INVALID}: pause state readback"
+            )
+        result = {
+            "summary": message,
+            "next_actions": [str(state["pause"].get("resume_action") or "")],
+            "evo_v2_memory": {
+                "status": "PAUSED_PRE_RESULT_MEMORY_GATE",
+                "stage": stage,
+                "state_ref": {
+                    "path": state_relative,
+                    "sha256": _sha256(state_path),
+                    "event_sha256": event_sha256,
+                },
+                "formal_execution_allowed": False,
+                "results_or_oos_accessed": False,
+                "resume_api": (
+                    "prepare_evo_v2_memory_round"
+                    if stage != "AWAITING_TRANSFER_AUTHORING_AND_REVIEW"
+                    else "admit_evo_v2_memory_transfer_round"
+                ),
+            },
+        }
+        self.store.update_job(
+            job.job_id,
+            execution_status="REVIEW_REQUIRED",
+            protocol_status="PAUSED",
+            factor_verdict="UNKNOWN",
+            council_status="NOT_STARTED",
+            formal_proof_eligible=False,
+            current_stage="evo_v2_memory_review_required",
+            result=result,
+            error_code=BLOCK_EVO_V2_MEMORY_RUNTIME_INVALID,
+            error_message=message,
+            finished_at_utc="",
+        )
+        self.store.append_event(
+            job.job_id,
+            "EVO_V2_MEMORY_GATE_PAUSED",
+            message,
+            {"stage": stage, "event_sha256": event_sha256},
+        )
+        attestation_root = (
+            self.config.state_root / "jobs" / job.job_id / "evo-v2-memory-gates"
+        )
+        attestation_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        attestation_root.chmod(0o700)
+        unsigned = {
+            "version": "factorforge_console_evo_v2_memory_gate_attestation_v1",
+            **self._private_lifecycle_identity(job),
+            "stage": stage,
+            "state_event_sha256": event_sha256,
+            "state_file_sha256": _sha256(state_path),
+            "formal_execution_receipt_id": formal_receipt.get("receipt_id"),
+            "formal_execution_receipt_sha256": formal_receipt.get(
+                "receipt_sha256"
+            ),
+            "formal_execution_allowed": False,
+            "results_or_oos_accessed": False,
+            "created_at_utc": utc_now(),
+        }
+        payload = {**unsigned, "attestation_sha256": stable_json_hash(unsigned)}
+        attestation_path = (
+            attestation_root / f"attestation_{event_sha256[:20]}.json"
+        )
+        _write_json_atomic(
+            attestation_path,
+            payload,
+            root=self.config.state_root,
+        )
+        return attestation_path.relative_to(self.config.state_root).as_posix()
+
     def _worker_loop(self) -> None:
         while not self._stop.is_set():
             if not catalogs_healthy(self.config) or not self.healthcheck():
@@ -1682,10 +2524,17 @@ class ResearchRunService:
         private_completion_status: str | None = None
         private_attestation_id = ""
         council_ingress_tasks: tuple[CouncilIngressTask, ...] = ()
+        pre_oos_root_synthesis_task: PreOosRootSynthesisTask | None = None
         organization_runtime: dict[str, Any] | None = None
         organization_runtime_required = False
         try:
             resume = bool(job.workspace_path and job.worktree_path)
+            evo_v2_memory_resume = bool(
+                resume and _is_evo_v2_memory_gate_pause(job)
+            )
+            evo_v2_child_runtime_resume = bool(
+                resume and _is_evo_v2_child_runtime_pause(job)
+            )
             self._begin_private_execution(job, resume=resume)
             validate_public_source_url(job.request.source_url)
             if resume:
@@ -1699,25 +2548,141 @@ class ResearchRunService:
                 )
                 worktree = allocation.worktree_path
                 workspace = allocation.workspace_path
-                resume_trust = self._validate_trusted_resume_context(
-                    job,
-                    worktree=worktree,
-                    workspace=workspace,
-                    private_execution_started=True,
-                )
-                resume_route = _classify_resume_route(
-                    workspace,
-                    job.report_id,
-                    start_step=str(resume_trust["start_step"]),
-                    trusted_proof_sha256=str(
-                        resume_trust["ultimate_proof_sha256"]
-                    ),
-                )
-                resume_route = _apply_execution_mode_resume_policy(
-                    resume_route,
-                    execution_mode=self.config.execution_mode,
-                )
-                if resume_route.kind == RESUME_KIND_MECHANISM_AGENT:
+                with _host_current_authority_transaction(
+                    state_root=self.config.state_root,
+                    workspace_root=workspace,
+                    installation_id=self.config.installation_id,
+                ) as resume_incident_guard:
+                    resume_current_authority = validate_current_ultimate_authority(
+                        workspace,
+                        report_id=_current_authority_report_id(job),
+                        expected_factor_verdict=job.factor_verdict,
+                        formal_proof_eligible=False,
+                        incident_trust_root=(
+                            self.config.state_root / "research-org-trust"
+                        ),
+                        incident_installation_id=self.config.installation_id,
+                        _incident_guard=resume_incident_guard,
+                    )
+                    if resume_current_authority.get("status") == "BLOCK":
+                        raise RuntimeError(
+                            ";".join(
+                                resume_current_authority.get("block_reasons")
+                                or [BLOCK_HOST_FORMAL_EXECUTION_FAILED]
+                            )
+                        )
+                if evo_v2_child_runtime_resume:
+                    child_state = self._validate_evo_v2_child_runtime_resume(job)
+                    prior_result = (
+                        job.result if isinstance(job.result, dict) else {}
+                    )
+                    prior_runtime = prior_result.get("evo_v2_child_runtime")
+                    prior_ready = (
+                        prior_runtime.get("ready")
+                        if isinstance(prior_runtime, dict)
+                        and isinstance(prior_runtime.get("ready"), dict)
+                        else {}
+                    )
+                    checkpoint_path = str(prior_ready.get("checkpoint_path") or "")
+                    checkpoint_receipt = json.loads(
+                        Path(checkpoint_path).read_text(encoding="utf-8")
+                    )
+                    parent_checkpoint = checkpoint_receipt.get(
+                        "trusted_parent_checkpoint"
+                    )
+                    progress = prior_result.get("evo_v2_external_progress")
+                    if (
+                        not isinstance(parent_checkpoint, dict)
+                        or not isinstance(progress, dict)
+                    ):
+                        raise RuntimeError(
+                            f"{BLOCK_RESUME_TRUST_INVALID}: child parent checkpoint missing"
+                        )
+                    resume_trust = {
+                        **parent_checkpoint,
+                        "start_step": "6",
+                        "evo_v2_external_progress": progress,
+                    }
+                    active_lineage = (
+                        prior_runtime.get("lineage")
+                        if isinstance(prior_runtime, Mapping)
+                        and isinstance(prior_runtime.get("lineage"), Mapping)
+                        else None
+                    )
+                    if active_lineage is not None:
+                        _validate_evo_child_active_lineage(
+                            lineage=active_lineage,
+                            signed_execution=child_state,
+                            trusted_parent_checkpoint=parent_checkpoint,
+                            state_root=self.config.state_root,
+                            trust_root=self.config.state_root
+                            / "research-org-trust",
+                            installation_id=self.config.installation_id,
+                            job_id=job.job_id,
+                            expected_host_pin=load_runtime_trust_store(
+                                self.config.state_root / "research-org-trust",
+                                installation_id=self.config.installation_id,
+                            ).public_manifest["manifest_sha256"],
+                            workspace_root=workspace,
+                            # Request admission may precede a legitimate signed
+                            # Step6 delta. At this point check the DB lineage's
+                            # exact receipt hashes; full historical receipt replay
+                            # occurs after that delta is checkpointed below.
+                            replay_phase_receipts=False,
+                        )
+                    resume_route = ResumeRoute(
+                        kind=RESUME_KIND_EVO_V2_CHILD_HANDOFF_READY,
+                        start_step=str(child_state["resume_start_step"]),
+                        pause_state=str(progress.get("pause_outcome") or ""),
+                        pause_token=str(child_state["child_report_id"]),
+                    )
+                elif evo_v2_memory_resume:
+                    memory_chain = self._validate_evo_v2_memory_resume_context(
+                        job,
+                        worktree=worktree,
+                        workspace=workspace,
+                        private_execution_started=True,
+                    )
+                    resume_route = ResumeRoute(
+                        kind=RESUME_KIND_EVO_V2_MEMORY_GATE,
+                        start_step="3",
+                        pause_state=str(
+                            memory_chain["current_state"].get("stage") or ""
+                        ),
+                        pause_token=BLOCK_EVO_V2_MEMORY_RUNTIME_INVALID,
+                    )
+                else:
+                    resume_trust = self._validate_trusted_resume_context(
+                        job,
+                        worktree=worktree,
+                        workspace=workspace,
+                        private_execution_started=True,
+                    )
+                    resume_route = _classify_resume_route(
+                        workspace,
+                        job.report_id,
+                        start_step=str(resume_trust["start_step"]),
+                        trusted_proof_sha256=str(
+                            resume_trust["ultimate_proof_sha256"]
+                        ),
+                        evo_v2_external_progress=(
+                            resume_trust.get("evo_v2_external_progress")
+                            if isinstance(
+                                resume_trust.get("evo_v2_external_progress"),
+                                dict,
+                            )
+                            else None
+                        ),
+                    )
+                    resume_route = _apply_execution_mode_resume_policy(
+                        resume_route,
+                        execution_mode=self.config.execution_mode,
+                    )
+                if resume_route.kind in {
+                    RESUME_KIND_MECHANISM_AGENT,
+                    RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS,
+                    RESUME_KIND_EVO_V2_CHILD_HANDOFF_READY,
+                }:
                     transaction_stack.enter_context(
                         workspace_transaction_lock(
                             self.config.state_root,
@@ -1758,6 +2723,356 @@ class ResearchRunService:
                         resume_trust.get("attestation_id") or ""
                     )
                     return
+                if resume_route.kind == RESUME_KIND_EVO_V2_TERMINAL_CHECKPOINT:
+                    transaction_stack.close()
+                    transaction_stack = ExitStack()
+                    incident_guard = transaction_stack.enter_context(
+                        _host_current_authority_transaction(
+                            state_root=self.config.state_root,
+                            workspace_root=workspace,
+                            installation_id=self.config.installation_id,
+                        )
+                    )
+                    expected_terminal_verdict = str(
+                        (
+                            resume_trust.get("evo_v2_external_progress")
+                            if isinstance(resume_trust, Mapping)
+                            else {}
+                        ).get("terminal_factor_verdict")
+                        or ""
+                    )
+                    current_authority = validate_current_ultimate_authority(
+                        workspace,
+                        report_id=job.report_id,
+                        expected_factor_verdict=expected_terminal_verdict,
+                        formal_proof_eligible=True,
+                        incident_trust_root=(
+                            self.config.state_root / "research-org-trust"
+                        ),
+                        incident_installation_id=self.config.installation_id,
+                        _incident_guard=incident_guard,
+                    )
+                    if current_authority.get("status") != "PASS":
+                        raise RuntimeError(
+                            ";".join(
+                                current_authority.get("block_reasons")
+                                or [BLOCK_HOST_FORMAL_EXECUTION_FAILED]
+                            )
+                        )
+                    checkpoint = self._write_evo_v2_terminal_checkpoint(
+                        job,
+                        workspace=workspace,
+                        resume_trust=resume_trust,
+                    )
+                    formal_verdict = str(
+                        checkpoint["formal_factor_verdict"]
+                    )
+                    preserved_result = (
+                        dict(job.result) if isinstance(job.result, dict) else {}
+                    )
+                    preserved_result.update(
+                        {
+                            "summary": (
+                                "EVO V2 非修订路径的 Host 签名 terminal closure "
+                                f"已验证；因子终态为 {formal_verdict}，未再次启动"
+                                "研究代理或父 wrapper。"
+                            ),
+                            "next_actions": [],
+                            "host_attestation_id": str(
+                                resume_trust.get("attestation_id") or ""
+                            ),
+                            "evo_v2_external_progress": deepcopy(
+                                resume_trust.get("evo_v2_external_progress")
+                            ),
+                            "evo_v2_terminal_checkpoint": checkpoint,
+                            "current_formal_authority": current_authority,
+                        }
+                    )
+                    self.store.update_job(
+                        job.job_id,
+                        execution_status="COMPLETED",
+                        protocol_status="PASS",
+                        factor_verdict=formal_verdict,
+                        council_status="NOT_REQUIRED",
+                        formal_proof_eligible=True,
+                        current_stage="completed",
+                        error_code="",
+                        error_message="",
+                        result=preserved_result,
+                        finished_at_utc=utc_now(),
+                    )
+                    self.store.append_event(
+                        job.job_id,
+                        "EVO_V2_TERMINAL_CHECKPOINT_ACCEPTED",
+                        "Host 签名 terminal closure 已通过精确重放，任务直接进入终态。",
+                        {
+                            "factor_verdict": formal_verdict,
+                            "terminal_decision": checkpoint[
+                                "terminal_decision"
+                            ],
+                            "closure_path": checkpoint[
+                                "terminal_closure_path"
+                            ],
+                            "closure_sha256": checkpoint[
+                                "terminal_closure_sha256"
+                            ],
+                            "checkpoint_path": checkpoint["path"],
+                            "checkpoint_sha256": checkpoint["sha256"],
+                            "agent_invoked": False,
+                            "parent_wrapper_invoked": False,
+                        },
+                    )
+                    private_completion_status = PRIVATE_LIFECYCLE_TERMINAL
+                    private_attestation_id = str(
+                        resume_trust.get("attestation_id") or ""
+                    )
+                    return
+                if resume_route.kind == RESUME_KIND_EVO_V2_CHILD_HANDOFF_READY:
+                    if resume_trust is None:
+                        raise RuntimeError(
+                            f"{BLOCK_RESUME_TRUST_INVALID}: child handoff trust is missing"
+                        )
+                    child_report_id = str(resume_route.pause_token or "")
+                    child_parent_report_id = (
+                        str(child_state.get("parent_report_id") or job.report_id)
+                        if evo_v2_child_runtime_resume
+                        else job.report_id
+                    )
+                    child_runtime = self._execute_evo_v2_child_from_parent_handoff(
+                        job,
+                        worktree=worktree,
+                        workspace=workspace,
+                        resume_trust=resume_trust,
+                        child_report_id=child_report_id,
+                        parent_report_id=child_parent_report_id,
+                        trusted_prior_execution=(
+                            child_state if evo_v2_child_runtime_resume else None
+                        ),
+                    )
+                    child_execution = child_runtime["execution"]
+                    child_status = str(child_execution.get("status") or "")
+                    if child_status not in {
+                        CHILD_RESUME_READY,
+                        CHILD_RECOVERY_READY,
+                        CHILD_TERMINAL,
+                    }:
+                        raise RuntimeError(
+                            f"{BLOCK_RESUME_TRUST_INVALID}: child execution state is invalid"
+                        )
+                    child_terminal_verdict = str(
+                        child_execution.get("scientific_factor_verdict") or ""
+                    )
+                    child_terminal_is_trusted = bool(
+                        child_status == CHILD_TERMINAL
+                        and (
+                            child_execution.get("terminal_checkpoint") is True
+                            or child_execution.get(
+                                "host_execution_receipt_verified"
+                            )
+                            is True
+                        )
+                        and child_execution.get("proof_status") == "PASS"
+                        and child_execution.get("returncode") == 0
+                        and child_terminal_verdict in {"ACCEPT", "REJECT"}
+                    )
+                    child_current_authority: dict[str, Any] | None = None
+                    if child_terminal_is_trusted:
+                        transaction_stack.close()
+                        transaction_stack = ExitStack()
+                        child_incident_guard = transaction_stack.enter_context(
+                            _host_current_authority_transaction(
+                                state_root=self.config.state_root,
+                                workspace_root=workspace,
+                                installation_id=self.config.installation_id,
+                            )
+                        )
+                        child_current_authority = (
+                            validate_current_ultimate_authority(
+                                workspace,
+                                report_id=child_report_id,
+                                expected_factor_verdict=child_terminal_verdict,
+                                formal_proof_eligible=True,
+                                incident_trust_root=(
+                                    self.config.state_root
+                                    / "research-org-trust"
+                                ),
+                                incident_installation_id=(
+                                    self.config.installation_id
+                                ),
+                                _incident_guard=child_incident_guard,
+                            )
+                        )
+                        if child_current_authority.get("status") != "PASS":
+                            raise RuntimeError(
+                                ";".join(
+                                    child_current_authority.get("block_reasons")
+                                    or [BLOCK_HOST_FORMAL_EXECUTION_FAILED]
+                                )
+                            )
+                    preserved_result = (
+                        dict(job.result) if isinstance(job.result, dict) else {}
+                    )
+                    preserved_result.update(
+                        {
+                            "summary": (
+                                "EVO V2 子代已完成 Host admission 与隔离 Ultimate "
+                                f"执行；当前状态为 {child_status}。"
+                            ),
+                            "next_actions": (
+                                [
+                                    "从 Host 签名 child execution receipt 的精确 "
+                                    f"Step{child_execution.get('resume_start_step')} 继续子代，"
+                                    "不得重跑父代。"
+                                ]
+                                if child_status in {
+                                    CHILD_RESUME_READY,
+                                    CHILD_RECOVERY_READY,
+                                }
+                                else []
+                            ),
+                            "evo_v2_external_progress": deepcopy(
+                                resume_trust.get("evo_v2_external_progress")
+                            ),
+                            "evo_v2_child_runtime": child_runtime,
+                            "current_formal_authority": (
+                                child_current_authority
+                                if child_current_authority is not None
+                                else {
+                                    "status": "NOT_APPLICABLE",
+                                    "formal_proof_eligible": False,
+                                }
+                            ),
+                        }
+                    )
+                    self.store.update_job(
+                        job.job_id,
+                        execution_status=(
+                            "REVIEW_REQUIRED"
+                            if child_status in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+                            else "COMPLETED"
+                        ),
+                        protocol_status=(
+                            "PAUSED"
+                            if child_status in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+                            else (
+                                "PASS"
+                                if child_execution.get("proof_status") == "PASS"
+                                and child_execution.get("returncode") == 0
+                                else "FAIL"
+                            )
+                        ),
+                        factor_verdict=(
+                            job.factor_verdict
+                            if child_status in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+                            else (
+                                child_terminal_verdict
+                                if child_terminal_is_trusted
+                                else "UNKNOWN"
+                            )
+                        ),
+                        council_status=(
+                            "PAUSED"
+                            if child_status in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+                            else "NOT_REQUIRED"
+                        ),
+                        formal_proof_eligible=child_terminal_is_trusted,
+                        current_stage=(
+                            "evo_v2_child_recovery_ready"
+                            if child_status == CHILD_RECOVERY_READY
+                            else "evo_v2_child_resume_ready"
+                            if child_status == CHILD_RESUME_READY
+                            else "evo_v2_child_terminal"
+                        ),
+                        error_code=(
+                            EVO_V2_CHILD_EXECUTION_READY
+                            if child_status in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+                            else ""
+                        ),
+                        error_message=(
+                            "子代隔离执行已暂停在 Host 签名 resume point。"
+                            if child_status in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+                            else ""
+                        ),
+                        result=preserved_result,
+                        finished_at_utc=(
+                            ""
+                            if child_status in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+                            else utc_now()
+                        ),
+                    )
+                    self.store.append_event(
+                        job.job_id,
+                        child_status,
+                        preserved_result["summary"],
+                        {
+                            "parent_report_id": str(
+                                child_execution.get("parent_report_id")
+                                or job.report_id
+                            ),
+                            "child_report_id": child_report_id,
+                            "execution_receipt_path": child_execution[
+                                "execution_receipt_path"
+                            ],
+                            "execution_receipt_sha256": child_execution[
+                                "execution_receipt_sha256"
+                            ],
+                            "resume_start_step": child_execution.get(
+                                "resume_start_step"
+                            ),
+                            "parent_wrapper_invoked": False,
+                        },
+                    )
+                    private_completion_status = (
+                        PRIVATE_LIFECYCLE_RESUMABLE
+                        if child_status in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+                        else PRIVATE_LIFECYCLE_TERMINAL
+                    )
+                    private_attestation_id = str(
+                        resume_trust.get("attestation_id") or ""
+                    )
+                    return
+                if resume_route.kind == RESUME_KIND_EVO_V2_EXTERNAL_WAIT:
+                    summary_message, next_action, error_code = (
+                        _evo_v2_external_resume_message(resume_route)
+                    )
+                    preserved_result = (
+                        dict(job.result) if isinstance(job.result, dict) else {}
+                    )
+                    preserved_result["summary"] = summary_message
+                    preserved_result["next_actions"] = [next_action]
+                    preserved_result["evo_v2_external_progress"] = deepcopy(
+                        resume_trust.get("evo_v2_external_progress")
+                    )
+                    self.store.update_job(
+                        job.job_id,
+                        execution_status="REVIEW_REQUIRED",
+                        protocol_status="PAUSED",
+                        factor_verdict=job.factor_verdict,
+                        council_status="PAUSED",
+                        current_stage=(
+                            "evo_v2_external_control_required"
+                        ),
+                        error_code=error_code,
+                        error_message=summary_message,
+                        result=preserved_result,
+                        finished_at_utc="",
+                    )
+                    self.store.append_event(
+                        job.job_id,
+                        (
+                            "EVO_V2_EXTERNAL_CONTROL_REQUIRED"
+                        ),
+                        summary_message,
+                        {
+                            "pause_state": resume_route.pause_state,
+                            "reason": resume_route.pause_token,
+                        },
+                    )
+                    private_completion_status = PRIVATE_LIFECYCLE_RESUMABLE
+                    private_attestation_id = str(
+                        resume_trust.get("attestation_id") or ""
+                    )
+                    return
                 if resume_route.kind == RESUME_KIND_COUNCIL_INGRESS:
                     council_ingress_tasks = _trusted_council_ingress_tasks(
                         workspace,
@@ -1773,37 +3088,55 @@ class ResearchRunService:
                 if resume_route.kind in {
                     RESUME_KIND_MECHANISM_AGENT,
                     RESUME_KIND_COUNCIL_INGRESS,
+                    RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS,
                 }:
-                    council_result_paths = tuple(
+                    expected_agent_paths = tuple(
                         task.expected_result_path for task in council_ingress_tasks
                     )
+                    if resume_route.kind == RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS:
+                        expected_agent_paths = (
+                            _pre_oos_root_synthesis_relative(job.report_id),
+                        )
                     resume_restore_state = _capture_resume_restore_state(
                         workspace,
                         report_id=job.report_id,
-                        expected_absent_paths=council_result_paths,
+                        expected_absent_paths=expected_agent_paths,
                         managed_directories=tuple(
                             sorted(
                                 {
                                     Path(relative).parent.as_posix()
-                                    for relative in council_result_paths
+                                    for relative in expected_agent_paths
+                                    if not (workspace / Path(relative).parent).is_dir()
                                 }
                             )
                         ),
                     )
-                self._write_request_artifacts(
-                    job,
-                    allocation,
-                    preserve_plan=True,
-                    trusted_resume_start_step=str(resume_trust["start_step"]),
-                    trusted_resume_context=resume_trust,
-                )
-                self._write_resume_authorization(job, workspace)
+                if not evo_v2_memory_resume and not evo_v2_child_runtime_resume:
+                    self._write_request_artifacts(
+                        job,
+                        allocation,
+                        preserve_plan=True,
+                        trusted_resume_start_step=str(resume_trust["start_step"]),
+                        trusted_resume_context=resume_trust,
+                    )
+                    self._write_resume_authorization(job, workspace)
                 if resume_route.kind == RESUME_KIND_MECHANISM_AGENT:
                     resume_task = self._write_agent_resume_contract(
                         job,
                         workspace,
                         resume_trust=resume_trust,
                         attempt_id=f"resume_{uuid.uuid4().hex}",
+                    )
+                elif resume_route.kind == RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS:
+                    pre_oos_root_synthesis_task = (
+                        _write_pre_oos_root_synthesis_task(
+                            job,
+                            workspace,
+                            trusted_resume_proof_sha256=str(
+                                resume_trust["ultimate_proof_sha256"]
+                            ),
+                            attempt_id=f"resume_{uuid.uuid4().hex}",
+                        )
                     )
             else:
                 allocation = self.allocator.allocate(
@@ -1875,7 +3208,11 @@ class ResearchRunService:
                 or (
                     resume_route is not None
                     and resume_route.kind
-                    in {RESUME_KIND_MECHANISM_AGENT, RESUME_KIND_COUNCIL_INGRESS}
+                    in {
+                        RESUME_KIND_MECHANISM_AGENT,
+                        RESUME_KIND_COUNCIL_INGRESS,
+                        RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS,
+                    }
                 )
             )
             if uses_research_agent:
@@ -1893,6 +3230,7 @@ class ResearchRunService:
                         else None
                     ),
                     council_ingress_tasks=council_ingress_tasks,
+                    pre_oos_root_synthesis_task=pre_oos_root_synthesis_task,
                 )
             else:
                 agent_write_snapshot = {}
@@ -1922,7 +3260,17 @@ class ResearchRunService:
                     {"start_step": resume_route.start_step if resume_route else ""},
                 )
             current_job = self.store.get_job(job.job_id) or job
-            if council_ingress_tasks:
+            if pre_oos_root_synthesis_task is not None:
+                run_pre_oos_root_synthesis = (
+                    _pre_oos_root_synthesis_runner(self.agent_adapter)
+                )
+                agent_result = run_pre_oos_root_synthesis(
+                    current_job,
+                    worktree=worktree,
+                    workspace=workspace,
+                    task=pre_oos_root_synthesis_task,
+                )
+            elif council_ingress_tasks:
                 run_council_ingress = getattr(
                     self.agent_adapter,
                     "run_council_ingress",
@@ -1960,7 +3308,10 @@ class ResearchRunService:
                         resume=False,
                     )
             else:
-                if resume_route is None or resume_route.kind != RESUME_KIND_HOST_FORMAL_CHECKPOINT:
+                if resume_route is None or resume_route.kind not in {
+                    RESUME_KIND_HOST_FORMAL_CHECKPOINT,
+                    RESUME_KIND_EVO_V2_MEMORY_GATE,
+                }:
                     raise RuntimeError(
                         f"{BLOCK_RESUME_TRUST_INVALID}: host formal resume route is invalid"
                     )
@@ -2029,6 +3380,23 @@ class ResearchRunService:
                     tasks=council_ingress_tasks,
                     agent_result=agent_result,
                 )
+            elif (
+                resume
+                and resume_route is not None
+                and resume_route.kind == RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS
+            ):
+                if pre_oos_root_synthesis_task is None:
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS root synthesis task is missing"
+                    )
+                validated_agent_receipt = (
+                    self._validate_pre_oos_root_synthesis_receipt(
+                        current_job,
+                        workspace,
+                        task=pre_oos_root_synthesis_task,
+                        agent_result=agent_result,
+                    )
+                )
 
             if organization_runtime_required:
                 self._admit_host_research_director_result(
@@ -2079,17 +3447,30 @@ class ResearchRunService:
                 raise RuntimeError(
                     f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: host data lease provider is missing"
                 )
-            formal_execution = self._execute_host_formal_pipeline(
-                current_job,
-                worktree=worktree,
-                workspace=workspace,
-                resume=resume,
-                denied_values=denied_values,
-                host_data_env=host_data_env,
-                resume_trust=resume_trust,
-                resume_task=resume_task,
-                validated_resume_artifacts=validated_resume_artifacts,
-            )
+            try:
+                formal_resume = bool(resume and not evo_v2_memory_resume)
+                formal_execution = self._execute_host_formal_pipeline(
+                    current_job,
+                    worktree=worktree,
+                    workspace=workspace,
+                    resume=formal_resume,
+                    denied_values=denied_values,
+                    host_data_env=host_data_env,
+                    resume_trust=(resume_trust if formal_resume else None),
+                    resume_task=(resume_task if formal_resume else None),
+                    validated_resume_artifacts=(
+                        validated_resume_artifacts if formal_resume else None
+                    ),
+                )
+            except EvoV2MemoryGatePause as pause:
+                private_attestation_id = self._pause_for_evo_v2_memory_gate(
+                    job=current_job,
+                    workspace=workspace,
+                    state=pause.state,
+                    formal_receipt=pause.receipt,
+                )
+                private_completion_status = PRIVATE_LIFECYCLE_RESUMABLE
+                return
             if validated_resume_artifacts is not None:
                 _require_validated_resume_artifacts_unchanged(
                     workspace,
@@ -2148,6 +3529,19 @@ class ResearchRunService:
                 organization_validation = None
                 organization_plan = None
                 organization_runtime = None
+            # The Agent/wrapper phase is complete.  Release any earlier
+            # workspace-only transaction, then reacquire locks in the sole
+            # authority order: incident registry first, workspace second.  This
+            # guard remains live through attestation, formal memory, and DB CAS.
+            transaction_stack.close()
+            transaction_stack = ExitStack()
+            incident_guard = transaction_stack.enter_context(
+                _host_current_authority_transaction(
+                    state_root=self.config.state_root,
+                    workspace_root=workspace,
+                    installation_id=self.config.installation_id,
+                )
+            )
             attested_workspace = self._snapshot_workspace_evidence(
                 current_job,
                 workspace,
@@ -2155,10 +3549,22 @@ class ResearchRunService:
             web_materialization = validate_materialized_web_research(
                 attested_workspace
             )
-            summary = read_ultimate_workspace(
+            evo_v2_memory_enabled = is_validated_evo_v2_memory_runtime_enabled(
+                workspace=attested_workspace,
+                report_id=current_job.report_id,
+                validated_materialization=web_materialization,
+            )
+            current_read = read_current_ultimate_workspace(
                 attested_workspace,
                 report_id=job.report_id,
+                incident_trust_root=(
+                    self.config.state_root / "research-org-trust"
+                ),
+                incident_installation_id=self.config.installation_id,
+                _incident_guard=incident_guard,
             )
+            summary = current_read.summary
+            current_authority_validation = current_read.authority_validation
             self._validate_summary_identity(current_job, summary)
             require_formal_organization = bool(
                 organization_plan is not None and not self.config.auth_disabled
@@ -2179,6 +3585,7 @@ class ResearchRunService:
             normalized_council_status = _normalize_council(summary.council_status)
             normalized_formal_proof_eligible = bool(
                 summary.formal_proof_eligible
+                and current_authority_validation.get("status") == "PASS"
                 and (
                     not require_formal_organization
                     or (
@@ -2234,8 +3641,10 @@ class ResearchRunService:
                 validated_resume_artifacts=validated_resume_artifacts,
                 validated_agent_receipt=validated_agent_receipt,
                 researcher_memory_outcome=researcher_memory_attested_outcome,
+                current_authority_validation=current_authority_validation,
             )
             researcher_memory_outcome: dict[str, Any] | None = None
+            evo_v2_episode_registration: dict[str, Any] | None = None
             memory_binding = (
                 organization_plan.get("researcher_memory")
                 if isinstance(organization_plan, dict)
@@ -2318,6 +3727,7 @@ class ResearchRunService:
                     "assurance": "legacy_no_research_organization_contract",
                 }
             result["host_attestation_id"] = host_attestation_id
+            result["current_formal_authority"] = current_authority_validation
             result["model_execution"] = {
                 "provider": agent_result.provider,
                 "model": agent_result.model,
@@ -2336,6 +3746,7 @@ class ResearchRunService:
                 and execution_status == "COMPLETED"
                 and normalized_factor_verdict in {"ACCEPT", "REJECT"}
                 and organization_runtime_verified
+                and current_authority_validation.get("status") == "PASS"
             ):
                 attestation_path = self.config.state_root / host_attestation_id
                 try:
@@ -2373,6 +3784,61 @@ class ResearchRunService:
                         repo_root=worktree,
                         workspace=workspace,
                     )
+                    if evo_v2_memory_enabled:
+                        try:
+                            evo_v2_episode_registration = (
+                                register_terminal_historical_episode_candidate(
+                                    root=(
+                                        self.config.state_root
+                                        / "researcher-memory-evo-v2-episodes"
+                                    ),
+                                    evidence_workspace=attested_workspace,
+                                    repo_root=worktree,
+                                    state_root=self.config.state_root,
+                                    installation_id=self.config.installation_id,
+                                    identity={
+                                        "job_id": current_job.job_id,
+                                        "factor_id": current_job.factor_id,
+                                        "research_id": current_job.research_id,
+                                        "report_id": current_job.report_id,
+                                    },
+                                    terminal_outcome=researcher_memory_attested_outcome,
+                                    outcome_event_ref={
+                                        "event_id": researcher_memory_outcome[
+                                            "event_id"
+                                        ],
+                                        "event_sha256": researcher_memory_outcome[
+                                            "event_sha256"
+                                        ],
+                                        "path": researcher_memory_outcome["path"],
+                                    },
+                                    host_attestation_ref={
+                                        "id": host_attestation_id,
+                                        "sha256": _sha256(attestation_path),
+                                    },
+                                )
+                            )
+                        except Exception as exc:  # noqa: BLE001 - secondary governance write.
+                            episode_error_token = getattr(
+                                exc,
+                                "token",
+                                BLOCK_EVO_V2_HISTORICAL_EPISODE_INVALID,
+                            )
+                            if not isinstance(episode_error_token, str) or not re.fullmatch(
+                                r"[A-Z0-9_]+",
+                                episode_error_token,
+                            ):
+                                episode_error_token = (
+                                    BLOCK_EVO_V2_HISTORICAL_EPISODE_INVALID
+                                )
+                            evo_v2_episode_registration = {
+                                "status": "WRITE_BLOCKED",
+                                "authority": "historical_episode_candidate_only",
+                                "retryable": True,
+                                "error_code": episode_error_token,
+                                "formal_outcome_preserved": True,
+                                "structural_or_conditional_lesson_generated": False,
+                            }
                 except Exception as exc:  # noqa: BLE001 - secondary governance write.
                     memory_error_token = getattr(
                         exc,
@@ -2415,6 +3881,16 @@ class ResearchRunService:
                     ),
                 }
             )
+            if evo_v2_episode_registration is not None:
+                result["researcher_memory"]["evo_v2_historical_episode"] = (
+                    {
+                        "status": "CANDIDATE_RECORDED",
+                        **evo_v2_episode_registration,
+                    }
+                    if evo_v2_episode_registration.get("status")
+                    != "WRITE_BLOCKED"
+                    else evo_v2_episode_registration
+                )
             updated = self.store.update_job(
                 job.job_id,
                 execution_status=execution_status,
@@ -2518,6 +3994,7 @@ class ResearchRunService:
                 execution_status="BLOCKED" if token.startswith("BLOCK_") else "FAILED",
                 protocol_status="BLOCK" if token.startswith("BLOCK_") else "FAIL",
                 factor_verdict="BLOCK" if token.startswith("BLOCK_") else "UNKNOWN",
+                formal_proof_eligible=False,
                 current_stage="blocked" if token.startswith("BLOCK_") else "failed",
                 error_code=token,
                 error_message=public_message,
@@ -2537,6 +4014,7 @@ class ResearchRunService:
                 execution_status="BLOCKED",
                 protocol_status="BLOCK",
                 factor_verdict="BLOCK",
+                formal_proof_eligible=False,
                 current_stage="blocked",
                 error_code=token,
                 error_message="研究服务发生未预期错误；任务证据已保留，未自动重试。",
@@ -2708,9 +4186,18 @@ class ResearchRunService:
         attestation_id: str = "",
         blocker: str = "",
     ) -> None:
-        path = self._private_lifecycle_path(job.job_id)
-        path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        path.parent.chmod(0o700)
+        try:
+            security_root = ensure_host_private_job_subdirectory(
+                self.config.state_root,
+                job.job_id,
+                ("security",),
+                create=True,
+            )
+        except PrivateJobRootError as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: Host-private job root is unsafe"
+            ) from exc
+        path = security_root / "lifecycle.json"
         _write_json_atomic(
             path,
             {
@@ -2726,6 +4213,16 @@ class ResearchRunService:
         )
 
     def _begin_private_execution(self, job: ResearchJob, *, resume: bool) -> None:
+        try:
+            ensure_host_private_job_root(
+                self.config.state_root,
+                job.job_id,
+                create=True,
+            )
+        except PrivateJobRootError as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: Host-private job root is unsafe"
+            ) from exc
         marker_path = self._non_resumable_marker_path(job.job_id)
         if marker_path.exists() or marker_path.is_symlink():
             raise RuntimeError(
@@ -2805,8 +4302,13 @@ class ResearchRunService:
             if marker_path.is_symlink():
                 raise RuntimeError("private non-resumable marker uses a symlink")
             if not marker_path.exists():
-                marker_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-                marker_path.parent.chmod(0o700)
+                security_root = ensure_host_private_job_subdirectory(
+                    self.config.state_root,
+                    job.job_id,
+                    ("security",),
+                    create=True,
+                )
+                marker_path = security_root / "non_resumable.json"
                 payload = {
                     "version": "factorforge_console_non_resumable_marker_v1",
                     "job_id": job.job_id,
@@ -2836,6 +4338,165 @@ class ResearchRunService:
             raise RuntimeError(
                 f"{BLOCK_RESUME_TRUST_INVALID}: private lifecycle is not resumable"
             )
+
+    def _validate_evo_v2_memory_resume_context(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        private_execution_started: bool = False,
+    ) -> dict[str, Any]:
+        """Validate the pre-Ultimate pause without inventing an Ultimate proof."""
+
+        if not _is_evo_v2_memory_gate_pause(job):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 memory pause marker is missing"
+            )
+        lifecycle = self._read_private_lifecycle(job)
+        expected_status = (
+            PRIVATE_LIFECYCLE_RUNNING
+            if private_execution_started
+            else PRIVATE_LIFECYCLE_RESUMABLE
+        )
+        if (
+            not isinstance(lifecycle, dict)
+            or lifecycle.get("status") != expected_status
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 private lifecycle is invalid"
+            )
+        worktree = Path(worktree).expanduser().resolve(strict=True)
+        workspace = Path(workspace).expanduser().resolve(strict=True)
+        if (
+            Path(job.worktree_path).expanduser().resolve(strict=True) != worktree
+            or Path(job.workspace_path).expanduser().resolve(strict=True) != workspace
+            or not is_validated_evo_v2_memory_runtime_enabled(
+                workspace=workspace,
+                report_id=job.report_id,
+            )
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 allocation or materialization changed"
+            )
+        chain = load_evo_v2_memory_round_state(
+            workspace=workspace,
+            state_root=self.config.state_root,
+            installation_id=self.config.installation_id,
+        )
+        memory = job.result["evo_v2_memory"]
+        state_ref = memory["state_ref"]
+        prior_event_sha256 = str(state_ref.get("event_sha256") or "")
+        prior_event = next(
+            (
+                event
+                for event in chain["events"]
+                if event.get("event_sha256") == prior_event_sha256
+            ),
+            None,
+        )
+        expected_state_path = (
+            f"objects/evo_v2/{job.report_id}/memory_runtime/"
+            "memory_runtime_state.json"
+        )
+        if (
+            not isinstance(prior_event, dict)
+            or state_ref.get("path") != expected_state_path
+            or not re.fullmatch(r"[0-9a-f]{64}", str(state_ref.get("sha256") or ""))
+            or prior_event.get("formal_execution_allowed") is not False
+            or prior_event.get("authority_guard", {}).get("results_or_oos_accessed")
+            is not False
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 paused state binding is invalid"
+            )
+        event_relative = (
+            f"objects/evo_v2/{job.report_id}/memory_runtime/events/"
+            f"event_{prior_event['generation']:06d}_{prior_event_sha256[:12]}.json"
+        )
+        event_path = workspace / event_relative
+        if (
+            event_path.is_symlink()
+            or not event_path.is_file()
+            or _sha256(event_path) != state_ref.get("sha256")
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 paused event readback failed"
+            )
+
+        state_root = self.config.state_root.resolve(strict=True)
+
+        def read_host_json(relative_value: Any, *, label: str) -> tuple[dict[str, Any], Path]:
+            relative = Path(str(relative_value or ""))
+            if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 {label} path is unsafe"
+                )
+            path = state_root / relative
+            current = state_root
+            for part in relative.parts:
+                current = current / part
+                if current.is_symlink():
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 {label} uses a symlink"
+                    )
+            try:
+                resolved = path.resolve(strict=True)
+                resolved.relative_to(state_root)
+                payload = json.loads(resolved.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 {label} is unreadable"
+                ) from exc
+            if not resolved.is_file() or not isinstance(payload, dict):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 {label} is invalid"
+                )
+            return payload, resolved
+
+        attestation, _attestation_path = read_host_json(
+            lifecycle.get("attestation_id"),
+            label="memory gate attestation",
+        )
+        expected_identity = self._private_lifecycle_identity(job)
+        receipt_id = str(attestation.get("formal_execution_receipt_id") or "")
+        receipt, receipt_path = read_host_json(
+            receipt_id,
+            label="memory gate formal receipt",
+        )
+        commands = receipt.get("commands")
+        if (
+            attestation.get("version")
+            != "factorforge_console_evo_v2_memory_gate_attestation_v1"
+            or any(attestation.get(key) != value for key, value in expected_identity.items())
+            or attestation.get("stage") != prior_event.get("stage")
+            or attestation.get("state_event_sha256") != prior_event_sha256
+            or attestation.get("state_file_sha256") != state_ref.get("sha256")
+            or attestation.get("formal_execution_allowed") is not False
+            or attestation.get("results_or_oos_accessed") is not False
+            or attestation.get("formal_execution_receipt_sha256")
+            != _sha256(receipt_path)
+            or receipt.get("version")
+            != "factorforge_console_host_formal_execution_v2"
+            or any(
+                receipt.get(key) != value
+                for key, value in {
+                    **expected_identity,
+                    "base_commit": job.base_commit,
+                }.items()
+            )
+            or receipt.get("resume") is not False
+            or not isinstance(commands, list)
+            or len(commands) != 1
+            or not isinstance(commands[0], dict)
+            or commands[0].get("name") != "materialize_web_research"
+            or commands[0].get("returncode") != 0
+            or any(command.get("name") == "run_factorforge_ultimate" for command in commands)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 pause provenance is invalid"
+            )
+        return chain
 
     def _validate_trusted_resume_context(
         self,
@@ -2996,8 +4657,7 @@ class ResearchRunService:
             current_entries = _workspace_evidence_tree(workspace_root)
         except RuntimeError as exc:
             raise invalid("current workspace evidence tree is unsafe") from exc
-        if current_entries != entries:
-            raise invalid("workspace formal evidence tree changed after host attestation")
+        workspace_evidence_changed = current_entries != entries
 
         receipt_id = str(attestation.get("formal_execution_receipt_id") or "")
         receipt_relative = Path(receipt_id)
@@ -3228,6 +4888,34 @@ class ResearchRunService:
             or wrapper_evidence.get("sha256") != proof_sha256
         ):
             raise invalid("current Ultimate proof is not bound to trusted host evidence")
+        proof = _read_regular_workspace_json(
+            workspace_root,
+            (
+                "objects/runtime_context/"
+                f"ultimate_run_report__{job.report_id}.json"
+            ),
+        )
+        evo_v2_external_progress: dict[str, Any] | None = None
+        if is_evo_v2_external_pause(proof):
+            try:
+                evo_v2_external_progress = assess_evo_v2_external_resume(
+                    workspace_root=workspace_root,
+                    report_id=job.report_id,
+                    proof=proof,
+                    attested_entries=entries,
+                    trust_root=self.config.state_root / "research-org-trust",
+                    installation_id=self.config.installation_id,
+                    admissions_root=(
+                        self.config.state_root / "researcher-memory-evo-v2"
+                    ),
+                ).to_dict()
+            except (EvoV2ExternalResumeError, OSError, ValueError) as exc:
+                raise invalid(
+                    "EVO V2 external progress does not replay against the "
+                    f"attested lifecycle generation: {exc}"
+                ) from exc
+        elif workspace_evidence_changed:
+            raise invalid("workspace formal evidence tree changed after host attestation")
         try:
             start_step = required_web_resume_start_step(workspace_root, job.report_id)
         except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
@@ -3249,6 +4937,7 @@ class ResearchRunService:
             "receipt_id": receipt_id,
             "receipt_sha256": receipt_sha256,
             "workspace_evidence_tree_root_sha256": stable_json_hash(entries),
+            "evo_v2_external_progress": evo_v2_external_progress,
             "conversation_request_sha256": stable_json_hash(trusted_request),
             "conversation_ledger_checkpoint": (
                 deepcopy(trusted_conversation_reference)
@@ -3302,6 +4991,1500 @@ class ResearchRunService:
             stderr_tail="",
             result_path=str(result_path),
         )
+
+    def _write_evo_v2_terminal_checkpoint(
+        self,
+        job: ResearchJob,
+        *,
+        workspace: Path,
+        resume_trust: Mapping[str, Any],
+    ) -> dict[str, Any]:
+        progress = resume_trust.get("evo_v2_external_progress")
+        if not isinstance(progress, Mapping):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 terminal progress is missing"
+            )
+        closure_relative = str(progress.get("terminal_closure_path") or "")
+        closure_sha256 = str(progress.get("terminal_closure_sha256") or "")
+        closure_path = _read_regular_workspace_file(
+            workspace.resolve(strict=True),
+            closure_relative,
+        )
+        proof_relative = (
+            "objects/runtime_context/"
+            f"ultimate_run_report__{job.report_id}.json"
+        )
+        proof_path = _read_regular_workspace_file(
+            workspace.resolve(strict=True),
+            proof_relative,
+        )
+        formal_verdict = str(progress.get("terminal_factor_verdict") or "")
+        terminal_decision = str(progress.get("terminal_decision") or "")
+        expected_decision = {
+            "ACCEPT": "promote_official",
+            "REJECT": "reject",
+        }.get(formal_verdict)
+        expected_closure_relative = (
+            f"objects/evo_v2/{job.report_id}/post_oos_terminal_closure.json"
+        )
+        expected_snapshot_relative = (
+            f"objects/evo_v2/{job.report_id}/lifecycle_history/"
+            "lifecycle__0002.json"
+        )
+        if (
+            progress.get("report_id") != job.report_id
+            or progress.get("status") != PROGRESS_TERMINAL_CHECKPOINT_READY
+            or progress.get("start_step") is not None
+            or progress.get("pause_outcome")
+            != "awaiting_evo_v2_non_revision_terminal_closure"
+            or progress.get("current_lifecycle_state")
+            != "NO_QUALIFIED_CONTRADICTION"
+            or progress.get("paused_lifecycle_state")
+            != "NO_QUALIFIED_CONTRADICTION"
+            or expected_decision is None
+            or terminal_decision != expected_decision
+            or closure_relative != expected_closure_relative
+            or not re.fullmatch(r"[0-9a-f]{64}", closure_sha256)
+            or _sha256(closure_path) != closure_sha256
+            or _sha256(proof_path)
+            != str(resume_trust.get("ultimate_proof_sha256") or "")
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(resume_trust.get("attestation_sha256") or ""),
+            )
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(resume_trust.get("receipt_sha256") or ""),
+            )
+            or isinstance(progress.get("paused_lifecycle_generation"), bool)
+            or progress.get("paused_lifecycle_generation") != 2
+            or progress.get("paused_lifecycle_snapshot_path")
+            != expected_snapshot_relative
+            or isinstance(progress.get("current_lifecycle_generation"), bool)
+            or progress.get("current_lifecycle_generation") != 2
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(progress.get("paused_lifecycle_snapshot_sha256") or ""),
+            )
+            or not re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(progress.get("current_lifecycle_sha256") or ""),
+            )
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 terminal checkpoint binding is invalid"
+            )
+        checkpoint_root = (
+            self.config.state_root
+            / "jobs"
+            / job.job_id
+            / "host-checkpoint-runs"
+        )
+        checkpoint_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        checkpoint_root.chmod(0o700)
+        recorded_at = utc_now()
+        checkpoint_path = checkpoint_root / (
+            f"evo_terminal_checkpoint_{_stamp(recorded_at)}_"
+            f"{uuid.uuid4().hex[:12]}.json"
+        )
+        progress_copy = deepcopy(dict(progress))
+        unsigned = {
+            "version": "factorforge_console_evo_v2_terminal_checkpoint_v1",
+            "actor_kind": "host_terminal_checkpoint",
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "trusted_pause": {
+                "path": proof_relative,
+                "sha256": _sha256(proof_path),
+                "attestation_id": str(
+                    resume_trust.get("attestation_id") or ""
+                ),
+                "attestation_sha256": str(
+                    resume_trust.get("attestation_sha256") or ""
+                ),
+                "receipt_id": str(resume_trust.get("receipt_id") or ""),
+                "receipt_sha256": str(
+                    resume_trust.get("receipt_sha256") or ""
+                ),
+            },
+            "terminal_closure": {
+                "path": closure_relative,
+                "sha256": closure_sha256,
+                "formal_factor_verdict": formal_verdict,
+                "terminal_decision": terminal_decision,
+            },
+            "lifecycle_generation_binding": {
+                "paused_state": progress.get("paused_lifecycle_state"),
+                "paused_generation": progress.get(
+                    "paused_lifecycle_generation"
+                ),
+                "paused_snapshot_path": progress.get(
+                    "paused_lifecycle_snapshot_path"
+                ),
+                "paused_snapshot_sha256": progress.get(
+                    "paused_lifecycle_snapshot_sha256"
+                ),
+                "current_state": progress.get("current_lifecycle_state"),
+                "current_generation": progress.get(
+                    "current_lifecycle_generation"
+                ),
+                "current_lifecycle_sha256": progress.get(
+                    "current_lifecycle_sha256"
+                ),
+            },
+            "external_resume_assessment_sha256": stable_json_hash(
+                progress_copy
+            ),
+            "authority": {
+                "agent_invoked": False,
+                "parent_wrapper_invoked": False,
+                "revision_authority": False,
+                "human_approval_authority": False,
+                "canonical_memory_write_allowed": False,
+            },
+            "recorded_at_utc": recorded_at,
+        }
+        payload = {**unsigned, "content_sha256": stable_json_hash(unsigned)}
+        _write_json_atomic(
+            checkpoint_path,
+            payload,
+            root=self.config.state_root,
+        )
+        relative = checkpoint_path.relative_to(self.config.state_root).as_posix()
+        return {
+            "path": relative,
+            "sha256": _sha256(checkpoint_path),
+            "content_sha256": payload["content_sha256"],
+            "formal_factor_verdict": formal_verdict,
+            "terminal_decision": terminal_decision,
+            "terminal_closure_path": closure_relative,
+            "terminal_closure_sha256": closure_sha256,
+        }
+
+    def _prepare_evo_v2_child_execution_ready(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume_trust: Mapping[str, Any],
+        child_report_id: str,
+        parent_report_id: str | None = None,
+        trusted_parent_checkpoint: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Run the Host-owned child admission chain through execution readiness.
+
+        The resulting checkpoint authorizes exactly one child report and the
+        code-owned start-step=3b command.  It deliberately does not execute the
+        command in this parent resume transaction; a crash or operator restart
+        can replay the signed checkpoint without re-authoring child semantics.
+        """
+
+        parent_id = parent_report_id or job.report_id
+        progress = resume_trust.get("evo_v2_external_progress")
+        if (
+            not isinstance(progress, Mapping)
+            or progress.get("status")
+            not in {
+                PROGRESS_CHILD_HANDOFF_AUTHORIZED,
+                PROGRESS_CHILD_HANDOFF_READY,
+            }
+            or progress.get("report_id") != parent_id
+            or progress.get("child_report_id") != child_report_id
+            or progress.get("start_step") is not None
+            or not child_report_id
+            or child_report_id == parent_id
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 child handoff identity is invalid"
+            )
+        trust_root = self.config.state_root / "research-org-trust"
+        store = load_runtime_trust_store(
+            trust_root,
+            installation_id=self.config.installation_id,
+        )
+        expected_pin = str(store.public_manifest.get("manifest_sha256") or "")
+        if (
+            not job.base_commit
+            or re.fullmatch(r"[0-9a-f]{40,64}", job.base_commit.lower()) is None
+            or Path(job.worktree_path).expanduser().resolve(strict=True) != worktree
+            or Path(job.workspace_path).expanduser().resolve(strict=True) != workspace
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: persisted child worktree allocation changed"
+            )
+        engine_commit = _validate_formal_engine_checkout(
+            worktree,
+            job.base_commit,
+        )
+        engine_root = worktree
+        materializer = _formal_engine_script(
+            engine_root, EVO_CHILD_MATERIALIZER_RELATIVE
+        )
+        ultimate = _formal_engine_script(
+            engine_root, FORMAL_ENGINE_SCRIPTS["run_factorforge_ultimate"]
+        )
+        for script, relative in (
+            (materializer, EVO_CHILD_MATERIALIZER_RELATIVE),
+            (ultimate, FORMAL_ENGINE_SCRIPTS["run_factorforge_ultimate"]),
+        ):
+            if _sha256(script) != _git_blob_sha256(
+                engine_root, engine_commit, relative
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: EVO child engine "
+                    "script does not match the pinned commit"
+                )
+        if not self.config.data_catalogs:
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: approved data catalog is missing"
+            )
+        _catalog_snapshot_path, catalog_projection_path = (
+            evo_child_catalog_projection_paths(
+                engine_root,
+                job_id=job.job_id,
+                child_report_id=child_report_id,
+            )
+        )
+        if catalog_projection_path.is_file() and not catalog_projection_path.is_symlink():
+            catalog_projection = validate_materialized_evo_child_catalog_projection(
+                engine_root=engine_root,
+                workspace_root=workspace,
+                projection_path=catalog_projection_path,
+                job_id=job.job_id,
+                parent_report_id=parent_id,
+                child_report_id=child_report_id,
+            )
+        else:
+            frozen_catalog = materialize_host_job_frozen_catalog_snapshot(
+                state_root=self.config.state_root,
+                workspace_root=workspace,
+                approved_catalog_path=self.config.data_catalogs[0],
+                job_id=job.job_id,
+            )
+            catalog_projection = materialize_evo_child_catalog_projection(
+                engine_root=engine_root,
+                workspace_root=workspace,
+                approved_catalog_path=frozen_catalog["snapshot_path"],
+                approved_catalog_admission=frozen_catalog["catalog_admission"],
+                job_id=job.job_id,
+                parent_report_id=parent_id,
+                child_report_id=child_report_id,
+            )
+        external_calendar = str(
+            os.environ.get("FACTORFORGE_TRUSTED_TRADE_CAL_CSV") or ""
+        ).strip()
+        if not external_calendar:
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: trusted trade calendar is missing"
+            )
+        _calendar_snapshot_path, calendar_projection_path = (
+            evo_child_calendar_projection_paths(
+                engine_root,
+                job_id=job.job_id,
+                child_report_id=child_report_id,
+            )
+        )
+        if calendar_projection_path.is_file() and not calendar_projection_path.is_symlink():
+            calendar_projection = validate_materialized_evo_child_calendar_projection(
+                engine_root=engine_root,
+                workspace_root=workspace,
+                projection_path=calendar_projection_path,
+                job_id=job.job_id,
+                parent_report_id=parent_id,
+                child_report_id=child_report_id,
+            )
+        else:
+            calendar_projection = materialize_evo_child_calendar_projection(
+                engine_root=engine_root,
+                workspace_root=workspace,
+                trusted_calendar_path=external_calendar,
+                job_id=job.job_id,
+                parent_report_id=parent_id,
+                child_report_id=child_report_id,
+            )
+        parent_checkpoint = (
+            dict(trusted_parent_checkpoint)
+            if trusted_parent_checkpoint is not None
+            else {
+                "ultimate_proof_sha256": str(
+                    resume_trust.get("ultimate_proof_sha256") or ""
+                ),
+                "attestation_id": str(
+                    resume_trust.get("attestation_id") or ""
+                ),
+                "attestation_sha256": str(
+                    resume_trust.get("attestation_sha256") or ""
+                ),
+                "receipt_id": str(resume_trust.get("receipt_id") or ""),
+                "receipt_sha256": str(
+                    resume_trust.get("receipt_sha256") or ""
+                ),
+                "external_progress_sha256": stable_json_hash(dict(progress)),
+            }
+        )
+        return prepare_evo_child_execution(
+            runner=self.agent_adapter,
+            state_root=self.config.state_root,
+            trust_root=trust_root,
+            admissions_root=(
+                self.config.state_root / "researcher-memory-evo-v2"
+            ),
+            installation_id=self.config.installation_id,
+            job_id=job.job_id,
+            workspace_root=workspace,
+            worktree=worktree,
+            parent_report_id=parent_id,
+            child_report_id=child_report_id,
+            expected_host_trust_manifest_sha256=expected_pin,
+            trusted_parent_checkpoint=parent_checkpoint,
+            child_materializer_script=materializer,
+            ultimate_script=ultimate,
+            engine_root=engine_root,
+            container_runtime=Path(
+                shutil.which(self.config.container_runtime)
+                or self.config.container_runtime
+            ),
+            container_image_digest=resolve_evo_child_container_image_digest(
+                Path(
+                    shutil.which(self.config.container_runtime)
+                    or self.config.container_runtime
+                ),
+                self.config.agent_container_image,
+            ),
+            container_memory=self.config.container_memory,
+            container_cpus=str(self.config.container_cpus),
+            container_pids=self.config.container_pids_limit,
+            container_tmpfs=(
+                f"size={self.config.container_tmpfs_size},"
+                "mode=1777,noexec,nosuid,nodev"
+            ),
+            research_base_commit=job.base_commit.lower(),
+            execution_engine_commit=engine_commit.lower(),
+            catalog_snapshot_path=catalog_projection["snapshot_path"],
+            catalog_projection_path=catalog_projection["projection_path"],
+            calendar_snapshot_path=calendar_projection["snapshot_path"],
+            calendar_projection_path=calendar_projection["projection_path"],
+            timeout_seconds=max(
+                60, min(3_300, int(self.config.agent_timeout_seconds))
+            ),
+        )
+
+    def _evo_child_phase_checkpoint(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        child_report_id: str,
+        prior_execution: Mapping[str, Any],
+        trust_root: Path,
+        expected_host_pin: str,
+        parent_report_id: str | None = None,
+    ) -> dict[str, Any]:
+        parent_id = parent_report_id or job.report_id
+        prior_receipt_path = str(
+            prior_execution.get("execution_receipt_path") or ""
+        )
+        prior_proof_path = str(prior_execution.get("proof_path") or "")
+        if not prior_receipt_path or not prior_proof_path:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child phase prior evidence is missing"
+            )
+        baseline = load_evo_child_execution_baseline(
+            state_root=self.config.state_root,
+            trust_root=trust_root,
+            installation_id=self.config.installation_id,
+            job_id=job.job_id,
+            parent_report_id=parent_id,
+            child_report_id=child_report_id,
+            expected_host_trust_manifest_sha256=expected_host_pin,
+            execution_receipt_path=prior_receipt_path,
+            workspace_root=workspace,
+        )
+        if (
+            baseline.get("status") != CHILD_RESUME_READY
+            or baseline.get("resume_start_step") != "6"
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child phase is not Step6-resumable"
+            )
+        proof_path = Path(prior_proof_path).expanduser().resolve(strict=True)
+        if (
+            proof_path.parent
+            != (workspace / "objects/runtime_context").resolve(strict=True)
+            or _sha256(proof_path) != prior_execution.get("proof_sha256")
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child phase proof binding changed"
+            )
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+        pause = str(proof.get("final_outcome") or "")
+        external_assessment = None
+        if pause in EVO_V2_EXTERNAL_PAUSES:
+            external_assessment = assess_evo_v2_external_resume(
+                workspace_root=workspace,
+                report_id=child_report_id,
+                proof=proof,
+                attested_entries=baseline["entries"],
+                trust_root=trust_root,
+                installation_id=self.config.installation_id,
+                trusted_lifecycle_manifest=load_runtime_trust_store(
+                    trust_root,
+                    installation_id=self.config.installation_id,
+                ).public_manifest,
+                require_signed_lifecycle_genesis=False,
+            )
+        route = _classify_resume_route(
+            workspace,
+            child_report_id,
+            start_step="6",
+            trusted_proof_sha256=_sha256(proof_path),
+            evo_v2_external_progress=(
+                external_assessment.to_dict()
+                if external_assessment is not None
+                else None
+            ),
+        )
+
+        child_job = deepcopy(job)
+        child_job.report_id = child_report_id
+        plan = validate_and_resolve_evo_child_web_research_plan(
+            workspace_root=workspace,
+            parent_report_id=parent_id,
+            child_report_id=child_report_id,
+            expected_host_trust_manifest_sha256=expected_host_pin,
+            incident_trust_root=trust_root,
+            incident_installation_id=self.config.installation_id,
+        )["raw_plan"]
+        identity = plan.get("identity") if isinstance(plan, Mapping) else {}
+        child_job.factor_id = str(identity.get("factor_id") or "")
+        child_job.research_id = str(identity.get("research_id") or "")
+        if not child_job.factor_id or not child_job.research_id:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child plan identity is incomplete"
+            )
+
+        def file_ref(path: Path) -> dict[str, Any]:
+            resolved = path.expanduser().resolve(strict=True)
+            if resolved.is_symlink() or not resolved.is_file():
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child phase evidence is unsafe"
+                )
+            return {
+                "path": str(resolved),
+                "sha256": _sha256(resolved),
+                "size_bytes": resolved.stat().st_size,
+            }
+
+        def replay_phase_receipt_if_present(
+            inflight: Mapping[str, Any],
+        ) -> dict[str, Any] | None:
+            candidate = Path(
+                str(inflight.get("phase_receipt_candidate_path") or "")
+            )
+            if not candidate.is_file() or candidate.is_symlink():
+                return None
+            return validate_evo_child_phase_checkpoint(
+                state_root=self.config.state_root,
+                trust_root=trust_root,
+                installation_id=self.config.installation_id,
+                job_id=job.job_id,
+                parent_report_id=parent_id,
+                child_report_id=child_report_id,
+                expected_host_trust_manifest_sha256=expected_host_pin,
+                phase_receipt_path=candidate,
+                workspace_root=workspace,
+            )
+
+        def matching_private_receipts(
+            pattern: str,
+            predicate: Any,
+        ) -> list[tuple[Path, dict[str, Any]]]:
+            private_root = (
+                self.config.state_root.resolve(strict=True)
+                / "jobs"
+                / job.job_id
+            )
+            matches: list[tuple[Path, dict[str, Any]]] = []
+            for candidate in sorted(private_root.glob(pattern)):
+                if candidate.is_symlink() or not candidate.is_file():
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: child phase private receipt is unsafe"
+                    )
+                try:
+                    payload = json.loads(candidate.read_text(encoding="utf-8"))
+                except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: child phase private receipt is invalid"
+                    ) from exc
+                if isinstance(payload, dict) and predicate(payload):
+                    matches.append((candidate, payload))
+            if len(matches) != 1:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child phase private receipt is missing or ambiguous"
+                )
+            return matches
+
+        def recover_council_result(
+            tasks: tuple[CouncilIngressTask, ...],
+        ) -> AgentRunResult:
+            expected_hashes = {
+                task.task_id: _sha256(
+                    _read_regular_workspace_file(
+                        workspace, task.expected_result_path
+                    )
+                )
+                for task in tasks
+            }
+            primary_agent_id = child_job.agent_id or (
+                f"factorforge-web-{job.job_id.removeprefix('job_')}"
+            )
+            primary_session_key = child_job.agent_session_key or (
+                f"agent:{primary_agent_id}:{job.job_id}"
+            )
+
+            def matches(payload: Mapping[str, Any]) -> bool:
+                runs = payload.get("runs")
+                if not isinstance(runs, list) or len(runs) != len(tasks):
+                    return False
+                by_task = {
+                    str(run.get("task_id") or ""): run
+                    for run in runs
+                    if isinstance(run, Mapping)
+                }
+                return bool(
+                    payload.get("version")
+                    == "factorforge_console_council_ingress_v1"
+                    and payload.get("job_id") == job.job_id
+                    and payload.get("factor_id") == child_job.factor_id
+                    and payload.get("research_id") == child_job.research_id
+                    and payload.get("report_id") == child_report_id
+                    and payload.get("agent_id") == primary_agent_id
+                    and payload.get("session_key_sha256")
+                    == hashlib.sha256(primary_session_key.encode("utf-8")).hexdigest()
+                    and payload.get("resume") is True
+                    and payload.get("research_base_commit") == child_job.base_commit
+                    and payload.get("engine_commit") == self._expected_base_commit
+                    and payload.get("returncode") == 0
+                    and payload.get("error_code") == ""
+                    and all(
+                        isinstance(by_task.get(task.task_id), Mapping)
+                        and by_task[task.task_id].get("agent_role")
+                        == task.agent_role
+                        and by_task[task.task_id].get(
+                            "expected_agent_identifier"
+                        )
+                        == task.expected_agent_identifier
+                        and by_task[task.task_id].get("expected_result_path")
+                        == task.expected_result_path
+                        and by_task[task.task_id].get("returncode") == 0
+                        and by_task[task.task_id].get("error_code") == ""
+                        and by_task[task.task_id].get(
+                            "imported_result_sha256"
+                        )
+                        == expected_hashes[task.task_id]
+                        for task in tasks
+                    )
+                )
+
+            receipt_path, payload = matching_private_receipts(
+                "council_ingress*.json", matches
+            )[0]
+            return AgentRunResult(
+                returncode=0,
+                agent_id=primary_agent_id,
+                session_key=primary_session_key,
+                started_at_utc=str(payload.get("started_at_utc") or ""),
+                finished_at_utc=str(payload.get("finished_at_utc") or ""),
+                stdout_tail="recovered_exact_council_outputs",
+                stderr_tail="",
+                result_path=str(receipt_path),
+                provider=str(payload.get("provider") or ""),
+                model=str(payload.get("model") or ""),
+            )
+
+        def load_existing_root_task(
+            *, phase_attempt_id: str, task_relative: str, output_relative: str
+        ) -> PreOosRootSynthesisTask:
+            packet_path = _read_regular_workspace_file(workspace, task_relative)
+            try:
+                packet = json.loads(packet_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child root synthesis task is invalid"
+                ) from exc
+            unsigned = dict(packet) if isinstance(packet, dict) else {}
+            content_sha = unsigned.pop("content_sha256", None)
+            inputs = packet.get("read_only_inputs") if isinstance(packet, Mapping) else None
+            if (
+                not isinstance(packet, Mapping)
+                or packet.get("version") != PRE_OOS_ROOT_SYNTHESIS_TASK_VERSION
+                or packet.get("attempt_id") != phase_attempt_id
+                or packet.get("identity")
+                != {
+                    "job_id": job.job_id,
+                    "factor_id": child_job.factor_id,
+                    "research_id": child_job.research_id,
+                    "report_id": child_report_id,
+                }
+                or content_sha != stable_json_hash(unsigned)
+                or not isinstance(inputs, list)
+                or not inputs
+                or (packet.get("required_output") or {}).get("path")
+                != output_relative
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child root synthesis task binding is invalid"
+                )
+            read_only: list[tuple[str, str]] = []
+            for reference in inputs:
+                if (
+                    not isinstance(reference, Mapping)
+                    or set(reference) != {"path", "sha256"}
+                    or not isinstance(reference.get("path"), str)
+                    or not re.fullmatch(
+                        r"[0-9a-f]{64}", str(reference.get("sha256") or "")
+                    )
+                    or _sha256(
+                        _read_regular_workspace_file(
+                            workspace, str(reference["path"])
+                        )
+                    )
+                    != reference["sha256"]
+                ):
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: child root synthesis task evidence changed"
+                    )
+                read_only.append(
+                    (str(reference["path"]), str(reference["sha256"]))
+                )
+            return PreOosRootSynthesisTask(
+                version=PRE_OOS_ROOT_SYNTHESIS_TASK_VERSION,
+                attempt_id=phase_attempt_id,
+                job_id=job.job_id,
+                factor_id=child_job.factor_id,
+                research_id=child_job.research_id,
+                report_id=child_report_id,
+                trusted_proof_sha256=_sha256(proof_path),
+                task_packet_relative=task_relative,
+                task_packet_sha256=_sha256(packet_path),
+                expected_output_relative=output_relative,
+                read_only_input_sha256=tuple(
+                    sorted(
+                        pair
+                        for pair in read_only
+                        if pair[0] != task_relative
+                    )
+                ),
+            )
+
+        def recover_root_synthesis_result(
+            task: PreOosRootSynthesisTask,
+        ) -> AgentRunResult:
+            output_sha = _sha256(
+                _read_regular_workspace_file(
+                    workspace, task.expected_output_relative
+                )
+            )
+            agent_id = (
+                f"ff-root-{job.job_id.removeprefix('job_')[:10]}-"
+                f"{task.attempt_id[-8:]}"
+            )
+            session_key = f"agent:{agent_id}:{job.job_id}:{task.attempt_id}"
+
+            def matches(payload: Mapping[str, Any]) -> bool:
+                return bool(
+                    payload.get("version")
+                    == "factorforge_console_pre_oos_root_synthesis_run_v1"
+                    and payload.get("job_id") == job.job_id
+                    and payload.get("factor_id") == child_job.factor_id
+                    and payload.get("research_id") == child_job.research_id
+                    and payload.get("report_id") == child_report_id
+                    and payload.get("agent_id") == agent_id
+                    and payload.get("session_key_sha256")
+                    == hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+                    and payload.get("attempt_id") == task.attempt_id
+                    and payload.get("trusted_proof_sha256")
+                    == task.trusted_proof_sha256
+                    and payload.get("task_packet_sha256")
+                    == task.task_packet_sha256
+                    and payload.get("expected_output_path")
+                    == task.expected_output_relative
+                    and payload.get("imported_output_sha256") == output_sha
+                    and payload.get("returncode") == 0
+                    and payload.get("error_code") == ""
+                )
+
+            receipt_path, payload = matching_private_receipts(
+                "pre_oos_root_synthesis*.json", matches
+            )[0]
+            return AgentRunResult(
+                returncode=0,
+                agent_id=agent_id,
+                session_key=session_key,
+                started_at_utc=str(payload.get("started_at_utc") or ""),
+                finished_at_utc=str(payload.get("finished_at_utc") or ""),
+                stdout_tail=str(payload.get("stdout_tail") or ""),
+                stderr_tail=str(payload.get("stderr_tail") or ""),
+                result_path=str(receipt_path),
+                provider=str(payload.get("provider") or ""),
+                model=str(payload.get("model") or ""),
+            )
+
+        before = _workspace_evidence_tree(workspace)
+        baseline_entries = baseline["entries"]
+        phase: str
+        evidence: dict[str, dict[str, Any]] = {}
+        phase_context: dict[str, Any] | None = None
+        phase_inflight_path: str | None = None
+        recursive_child_report_id: str | None = None
+        if route.kind == RESUME_KIND_COUNCIL_INGRESS:
+            tasks = _trusted_council_ingress_tasks(
+                workspace,
+                report_id=child_report_id,
+                trusted_resume_proof_sha256=_sha256(proof_path),
+                require_results_absent=False,
+            )
+            if not tasks:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child Council task set is missing"
+                )
+            expected_paths = (
+                "identity/web_agent_resume.md",
+                *(task.expected_result_path for task in tasks),
+            )
+            inflight = materialize_evo_child_phase_inflight(
+                state_root=self.config.state_root,
+                trust_root=trust_root,
+                installation_id=self.config.installation_id,
+                job_id=job.job_id,
+                parent_report_id=parent_id,
+                child_report_id=child_report_id,
+                expected_host_trust_manifest_sha256=expected_host_pin,
+                execution_receipt_path=prior_receipt_path,
+                workspace_root=workspace,
+                phase="COUNCIL_RESULTS",
+                expected_workspace_paths=expected_paths,
+                operation_binding={
+                    "operation_kind": "isolated_council_ingress",
+                    "trusted_proof_sha256": _sha256(proof_path),
+                    "tasks": [
+                        {
+                            "task_id": task.task_id,
+                            "agent_role": task.agent_role,
+                            "expected_agent_identifier": (
+                                task.expected_agent_identifier
+                            ),
+                            "task_packet_path": task.task_packet_path,
+                            "task_packet_sha256": task.task_packet_sha256,
+                            "expected_result_path": task.expected_result_path,
+                        }
+                        for task in tasks
+                    ],
+                },
+                require_pristine_baseline=True,
+            )
+            replayed = replay_phase_receipt_if_present(inflight)
+            if replayed is not None:
+                return replayed
+            phase_inflight_path = str(inflight["phase_inflight_path"])
+            if inflight.get("preexisting") is True:
+                for task in tasks:
+                    _read_regular_workspace_file(
+                        workspace, task.expected_result_path
+                    )
+                _read_regular_workspace_file(
+                    workspace, "identity/web_agent_resume.md"
+                )
+                result = recover_council_result(tasks)
+            else:
+                runner = getattr(self.agent_adapter, "run_council_ingress", None)
+                if not callable(runner):
+                    raise RuntimeError(
+                        "BLOCK_FACTORFORGE_CONSOLE_COUNCIL_INGRESS_UNAVAILABLE: "
+                        "child Council ingress adapter is missing"
+                    )
+                result = runner(
+                    child_job,
+                    worktree=worktree,
+                    workspace=workspace,
+                    tasks=tasks,
+                )
+                _validate_agent_write_boundary(
+                    workspace,
+                    before=before,
+                    allowed=set(expected_paths),
+                    required={task.expected_result_path for task in tasks},
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED: "
+                        f"child Council returncode={result.returncode}"
+                    )
+            receipt = self._validate_council_ingress_receipt(
+                child_job,
+                workspace,
+                tasks=tasks,
+                agent_result=result,
+            )
+            evidence["council_ingress_receipt"] = file_ref(
+                self.config.state_root / receipt.receipt_id
+            )
+            for task in tasks:
+                evidence[f"council_result__{task.task_id}"] = file_ref(
+                    workspace / task.expected_result_path
+                )
+            phase = "COUNCIL_RESULTS"
+        elif route.kind == RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS:
+            task_relative = (
+                "identity/"
+                f"web_pre_oos_root_synthesis_task__{child_report_id}.json"
+            )
+            output_relative = _pre_oos_root_synthesis_relative(child_report_id)
+            expected_paths = (task_relative, output_relative)
+            inflight = materialize_evo_child_phase_inflight(
+                state_root=self.config.state_root,
+                trust_root=trust_root,
+                installation_id=self.config.installation_id,
+                job_id=job.job_id,
+                parent_report_id=parent_id,
+                child_report_id=child_report_id,
+                expected_host_trust_manifest_sha256=expected_host_pin,
+                execution_receipt_path=prior_receipt_path,
+                workspace_root=workspace,
+                phase="ROOT_SYNTHESIS",
+                expected_workspace_paths=expected_paths,
+                operation_binding={
+                    "operation_kind": "isolated_pre_oos_root_synthesis",
+                    "trusted_proof_sha256": _sha256(proof_path),
+                    "task_packet_path": task_relative,
+                    "expected_output_path": output_relative,
+                },
+                require_pristine_baseline=True,
+            )
+            replayed = replay_phase_receipt_if_present(inflight)
+            if replayed is not None:
+                return replayed
+            phase_inflight_path = str(inflight["phase_inflight_path"])
+            phase_attempt_id = str(inflight["phase_attempt_id"])
+            if inflight.get("preexisting") is True:
+                task = load_existing_root_task(
+                    phase_attempt_id=phase_attempt_id,
+                    task_relative=task_relative,
+                    output_relative=output_relative,
+                )
+                output_path = workspace / output_relative
+                if output_path.is_file() and not output_path.is_symlink():
+                    result = recover_root_synthesis_result(task)
+                elif output_path.exists() or output_path.is_symlink():
+                    raise RuntimeError(
+                        f"{BLOCK_RESUME_TRUST_INVALID}: child root synthesis output is unsafe"
+                    )
+                else:
+                    runner = _pre_oos_root_synthesis_runner(
+                        self.agent_adapter
+                    )
+                    result = runner(
+                        child_job,
+                        worktree=worktree,
+                        workspace=workspace,
+                        task=task,
+                    )
+                    if result.returncode != 0:
+                        raise RuntimeError(
+                            "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED: "
+                            f"child root synthesis returncode={result.returncode}"
+                        )
+            else:
+                task = _write_pre_oos_root_synthesis_task(
+                    child_job,
+                    workspace,
+                    trusted_resume_proof_sha256=_sha256(proof_path),
+                    attempt_id=phase_attempt_id,
+                )
+                runner = _pre_oos_root_synthesis_runner(self.agent_adapter)
+                result = runner(
+                    child_job,
+                    worktree=worktree,
+                    workspace=workspace,
+                    task=task,
+                )
+                _validate_agent_write_boundary(
+                    workspace,
+                    before=before,
+                    allowed=set(expected_paths),
+                    required={task.expected_output_relative},
+                )
+                if result.returncode != 0:
+                    raise RuntimeError(
+                        "BLOCK_FACTORFORGE_CONSOLE_AGENT_RUNTIME_FAILED: "
+                        f"child root synthesis returncode={result.returncode}"
+                    )
+            receipt = self._validate_pre_oos_root_synthesis_receipt(
+                child_job,
+                workspace,
+                task=task,
+                agent_result=result,
+            )
+            evidence["root_synthesis_receipt"] = file_ref(
+                self.config.state_root / receipt.receipt_id
+            )
+            evidence["root_synthesis_task"] = file_ref(
+                workspace / task.task_packet_relative
+            )
+            evidence["root_synthesis"] = file_ref(
+                workspace / task.expected_output_relative
+            )
+            phase = "ROOT_SYNTHESIS"
+        elif route.kind == RESUME_KIND_EVO_V2_TERMINAL_CHECKPOINT:
+            return materialize_evo_child_terminal_checkpoint(
+                state_root=self.config.state_root,
+                trust_root=trust_root,
+                installation_id=self.config.installation_id,
+                job_id=job.job_id,
+                parent_report_id=parent_id,
+                child_report_id=child_report_id,
+                expected_host_trust_manifest_sha256=expected_host_pin,
+                execution_receipt_path=prior_receipt_path,
+                workspace_root=workspace,
+            )
+        elif (
+            route.kind == RESUME_KIND_HOST_FORMAL_CHECKPOINT
+            and pause == "awaiting_evo_v2_transfer_and_actual_use"
+        ):
+            assessment = external_assessment
+            if (
+                assessment is None
+                or assessment.status != PROGRESS_HOST_CHECKPOINT_READY
+                or assessment.start_step != "6"
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child transfer/use is not ready"
+                )
+            assessment_payload = assessment.to_dict()
+            lifecycle_path = research_protocol_paths(
+                workspace, child_report_id
+            )["evo_lifecycle"]
+            evidence["host_transfer_lifecycle"] = file_ref(lifecycle_path)
+            for label, raw_path in (
+                (
+                    "transfer_use_orchestration",
+                    assessment.transfer_use_orchestration_path,
+                ),
+                ("execution_addendum", assessment.execution_addendum_path),
+            ):
+                if isinstance(raw_path, str) and raw_path:
+                    evidence[label] = file_ref(workspace / raw_path)
+            phase = "HOST_TRANSFER_USE"
+            phase_context = {
+                "external_resume_assessment": assessment_payload,
+            }
+        elif route.kind == RESUME_KIND_EVO_V2_CHILD_HANDOFF_READY:
+            assessment = external_assessment
+            if (
+                assessment is None
+                or assessment.status
+                not in {
+                    PROGRESS_CHILD_HANDOFF_AUTHORIZED,
+                    PROGRESS_CHILD_HANDOFF_READY,
+                }
+                or assessment.start_step is not None
+                or not assessment.child_report_id
+                or assessment.child_report_id == child_report_id
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: recursive child handoff is invalid"
+                )
+            for label, path in (
+                (
+                    "pre_oos_child_handoff",
+                    pre_oos_child_handoff_path(workspace, child_report_id),
+                ),
+                (
+                    "pre_oos_child_intent",
+                    pre_oos_child_intent_path(workspace, child_report_id),
+                ),
+                (
+                    "pre_oos_human_approval",
+                    pre_oos_human_approval_path(workspace, child_report_id),
+                ),
+            ):
+                evidence[label] = file_ref(path)
+            phase = "HOST_CHILD_HANDOFF"
+            phase_context = {
+                "external_resume_assessment": assessment.to_dict(),
+            }
+            recursive_child_report_id = str(assessment.child_report_id)
+        else:
+            if pause != "awaiting_host_lifecycle_transition_and_staged_council_outcome":
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: unsupported child Step6 phase {route.kind}"
+                )
+            assessment = external_assessment
+            if assessment is None:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child Host Council assessment is missing"
+                )
+            if assessment.status == PROGRESS_WAITING:
+                return {
+                    "verdict": "PASS",
+                    "status": CHILD_QUALIFICATION_WAIT,
+                    "reason": assessment.reason,
+                    "phase": "HOST_COUNCIL_OUTCOME",
+                }
+            if (
+                assessment.status != PROGRESS_HOST_CHECKPOINT_READY
+                or assessment.start_step != "6"
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child Host Council outcome is not ready"
+                )
+            lifecycle_path = research_protocol_paths(
+                workspace, child_report_id
+            )["evo_lifecycle"]
+            evidence["host_council_lifecycle"] = file_ref(lifecycle_path)
+            phase = "HOST_COUNCIL_OUTCOME"
+
+        after = _workspace_evidence_tree(workspace)
+        changed = {
+            path
+            for path in set(baseline_entries) | set(after)
+            if baseline_entries.get(path) != after.get(path)
+        }
+        if any(path not in after for path in changed):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: child phase deleted prior evidence"
+            )
+        if phase == "HOST_COUNCIL_OUTCOME":
+            inflight = materialize_evo_child_phase_inflight(
+                state_root=self.config.state_root,
+                trust_root=trust_root,
+                installation_id=self.config.installation_id,
+                job_id=job.job_id,
+                parent_report_id=parent_id,
+                child_report_id=child_report_id,
+                expected_host_trust_manifest_sha256=expected_host_pin,
+                execution_receipt_path=prior_receipt_path,
+                workspace_root=workspace,
+                phase=phase,
+                expected_workspace_paths=tuple(sorted(changed)),
+                operation_binding={
+                    "operation_kind": "host_council_outcome",
+                    "trusted_proof_sha256": _sha256(proof_path),
+                    "external_resume_assessment_sha256": stable_json_hash(
+                        external_assessment.to_dict()
+                    ),
+                    "phase_evidence": {
+                        label: reference["sha256"]
+                        for label, reference in sorted(evidence.items())
+                    },
+                },
+                require_pristine_baseline=False,
+            )
+            replayed = replay_phase_receipt_if_present(inflight)
+            if replayed is not None:
+                return replayed
+            phase_inflight_path = str(inflight["phase_inflight_path"])
+        checkpoint = materialize_evo_child_phase_checkpoint(
+            state_root=self.config.state_root,
+            trust_root=trust_root,
+            installation_id=self.config.installation_id,
+            job_id=job.job_id,
+            parent_report_id=parent_id,
+            child_report_id=child_report_id,
+            expected_host_trust_manifest_sha256=expected_host_pin,
+            execution_receipt_path=prior_receipt_path,
+            workspace_root=workspace,
+            phase=phase,
+            allowed_workspace_delta={path: after[path] for path in sorted(changed)},
+            phase_evidence=evidence,
+            phase_context=phase_context,
+            phase_inflight_path=phase_inflight_path,
+        )
+        if recursive_child_report_id is not None:
+            checkpoint["recursive_parent_report_id"] = child_report_id
+            checkpoint["recursive_child_report_id"] = recursive_child_report_id
+            checkpoint["recursive_external_progress"] = dict(
+                phase_context["external_resume_assessment"]
+            )
+        return checkpoint
+
+    def _execute_evo_v2_child_from_parent_handoff(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        resume_trust: Mapping[str, Any],
+        child_report_id: str,
+        parent_report_id: str | None = None,
+        trusted_parent_checkpoint: Mapping[str, Any] | None = None,
+        trusted_prior_execution: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        parent_id = parent_report_id or job.report_id
+        prior_result = job.result if isinstance(job.result, Mapping) else {}
+        prior_runtime = prior_result.get("evo_v2_child_runtime")
+        prior_ready = (
+            prior_runtime.get("ready")
+            if isinstance(prior_runtime, Mapping)
+            and isinstance(prior_runtime.get("ready"), Mapping)
+            else {}
+        )
+        prior_execution = (
+            dict(trusted_prior_execution)
+            if trusted_prior_execution is not None
+            else (
+                prior_runtime.get("execution")
+                if isinstance(prior_runtime, Mapping)
+                and isinstance(prior_runtime.get("execution"), Mapping)
+                else {}
+            )
+        )
+        if (
+            prior_ready.get("status") == CHILD_EXECUTION_READY
+            and prior_ready.get("parent_report_id") == parent_id
+            and prior_ready.get("child_report_id") == child_report_id
+            and isinstance(prior_ready.get("checkpoint_path"), str)
+            and isinstance(prior_ready.get("catalog_snapshot_path"), str)
+            and isinstance(prior_ready.get("calendar_snapshot_path"), str)
+        ):
+            ready = dict(prior_ready)
+        else:
+            ready = self._prepare_evo_v2_child_execution_ready(
+                job,
+                worktree=worktree,
+                workspace=workspace,
+                resume_trust=resume_trust,
+                child_report_id=child_report_id,
+                parent_report_id=parent_id,
+                trusted_parent_checkpoint=trusted_parent_checkpoint,
+            )
+        environment = os.environ.copy()
+        for key in list(environment):
+            upper = key.upper()
+            if any(
+                token in upper
+                for token in ("API_KEY", "PASSWORD", "SECRET", "TOKEN", "COOKIE")
+            ):
+                environment.pop(key, None)
+        for key in (
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_CREDENTIAL_EXPIRATION",
+        ):
+            environment.pop(key, None)
+        prepare_host_data = getattr(
+            self.agent_adapter, "prepare_host_data_environment", None
+        )
+        host_data_env: dict[str, str] = {}
+        if callable(prepare_host_data):
+            host_data_env, _denied = prepare_host_data(job.job_id)
+        elif self.config.execution_mode == "container" and not self.config.auth_disabled:
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: host data lease provider is missing"
+            )
+        allowed_lease_keys = {
+            "AWS_ACCESS_KEY_ID",
+            "AWS_SECRET_ACCESS_KEY",
+            "AWS_SESSION_TOKEN",
+            "AWS_CREDENTIAL_EXPIRATION",
+        }
+        if set(host_data_env) - allowed_lease_keys or any(
+            not isinstance(value, str)
+            or not value
+            or any(control in value for control in ("\x00", "\n", "\r"))
+            for value in host_data_env.values()
+        ):
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: child Host data lease is invalid"
+            )
+        if self.config.execution_mode == "container" and not self.config.auth_disabled:
+            if set(host_data_env) != allowed_lease_keys:
+                raise RuntimeError(
+                    f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: child Host data lease is incomplete"
+                )
+        environment.update(host_data_env)
+        environment["AWS_EC2_METADATA_DISABLED"] = "true"
+        catalog = Path(ready["catalog_snapshot_path"]).expanduser().resolve(
+            strict=True
+        )
+        calendar = Path(ready["calendar_snapshot_path"]).expanduser().resolve(
+            strict=True
+        )
+        for projection_path, label in (
+            (catalog, "catalog"),
+            (calendar, "calendar"),
+        ):
+            if (
+                projection_path == workspace
+                or projection_path.is_relative_to(workspace)
+                or not projection_path.is_relative_to(worktree)
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: child {label} projection is outside the read-only engine"
+                )
+        environment["FACTORFORGE_STATE_CATALOG"] = str(catalog)
+        environment["FACTORFORGE_DATA_CATALOG"] = str(catalog)
+        environment["FACTORFORGE_TRUSTED_TRADE_CAL_CSV"] = str(calendar)
+        _configure_host_formal_python_environment(
+            environment,
+            worktree=worktree,
+            data_api_pythonpath=self.config.data_api_pythonpath,
+        )
+        trust_root = self.config.state_root / "research-org-trust"
+        pin = load_runtime_trust_store(
+            trust_root, installation_id=self.config.installation_id
+        ).public_manifest["manifest_sha256"]
+        # These are Host-control-plane locator credentials, not Agent data
+        # credentials.  Ultimate removes them from every ordinary/Agent
+        # command and injects them only into the trusted OOS finalizer.  Do not
+        # depend on an ambient service environment: an explicit, pinned source
+        # is required for crash/restart release liveness.
+        environment["FACTORFORGE_OOS_HOST_TRUST_ROOT"] = str(
+            trust_root.resolve(strict=True)
+        )
+        environment["FACTORFORGE_OOS_HOST_INSTALLATION_ID"] = (
+            self.config.installation_id
+        )
+        environment["FACTORFORGE_EVO_CHILD_CONTAINER_STATE_ROOT"] = str(
+            self.config.state_root.resolve(strict=True)
+        )
+        environment["FACTORFORGE_EVO_CHILD_CONTAINER_JOB_ID"] = job.job_id
+        resume_child = bool(
+            prior_execution.get("status")
+            in {CHILD_RESUME_READY, CHILD_RECOVERY_READY}
+            and prior_execution.get("child_report_id") == child_report_id
+            and prior_execution.get("parent_report_id", parent_id) == parent_id
+            and prior_execution.get("resume_start_step") in {"4", "5", "6"}
+        )
+        qualification: dict[str, Any] | None = None
+        qualification_path: str | None = None
+        phase_checkpoint: dict[str, Any] | None = None
+        phase_checkpoint_path: str | None = None
+        if (
+            resume_child
+            and prior_execution.get("status") == CHILD_RESUME_READY
+            and prior_execution.get("resume_start_step") == "6"
+        ):
+            prior_receipt_path = str(
+                prior_execution.get("execution_receipt_path") or ""
+            )
+            if not prior_receipt_path:
+                raise RuntimeError(
+                    f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: child execution receipt is missing"
+                )
+            proof_path = Path(
+                str(prior_execution.get("proof_path") or "")
+            )
+            try:
+                prior_proof = json.loads(proof_path.read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: child phase proof is invalid"
+                ) from exc
+            if (
+                isinstance(prior_proof, Mapping)
+                and prior_proof.get("final_outcome")
+                == "awaiting_evo_v2_host_qualification"
+            ):
+                qualification = materialize_evo_child_qualification_checkpoint(
+                    state_root=self.config.state_root,
+                    trust_root=trust_root,
+                    installation_id=self.config.installation_id,
+                    job_id=job.job_id,
+                    parent_report_id=parent_id,
+                    child_report_id=child_report_id,
+                    expected_host_trust_manifest_sha256=pin,
+                    execution_receipt_path=prior_receipt_path,
+                    workspace_root=workspace,
+                )
+            else:
+                phase_checkpoint = self._evo_child_phase_checkpoint(
+                    job,
+                    worktree=worktree,
+                    workspace=workspace,
+                    child_report_id=child_report_id,
+                    prior_execution=prior_execution,
+                    trust_root=trust_root,
+                    expected_host_pin=pin,
+                    parent_report_id=parent_id,
+                )
+                if phase_checkpoint.get("status") == CHILD_QUALIFICATION_WAIT:
+                    waiting_execution = dict(prior_execution)
+                    waiting_execution["idempotent_replay"] = True
+                    waiting_execution["phase_status"] = CHILD_QUALIFICATION_WAIT
+                    waiting_execution["phase_reason"] = phase_checkpoint.get(
+                        "reason"
+                    )
+                    return {
+                        "ready": ready,
+                        "qualification": None,
+                        "phase_checkpoint": phase_checkpoint,
+                        "execution": waiting_execution,
+                    }
+                if phase_checkpoint.get("status") == CHILD_TERMINAL:
+                    return {
+                        "ready": ready,
+                        "qualification": None,
+                        "phase_checkpoint": phase_checkpoint,
+                        "execution": phase_checkpoint,
+                    }
+                recursive_child = str(
+                    phase_checkpoint.get("recursive_child_report_id") or ""
+                )
+                recursive_progress = phase_checkpoint.get(
+                    "recursive_external_progress"
+                )
+                if recursive_child:
+                    if not isinstance(recursive_progress, Mapping):
+                        raise RuntimeError(
+                            f"{BLOCK_RESUME_TRUST_INVALID}: recursive child progress is missing"
+                        )
+                    recursive_parent_checkpoint = {
+                        "ultimate_proof_sha256": _sha256(proof_path),
+                        "parent_execution_receipt_path": prior_receipt_path,
+                        "parent_execution_receipt_sha256": str(
+                            prior_execution.get("execution_receipt_sha256") or ""
+                        ),
+                        "parent_phase_receipt_path": str(
+                            phase_checkpoint.get("phase_receipt_path") or ""
+                        ),
+                        "parent_phase_receipt_sha256": str(
+                            phase_checkpoint.get("phase_receipt_sha256") or ""
+                        ),
+                        "parent_phase_receipt_id": str(
+                            phase_checkpoint.get("receipt", {}).get("receipt_id")
+                            or ""
+                        ),
+                        "external_progress_sha256": stable_json_hash(
+                            dict(recursive_progress)
+                        ),
+                    }
+                    recursive_runtime = self._execute_evo_v2_child_from_parent_handoff(
+                        job,
+                        worktree=worktree,
+                        workspace=workspace,
+                        resume_trust={
+                            "evo_v2_external_progress": dict(recursive_progress),
+                        },
+                        parent_report_id=child_report_id,
+                        child_report_id=recursive_child,
+                        trusted_parent_checkpoint=recursive_parent_checkpoint,
+                    )
+                    recursive_runtime["lineage"] = _extend_evo_child_lineage(
+                        root_report_id=job.report_id,
+                        phase_owner_parent_report_id=parent_id,
+                        parent_report_id=child_report_id,
+                        child_report_id=recursive_child,
+                        phase_checkpoint=phase_checkpoint,
+                        descendant_runtime=recursive_runtime,
+                    )
+                    return recursive_runtime
+                if phase_checkpoint.get("status") != CHILD_PHASE_READY:
+                    raise RuntimeError(
+                        f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: child phase checkpoint is invalid"
+                    )
+                phase_checkpoint_path = str(
+                    phase_checkpoint.get("phase_receipt_path") or ""
+                )
+            if phase_checkpoint is not None:
+                qualification = None
+            assert qualification is not None or phase_checkpoint is not None
+        if qualification is not None:
+            if qualification.get("status") == CHILD_QUALIFICATION_WAIT:
+                waiting_execution = dict(prior_execution)
+                waiting_execution["idempotent_replay"] = True
+                waiting_execution["qualification_status"] = (
+                    CHILD_QUALIFICATION_WAIT
+                )
+                waiting_execution["qualification_reason"] = qualification.get(
+                    "reason"
+                )
+                return {
+                    "ready": ready,
+                    "qualification": qualification,
+                    "execution": waiting_execution,
+                }
+            if qualification.get("status") != CHILD_QUALIFICATION_READY:
+                raise RuntimeError(
+                    f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: child qualification checkpoint is invalid"
+                )
+            qualification_path = str(
+                qualification.get("qualification_receipt_path") or ""
+            )
+        active_lineage = (
+            prior_runtime.get("lineage")
+            if isinstance(prior_runtime, Mapping)
+            and isinstance(prior_runtime.get("lineage"), Mapping)
+            else None
+        )
+        if (
+            active_lineage is not None
+            and active_lineage.get("child_report_id") == child_report_id
+            and active_lineage.get("parent_report_id") == parent_id
+        ):
+            try:
+                ready_receipt = json.loads(
+                    Path(str(ready.get("checkpoint_path") or "")).read_text(
+                        encoding="utf-8"
+                    )
+                )
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: active child ready receipt is invalid"
+                ) from exc
+            ready_parent_checkpoint = (
+                ready_receipt.get("trusted_parent_checkpoint")
+                if isinstance(ready_receipt, Mapping)
+                else None
+            )
+            if not isinstance(ready_parent_checkpoint, Mapping):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: active child parent checkpoint is missing"
+                )
+            _validate_evo_child_active_lineage(
+                lineage=active_lineage,
+                signed_execution=prior_execution,
+                trusted_parent_checkpoint=ready_parent_checkpoint,
+                state_root=self.config.state_root,
+                trust_root=trust_root,
+                installation_id=self.config.installation_id,
+                job_id=job.job_id,
+                expected_host_pin=pin,
+                workspace_root=workspace,
+                # Step4/5 were exact-replayed at request admission; Step6 has
+                # just produced an exact qualification/phase checkpoint.
+                replay_phase_receipts=True,
+            )
+        execution = execute_evo_child_ready(
+            checkpoint_path=ready["checkpoint_path"],
+            state_root=self.config.state_root,
+            trust_root=trust_root,
+            installation_id=self.config.installation_id,
+            job_id=job.job_id,
+            workspace_root=workspace,
+            worktree=worktree,
+            parent_report_id=parent_id,
+            child_report_id=child_report_id,
+            expected_host_trust_manifest_sha256=pin,
+            host_environment=environment,
+            timeout_seconds=max(
+                60, min(3_300, int(self.config.agent_timeout_seconds))
+            ),
+            resume=resume_child,
+            qualification_checkpoint_path=qualification_path,
+            phase_checkpoint_path=phase_checkpoint_path,
+        )
+        return {
+            "ready": ready,
+            "qualification": qualification,
+            "phase_checkpoint": phase_checkpoint,
+            "execution": execution,
+        }
 
     def _execute_host_formal_pipeline(
         self,
@@ -3382,6 +6565,32 @@ class ResearchRunService:
         env["AWS_EC2_METADATA_DISABLED"] = "true"
         env["FACTORFORGE_STATE_CATALOG"] = str(catalog)
         env["FACTORFORGE_DATA_CATALOG"] = str(catalog)
+        incident_trust_root = self.config.state_root / "research-org-trust"
+        ensure_runtime_trust_store(
+            incident_trust_root,
+            installation_id=self.config.installation_id,
+        )
+        ensure_empty_oos_exposure_private_registry(
+            incident_trust_root,
+            installation_id=self.config.installation_id,
+        )
+        incident_trust_root = incident_trust_root.resolve(strict=True)
+        incident_store = load_runtime_trust_store(
+            incident_trust_root,
+            installation_id=self.config.installation_id,
+        )
+        if not incident_store.public_manifest.get("manifest_sha256"):
+            raise RuntimeError(
+                f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: Host incident trust pin is invalid"
+            )
+        # Root Web materialization occurs before Ultimate starts, so it must
+        # receive the same explicit Host-private negative-incident context as
+        # the child prepare path. Ultimate captures and strips this pair before
+        # launching ordinary/Agent commands.
+        env["FACTORFORGE_OOS_HOST_TRUST_ROOT"] = str(incident_trust_root)
+        env["FACTORFORGE_OOS_HOST_INSTALLATION_ID"] = (
+            self.config.installation_id
+        )
         _configure_host_formal_python_environment(
             env,
             worktree=worktree,
@@ -3468,6 +6677,9 @@ class ResearchRunService:
             "--plan",
             str(plan_path),
         ]
+        materialize_argv.extend(
+            self._research_org_ultimate_args(job=job, workspace=workspace)
+        )
         materialize = run_host_command(
             "materialize_web_research",
             materialize_argv,
@@ -3490,6 +6702,30 @@ class ResearchRunService:
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: materializer returncode="
                 f"{materialize['returncode']} receipt={receipt['receipt_id']} detail={detail[-1200:]}"
             )
+
+        if is_validated_evo_v2_memory_runtime_enabled(
+            workspace=workspace,
+            report_id=job.report_id,
+        ):
+            evo_v2_memory_state = prepare_evo_v2_memory_round(
+                workspace=workspace,
+                worktree=worktree,
+                state_root=self.config.state_root,
+                installation_id=self.config.installation_id,
+                runner=self.agent_adapter,
+            )
+            if evo_v2_memory_state.get("formal_execution_allowed") is not True:
+                receipt = self._write_formal_execution_receipt(
+                    job,
+                    workspace=workspace,
+                    commands=commands,
+                    resume=resume,
+                    resume_trust=resume_trust,
+                    resume_task=resume_task,
+                    validated_resume_artifacts=validated_resume_artifacts,
+                    conversation_ledger_binding=conversation_ledger_binding,
+                )
+                raise EvoV2MemoryGatePause(evo_v2_memory_state, receipt)
 
         start_step = str(resume_trust["start_step"]) if resume_trust is not None else "3"
         ultimate_argv = [
@@ -3862,6 +7098,7 @@ class ResearchRunService:
         web_materialization: dict[str, str],
         formal_execution: dict[str, Any],
         researcher_memory_outcome: dict[str, Any],
+        current_authority_validation: dict[str, Any] | None = None,
         resume_task: AgentResumeTask | None = None,
         validated_resume_artifacts: ValidatedAgentResumeArtifacts | None = None,
         validated_agent_receipt: ValidatedAgentReceipt | None = None,
@@ -4331,6 +7568,9 @@ class ResearchRunService:
             "researcher_memory_outcome": deepcopy(
                 researcher_memory_outcome
             ),
+            "current_formal_authority": deepcopy(
+                current_authority_validation
+            ),
             "agent_result_id": agent_receipt_snapshot_relative,
             "agent_result_sha256": agent_receipt_snapshot_sha256,
             "agent_result_source_id": agent_result_relative.as_posix(),
@@ -4339,6 +7579,8 @@ class ResearchRunService:
             "host_terminal_formal_validation_status": (
                 "PASS"
                 if summary.formal_proof_eligible
+                and isinstance(current_authority_validation, dict)
+                and current_authority_validation.get("status") == "PASS"
                 else "NOT_APPLICABLE"
                 if summary.execution_status.upper() in {
                     "PAUSED",
@@ -4550,6 +7792,28 @@ class ResearchRunService:
                 preserve_existing_plan=preserve_plan,
                 trusted_resume_start_step=trusted_resume_start_step,
             )
+            freeze_catalog = None
+            if self.config.data_catalogs:
+                candidate_catalog = self.config.data_catalogs[0]
+                try:
+                    candidate_payload = json.loads(
+                        candidate_catalog.read_text(encoding="utf-8")
+                    )
+                except (OSError, UnicodeError, json.JSONDecodeError):
+                    candidate_payload = None
+                if (
+                    isinstance(candidate_payload, dict)
+                    and isinstance(candidate_payload.get("datasets"), list)
+                    and candidate_payload["datasets"]
+                ):
+                    freeze_catalog = candidate_catalog
+            if freeze_catalog is not None:
+                materialize_host_job_frozen_catalog_snapshot(
+                    state_root=self.config.state_root,
+                    workspace_root=workspace,
+                    approved_catalog_path=freeze_catalog,
+                    job_id=job.job_id,
+                )
             research_org_plan = workspace / "identity" / "research_organization_plan.json"
             if not preserve_plan or research_org_plan.is_file():
                 write_research_organization_bundle(
@@ -5345,6 +8609,108 @@ class ResearchRunService:
                 raise RuntimeError(
                     f"{BLOCK_RESUME_TRUST_INVALID}: Council ingress run binding is invalid"
                 )
+        return ValidatedAgentReceipt(
+            receipt_id=receipt_relative.as_posix(),
+            receipt_sha256=receipt_sha256,
+        )
+
+    def _validate_pre_oos_root_synthesis_receipt(
+        self,
+        job: ResearchJob,
+        workspace: Path,
+        *,
+        task: PreOosRootSynthesisTask,
+        agent_result: AgentRunResult,
+    ) -> ValidatedAgentReceipt:
+        state_root = self.config.state_root.resolve(strict=True)
+        try:
+            receipt_bytes, receipt_sha256, receipt_id = (
+                _read_private_regular_file_once(
+                    state_root,
+                    Path(agent_result.result_path).expanduser(),
+                    block_token=BLOCK_RESUME_TRUST_INVALID,
+                    label="pre-OOS root synthesis receipt",
+                )
+            )
+            receipt_relative = Path(receipt_id)
+            receipt = json.loads(receipt_bytes.decode("utf-8"))
+        except (
+            FileNotFoundError,
+            OSError,
+            RuntimeError,
+            UnicodeError,
+            ValueError,
+            json.JSONDecodeError,
+        ) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS root synthesis receipt is invalid"
+            ) from exc
+        expected_inputs = [
+            {"path": relative, "sha256": digest}
+            for relative, digest in task.read_only_input_sha256
+        ]
+        output_path = _read_regular_workspace_file(
+            workspace,
+            task.expected_output_relative,
+        )
+        if (
+            receipt_relative.parts[:2] != ("jobs", job.job_id)
+            or not isinstance(receipt, dict)
+            or receipt.get("version")
+            != "factorforge_console_pre_oos_root_synthesis_run_v1"
+            or receipt.get("job_id") != job.job_id
+            or receipt.get("factor_id") != job.factor_id
+            or receipt.get("research_id") != job.research_id
+            or receipt.get("report_id") != job.report_id
+            or receipt.get("agent_id") != agent_result.agent_id
+            or receipt.get("session_key_sha256")
+            != hashlib.sha256(agent_result.session_key.encode("utf-8")).hexdigest()
+            or receipt.get("resume") is not True
+            or receipt.get("attempt_id") != task.attempt_id
+            or receipt.get("research_base_commit") != job.base_commit
+            or receipt.get("engine_commit") != self._expected_base_commit
+            or receipt.get("trusted_proof_sha256")
+            != task.trusted_proof_sha256
+            or receipt.get("task_packet_path") != task.task_packet_relative
+            or receipt.get("task_packet_sha256") != task.task_packet_sha256
+            or receipt.get("read_only_inputs") != expected_inputs
+            or receipt.get("expected_output_path")
+            != task.expected_output_relative
+            or receipt.get("imported_output_sha256") != _sha256(output_path)
+            or receipt.get("returncode") != 0
+            or receipt.get("error_code") != ""
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS root synthesis receipt binding is invalid"
+            )
+        if _sha256(
+            _read_regular_workspace_file(workspace, task.task_packet_relative)
+        ) != task.task_packet_sha256:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS root synthesis prompt changed"
+            )
+        for relative, digest in task.read_only_input_sha256:
+            if _sha256(_read_regular_workspace_file(workspace, relative)) != digest:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS root synthesis evidence changed"
+                )
+        try:
+            synthesis = json.loads(output_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: pre-OOS root synthesis is invalid JSON"
+            ) from exc
+        _verifier, reasons = validate_pre_oos_root_synthesis(
+            synthesis,
+            workspace_root=workspace,
+            report_id=job.report_id,
+            synthesis_path=output_path,
+        )
+        if reasons:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RESUME_ARTIFACT_INVALID}: pre-OOS root synthesis failed formal validation:"
+                + ",".join(str(reason) for reason in reasons[:12])
+            )
         return ValidatedAgentReceipt(
             receipt_id=receipt_relative.as_posix(),
             receipt_sha256=receipt_sha256,
@@ -6533,6 +9899,456 @@ def _workspace_evidence_tree(workspace: Path) -> dict[str, str]:
     return entries
 
 
+def _pre_oos_root_synthesis_relative(report_id: str) -> str:
+    if not re.fullmatch(r"[A-Za-z0-9_.-]{1,180}", report_id):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: unsafe pre-OOS report identity"
+        )
+    return (
+        Path("objects")
+        / "research_iteration_master"
+        / "revision_council"
+        / report_id
+        / f"pre_oos_council_root_synthesis__{report_id}.json"
+    ).as_posix()
+
+
+def _append_pre_oos_input_ref(
+    workspace: Path,
+    refs: dict[str, str],
+    raw_path: object,
+    *,
+    declared_sha256: object = None,
+) -> None:
+    if not isinstance(raw_path, str) or not raw_path:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis evidence path is invalid"
+        )
+    relative = Path(raw_path)
+    if relative.is_absolute() or relative == Path(".") or ".." in relative.parts:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis evidence path is unsafe"
+        )
+    relative_text = relative.as_posix()
+    path = _read_regular_workspace_file(workspace, relative_text)
+    digest = _sha256(path)
+    if declared_sha256 is not None and declared_sha256 != digest:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis evidence hash mismatch"
+        )
+    prior = refs.get(relative_text)
+    if prior is not None and prior != digest:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis evidence identity conflict"
+        )
+    refs[relative_text] = digest
+
+
+def _collect_pre_oos_context_refs(
+    workspace: Path,
+    refs: dict[str, str],
+    value: object,
+) -> None:
+    if isinstance(value, dict):
+        if "path" in value and "sha256" in value:
+            _append_pre_oos_input_ref(
+                workspace,
+                refs,
+                value.get("path"),
+                declared_sha256=value.get("sha256"),
+            )
+        for child in value.values():
+            _collect_pre_oos_context_refs(workspace, refs, child)
+    elif isinstance(value, list):
+        for child in value:
+            _collect_pre_oos_context_refs(workspace, refs, child)
+
+
+def _write_pre_oos_root_synthesis_task(
+    job: ResearchJob,
+    workspace: Path,
+    *,
+    trusted_resume_proof_sha256: str,
+    attempt_id: str,
+) -> PreOosRootSynthesisTask:
+    root = workspace.resolve(strict=True)
+    proof_relative = (
+        "objects/runtime_context/"
+        f"ultimate_run_report__{job.report_id}.json"
+    )
+    proof_path = _read_regular_workspace_file(root, proof_relative)
+    if (
+        not re.fullmatch(r"resume_[0-9a-f]{32}", attempt_id)
+        or not re.fullmatch(r"[0-9a-f]{64}", trusted_resume_proof_sha256)
+        or _sha256(proof_path) != trusted_resume_proof_sha256
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis task trust binding is invalid"
+        )
+    route = _classify_resume_route(
+        root,
+        job.report_id,
+        start_step="6",
+        trusted_proof_sha256=trusted_resume_proof_sha256,
+    )
+    if route.kind != RESUME_KIND_PRE_OOS_ROOT_SYNTHESIS:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis task route is invalid"
+        )
+
+    council_relative = (
+        Path("objects")
+        / "research_iteration_master"
+        / "revision_council"
+        / job.report_id
+    )
+    dispatch_relative = (
+        council_relative / f"dispatch_manifest__{job.report_id}.json"
+    ).as_posix()
+    collection_relative = (
+        council_relative / f"agentic_result_collection__{job.report_id}.json"
+    ).as_posix()
+    summary_relative = (
+        council_relative / f"revision_council_summary__{job.report_id}.json"
+    ).as_posix()
+    appendix_json_relative = (
+        council_relative / f"council_derivation_appendix__{job.report_id}.json"
+    ).as_posix()
+    appendix_md_relative = (
+        council_relative / f"council_derivation_appendix__{job.report_id}.md"
+    ).as_posix()
+    refs: dict[str, str] = {}
+    for relative in (
+        proof_relative,
+        dispatch_relative,
+        collection_relative,
+        summary_relative,
+        appendix_json_relative,
+        appendix_md_relative,
+    ):
+        _append_pre_oos_input_ref(root, refs, relative)
+    lifecycle_path = research_protocol_paths(root, job.report_id)["evo_lifecycle"]
+    _append_pre_oos_input_ref(
+        root,
+        refs,
+        lifecycle_path.relative_to(root).as_posix(),
+    )
+
+    dispatch = _read_regular_workspace_json(root, dispatch_relative)
+    dispatch_evo = (
+        dispatch.get("evo_v2")
+        if isinstance(dispatch.get("evo_v2"), dict)
+        else {}
+    )
+    dispatch_oos = (
+        dispatch_evo.get("oos_control")
+        if isinstance(dispatch_evo.get("oos_control"), dict)
+        else {}
+    )
+    if (
+        dispatch.get("dispatch_manifest_version")
+        != "factorforge_agentic_council_dispatch_manifest_v1"
+        or dispatch.get("report_id") != job.report_id
+        or dispatch.get("status") != "awaiting_agent_results"
+        or dispatch.get("canonical_write_permission") is not False
+        or dispatch.get("execution_allowed_by_default") is not False
+        or dispatch.get("human_approval_required") is not True
+        or dispatch_evo.get("required") is not True
+        or dispatch_evo.get("evidence_view") != "PURGED_IS_ONLY"
+        or dispatch_oos.get("search_use") != "SEALED_NOT_ACCESSED"
+        or dispatch_oos.get("oos_refs_allowed") is not False
+        or dispatch_oos.get("consumed_oos_reuse_allowed") is not False
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis dispatch binding is invalid"
+        )
+    tasks = dispatch.get("agent_tasks")
+    if (
+        not isinstance(tasks, list)
+        or not tasks
+        or dispatch.get("agent_task_count") != len(tasks)
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis dispatch task set is invalid"
+        )
+    seen_tasks: set[str] = set()
+    route_options: list[dict[str, Any]] = []
+    for task in tasks:
+        if not isinstance(task, dict) or task.get("required") is not True:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis dispatch task is invalid"
+            )
+        task_id = str(task.get("task_id") or "")
+        if not task_id or task_id in seen_tasks:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis dispatch identity is invalid"
+            )
+        seen_tasks.add(task_id)
+        _append_pre_oos_input_ref(
+            root,
+            refs,
+            task.get("task_packet_path"),
+            declared_sha256=task.get("task_packet_sha256"),
+        )
+        result_relative = task.get("expected_result_path")
+        _append_pre_oos_input_ref(
+            root,
+            refs,
+            result_relative,
+        )
+        result = _read_regular_workspace_json(root, str(result_relative or ""))
+        outcome = result_evo_outcome_summary(result)
+        result_ref = {
+            "task_id": task_id,
+            "path": str(result_relative),
+            "sha256": refs[str(result_relative)],
+        }
+        laws = result.get("candidate_revision_laws")
+        law = laws[0] if isinstance(laws, list) and len(laws) == 1 else None
+        if (
+            not isinstance(outcome, dict)
+            or outcome.get("outcome")
+            not in {"MINIMAL_MECHANISM_DELTA", "NO_DERIVED_LAW"}
+            or result.get("report_id") != job.report_id
+            or result.get("task_id") != task_id
+            or result.get("agent_role") != task.get("agent_role")
+            or result.get("agent_identifier")
+            != task.get("expected_agent_identifier")
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis raw result binding is invalid"
+            )
+        route_options.append(
+            {
+                "task_id": task_id,
+                "route_id": task.get("route_id"),
+                "route_family": task.get("route_family"),
+                "agent_identifier": result.get("agent_identifier"),
+                "result_ref": result_ref,
+                "outcome": outcome.get("outcome"),
+                "selected_outcome_if_chosen": {
+                    "outcome": outcome.get("outcome"),
+                    "task_id": task_id,
+                    "route_id": task.get("route_id"),
+                    "result_sha256": result_ref["sha256"],
+                    "law_id": law.get("law_id") if isinstance(law, dict) else None,
+                    "law_sha256": outcome.get("law_sha256"),
+                    "delta_id": outcome.get("delta_id"),
+                    "mechanism_delta_sha256": outcome.get(
+                        "mechanism_delta_sha256"
+                    ),
+                    "economic_backprojection_sha256": outcome.get(
+                        "economic_backprojection_sha256"
+                    ),
+                    "no_derived_law_sha256": outcome.get(
+                        "no_derived_law_sha256"
+                    ),
+                },
+            }
+        )
+    _collect_pre_oos_context_refs(root, refs, dispatch["evo_v2"])
+    if len(refs) > 128:
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis evidence set is too large"
+        )
+
+    output_relative = _pre_oos_root_synthesis_relative(job.report_id)
+    output_path = root / output_relative
+    canonical_output = pre_oos_root_synthesis_path(root, job.report_id)
+    if (
+        output_path.resolve(strict=False) != canonical_output.resolve(strict=False)
+        or output_path.exists()
+        or output_path.is_symlink()
+    ):
+        raise RuntimeError(
+            f"{BLOCK_RESUME_TRUST_INVALID}: pre-OOS synthesis output is not clean and canonical"
+        )
+    task_packet_relative = (
+        "identity/"
+        f"web_pre_oos_root_synthesis_task__{job.report_id}.json"
+    )
+    unsigned = {
+        "version": PRE_OOS_ROOT_SYNTHESIS_TASK_VERSION,
+        "attempt_id": attempt_id,
+        "identity": {
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+        },
+        "trusted_pause_ref": {
+            "path": proof_relative,
+            "sha256": trusted_resume_proof_sha256,
+            "proof_semantics": "awaiting_agent_authored_pre_oos_root_synthesis",
+            "final_outcome": "awaiting_pre_oos_council_root_synthesis",
+            "council_status": "awaiting_root_synthesis",
+        },
+        "evidence_view": "PURGED_IS_ONLY",
+        "oos_state": "SEALED_NOT_ACCESSED",
+        "read_only_inputs": [
+            {"path": relative, "sha256": digest}
+            for relative, digest in sorted(refs.items())
+        ],
+        "required_output": {
+            "path": output_relative,
+            "contract_version": PRE_OOS_ROOT_SYNTHESIS_VERSION,
+            "exact_top_level_fields": [
+                "contract_version",
+                "report_id",
+                "evidence_view",
+                "authority",
+                "evidence_bindings",
+                "route_result_analysis",
+                "dissent_resolution",
+                "selection",
+                "selected_outcome",
+                "content_sha256",
+            ],
+            "authority": {
+                "status": "AGENT_AUTHORED_REVIEW_ONLY",
+                "host_transition_authority": False,
+                "human_approval_authority": False,
+                "canonical_write_allowed": False,
+                "execution_allowed": False,
+                "factor_verdict": "NOT_ISSUED",
+                "oos_accessed": False,
+                "child_execution_allowed": False,
+            },
+            "content_sha256_rule": (
+                "sha256 of compact UTF-8 JSON with sorted keys for the exact "
+                "object after removing content_sha256"
+            ),
+            "exact_nested_fields": {
+                "evidence_bindings": [
+                    "feedback_ledger_ref",
+                    "lifecycle_ref",
+                    "dispatch_manifest_ref",
+                    "result_collection_ref",
+                    "council_summary_ref",
+                    "derivation_appendix_json_ref",
+                    "derivation_appendix_markdown_ref",
+                    "raw_result_refs",
+                    "selected_proposal_ref",
+                ],
+                "route_result_analysis_item": [
+                    "task_id",
+                    "route_id",
+                    "route_family",
+                    "agent_identifier",
+                    "result_ref",
+                    "outcome",
+                    "disposition",
+                    "exact_gap_or_closed_obligation",
+                    "incompatible_assumptions",
+                    "discriminating_evidence",
+                    "open_proof_obligations",
+                    "dissent",
+                ],
+                "dissent": ["status", "position", "resolution"],
+                "dissent_resolution": [
+                    "policy",
+                    "all_result_positions_covered",
+                    "resolution_summary",
+                    "unresolved_task_ids",
+                ],
+                "selection": [
+                    "policy",
+                    "selected_task_id",
+                    "selected_result_sha256",
+                    "rationale",
+                    "decisive_evidence",
+                    "majority_vote_used",
+                    "score_or_rank_used",
+                    "result_aggregation_used",
+                ],
+                "selected_outcome": [
+                    "outcome",
+                    "task_id",
+                    "route_id",
+                    "result_sha256",
+                    "law_id",
+                    "law_sha256",
+                    "delta_id",
+                    "mechanism_delta_sha256",
+                    "economic_backprojection_sha256",
+                    "no_derived_law_sha256",
+                ],
+            },
+        },
+        "fixed_evidence_bindings": {
+            "feedback_ledger_ref": dispatch["evo_v2"][
+                "canonical_feedback_ref"
+            ],
+            "lifecycle_ref": dispatch["evo_v2"]["lifecycle_ref"],
+            "dispatch_manifest_ref": {
+                "path": dispatch_relative,
+                "sha256": refs[dispatch_relative],
+            },
+            "result_collection_ref": {
+                "path": collection_relative,
+                "sha256": refs[collection_relative],
+            },
+            "council_summary_ref": {
+                "path": summary_relative,
+                "sha256": refs[summary_relative],
+            },
+            "derivation_appendix_json_ref": {
+                "path": appendix_json_relative,
+                "sha256": refs[appendix_json_relative],
+            },
+            "derivation_appendix_markdown_ref": {
+                "path": appendix_md_relative,
+                "sha256": refs[appendix_md_relative],
+            },
+            "raw_result_refs": [
+                option["result_ref"] for option in route_options
+            ],
+        },
+        "route_selection_options": route_options,
+        "synthesis_policy": {
+            "select_exactly_one_raw_result": True,
+            "compare_every_route": True,
+            "resolve_or_preserve_every_dissent": True,
+            "list_open_proof_obligations": True,
+            "majority_vote_forbidden": True,
+            "score_or_rank_forbidden": True,
+            "result_aggregation_forbidden": True,
+            "copy_evidence_refs_exactly": True,
+            "invented_evidence_forbidden": True,
+            "selection_policy": (
+                "EVIDENCE_BASED_EXACT_RAW_RESULT_SELECTION_NO_AGGREGATION"
+            ),
+            "dissent_policy": (
+                "PRESERVE_OR_RESOLVE_EACH_RESULT_DISSENT_WITH_DISCRIMINATING_EVIDENCE"
+            ),
+        },
+        "permissions": {
+            "agent_workspace_write_paths": [output_relative],
+            "host_transition_allowed": False,
+            "human_approval_allowed": False,
+            "child_creation_allowed": False,
+            "oos_access_allowed": False,
+            "canonical_knowledge_write_allowed": False,
+        },
+    }
+    packet = {**unsigned, "content_sha256": stable_json_hash(unsigned)}
+    _write_json_atomic(root / task_packet_relative, packet, root=root)
+    packet_path = _read_regular_workspace_file(root, task_packet_relative)
+    return PreOosRootSynthesisTask(
+        version=PRE_OOS_ROOT_SYNTHESIS_TASK_VERSION,
+        attempt_id=attempt_id,
+        job_id=job.job_id,
+        factor_id=job.factor_id,
+        research_id=job.research_id,
+        report_id=job.report_id,
+        trusted_proof_sha256=trusted_resume_proof_sha256,
+        task_packet_relative=task_packet_relative,
+        task_packet_sha256=_sha256(packet_path),
+        expected_output_relative=output_relative,
+        read_only_input_sha256=tuple(sorted(refs.items())),
+    )
+
+
 def _allowed_agent_write_paths(
     workspace: Path,
     *,
@@ -6540,6 +10356,7 @@ def _allowed_agent_write_paths(
     resume: bool,
     trusted_resume_proof_sha256: str | None = None,
     council_ingress_tasks: tuple[CouncilIngressTask, ...] = (),
+    pre_oos_root_synthesis_task: PreOosRootSynthesisTask | None = None,
     require_research_director_record: bool = False,
 ) -> tuple[set[str], set[str]]:
     prompt = "identity/web_agent_resume.md" if resume else "identity/web_agent_task.md"
@@ -6555,6 +10372,10 @@ def _allowed_agent_write_paths(
         if council_ingress_tasks:
             raise RuntimeError(
                 f"{BLOCK_RESUME_TRUST_INVALID}: fresh run cannot carry Council ingress tasks"
+            )
+        if pre_oos_root_synthesis_task is not None:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: fresh run cannot carry a pre-OOS root synthesis task"
             )
         if trusted_resume_proof_sha256 is not None:
             raise RuntimeError(
@@ -6583,12 +10404,27 @@ def _allowed_agent_write_paths(
             f"{BLOCK_RESUME_TRUST_INVALID}: current resume proof does not match host trust"
         )
     if council_ingress_tasks:
+        if pre_oos_root_synthesis_task is not None:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: Council ingress and root synthesis cannot share a resume"
+            )
         allowed = {prompt}
         required = set()
         for task in council_ingress_tasks:
             allowed.add(task.expected_result_path)
             required.add(task.expected_result_path)
         return allowed, required
+    if pre_oos_root_synthesis_task is not None:
+        expected = pre_oos_root_synthesis_task.expected_output_relative
+        canonical = pre_oos_root_synthesis_path(
+            workspace.resolve(strict=True),
+            report_id,
+        ).relative_to(workspace.resolve(strict=True)).as_posix()
+        if expected != canonical:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: root synthesis output path is not canonical"
+            )
+        return {expected}, {expected}
     if proof_path.is_file() and not proof_path.is_symlink():
         proof = json.loads(proof_path.read_text(encoding="utf-8"))
         pause = (
@@ -6622,6 +10458,7 @@ def _trusted_council_ingress_tasks(
     *,
     report_id: str,
     trusted_resume_proof_sha256: str,
+    require_results_absent: bool = True,
 ) -> tuple[CouncilIngressTask, ...]:
     proof_path = (
         workspace
@@ -6655,7 +10492,7 @@ def _trusted_council_ingress_tasks(
     return load_council_ingress_tasks(
         workspace,
         report_id,
-        require_results_absent=True,
+        require_results_absent=require_results_absent,
     )
 
 

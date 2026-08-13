@@ -30,6 +30,7 @@ from skills.factor_forge_step5.modules.evaluator import build_factor_evaluation 
 from skills.factor_forge_step5.modules.case_builder import build_factor_case_master  # type: ignore
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.evo_child_execution import validate_evo_child_execution_gate
 from factor_factory.provenance import (
     build_evidence_identity,
     build_evidence_quality,
@@ -136,6 +137,14 @@ def build_handoff_to_step6(bundle: dict, evaluation: dict, case: dict, evaluatio
         "evidence_quality": case.get("evidence_quality") or {},
         "created_by_step": "step5",
     }
+    if frm.get("evo_transfer_diagnostic_contract") is not None:
+        handoff["evo_transfer_diagnostic_contract"] = frm[
+            "evo_transfer_diagnostic_contract"
+        ]
+        handoff["evo_child_execution"] = frm.get("evo_child_execution")
+        handoff["evo_transfer_test_review_status"] = (
+            "HOST_REVIEW_REQUIRED_NOT_FACTOR_ACCEPTANCE_EVIDENCE"
+        )
     if case.get("mechanism_math_contract"):
         handoff["mechanism_math_contract"] = case["mechanism_math_contract"]
     if case.get("mechanism_math_contract_v2"):
@@ -202,6 +211,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
+    ap.add_argument('--expected-host-trust-manifest-sha256', default=None)
     a = ap.parse_args()
     enforce_direct_step_policy(a.manifest)
     manifest = load_runtime_manifest(a.manifest) if a.manifest else None
@@ -214,6 +224,16 @@ if __name__ == '__main__':
         raise SystemExit('run_step5.py requires --report-id or --manifest')
 
     bundle = load_step5_inputs(rid, FF)
+    evo_gate_reasons = validate_evo_child_execution_gate(
+        workspace_root=FF,
+        report_id=rid,
+        factor_run_master=((bundle.get('objects') or {}).get('factor_run_master') or {}),
+        expected_host_trust_manifest_sha256=(
+            a.expected_host_trust_manifest_sha256
+        ),
+    )
+    if evo_gate_reasons:
+        raise SystemExit('BLOCK_FACTORFORGE_EVO_CHILD_EXECUTION_GATE: ' + ';'.join(evo_gate_reasons))
     ok, errors, warnings = validate_input_consistency(bundle)
     if not ok:
         raise SystemExit('STEP5_INPUT_INVALID: ' + '; '.join(errors))

@@ -17,6 +17,23 @@ from factor_factory.console.web_factor_proof import (
     web_factor_proof_paths,
 )
 from factor_factory.research_evidence import sha256_file
+from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
+
+
+@pytest.fixture(autouse=True)
+def _incident_host_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    trust_root = tmp_path.parent / f".{tmp_path.name}-web-proof-host-trust"
+    installation_id = "web-proof-test-installation"
+    ensure_runtime_trust_store(trust_root, installation_id=installation_id)
+    monkeypatch.setenv(
+        "FACTORFORGE_OOS_HOST_EXPOSURE_TRUST_ROOT", str(trust_root)
+    )
+    monkeypatch.setenv(
+        "FACTORFORGE_OOS_HOST_EXPOSURE_INSTALLATION_ID", installation_id
+    )
 
 
 def _plan(calendar_dates: list[str]) -> tuple[dict, list[str]]:
@@ -93,6 +110,11 @@ def _write_shared_panel(
                     "label_end_date": selected[date_index + 2],
                     "label_start_price": 100.0,
                     "label_end_price": 100.0 * (1.0 + forward_return),
+                    "pct_chg": 0.01 * math.sin(date_index * 0.17 + asset_index * 0.31),
+                    "turnover_rate": 0.5 + 0.03 * asset_index,
+                    "ln_mcap_free": 8.0 + 0.05 * asset_index,
+                    "volume_ratio": 0.8 + 0.02 * asset_index,
+                    "total_mv": 1_000_000.0 + 10_000.0 * asset_index,
                 }
             )
     run_root = root / "runs" / "WEB_PROOF_TEST"
@@ -171,6 +193,50 @@ def test_web_factor_proof_blocks_any_oos_label_calendar_mismatch(
 
     with pytest.raises(ValueError, match="OOS label dates do not match"):
         finalize_web_factor_proof(workspace_root=root, plan=plan)
+
+
+def test_web_factor_proof_blocks_missing_evo_child_authority_before_panel_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "workspace"
+    root.mkdir()
+    calendar = _trusted_calendar_snapshot()
+    plan, selected = _plan(calendar["dates"])
+    prepare_web_factor_proof(workspace_root=root, plan=plan)
+    _write_shared_panel(root, selected, direction=1.0)
+    intent_path = (
+        root
+        / "objects/research_protocol"
+        / "evo_child_intent__WEB_PROOF_TEST.json"
+    )
+    intent_path.parent.mkdir(parents=True, exist_ok=True)
+    intent_path.write_text(
+        json.dumps(
+            {
+                "contract_version": (
+                    "factorforge_pre_oos_child_intent_projection_v1"
+                ),
+                "parent_report_id": "WEB_PROOF_PARENT",
+                "child_report_id": "WEB_PROOF_TEST",
+            }
+        ),
+        encoding="utf-8",
+    )
+    panel_read = False
+
+    def _forbidden_panel_read(**_kwargs):
+        nonlocal panel_read
+        panel_read = True
+        raise AssertionError("OOS panel was read before child allocation authorization")
+
+    monkeypatch.setattr(web_factor_proof, "_build_oos_panel", _forbidden_panel_read)
+    with pytest.raises(
+        ValueError,
+        match="incident_lineage_registry_missing",
+    ):
+        finalize_web_factor_proof(workspace_root=root, plan=plan)
+    assert panel_read is False
 
 
 def test_non_risk_premium_diagnostic_bucket_ties_do_not_block_formal_proof(

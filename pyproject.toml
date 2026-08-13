@@ -22,12 +22,14 @@ console = [
   "pypdf==6.10.1",
 ]
 step4 = [
+  "boto3>=1.35,<2",
   "matplotlib>=3.10",
   "pyarrow>=14.0",
   "scipy>=1.15,<1.16; python_version < '3.11'",
   "scipy>=1.16; python_version >= '3.11'",
 ]
 qlib = [
+  "boto3>=1.35,<2",
   "matplotlib>=3.10",
   "pyarrow>=14.0",
   "pyqlib>=0.9.7",

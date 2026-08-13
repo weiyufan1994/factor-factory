@@ -11,6 +11,7 @@ import math
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -94,6 +95,11 @@ OBJ = FACTORFORGE / 'objects'
 RUNS = FACTORFORGE / 'runs'
 
 from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
+from factor_factory.evo_child_execution import (
+    EvoChildExecutionError,
+    materialize_evo_child_execution_result,
+    validate_evo_transfer_diagnostic_contract,
+)
 from factor_factory.console.web_factor_proof import validate_trusted_calendar_snapshot
 from factor_factory.data_access.minute_derived import (
     DEFAULT_MINUTE_CUTOFF_TIME,
@@ -104,13 +110,25 @@ MINUTE_DERIVED_FLOW_STATE_V1,
     normalize_trade_date,
     research_window_contract as default_research_window_contract,
 )
-from factor_factory.data_api import fetch_data_api_dataset
 from factor_factory.formula.semantics import max_formula_ir_lookback as shared_max_formula_ir_lookback
+from factor_factory.formula import parse_formula
+from factor_factory.formula.evaluator import evaluate_formula_frame
 from factor_factory.runtime_context import (
     load_runtime_manifest,
     manifest_factorforge_root,
     manifest_path,
     manifest_report_id,
+)
+from factor_factory.research_conjecture import (
+    epistemic_evolution_enabled,
+    epistemic_evolution_lifecycle_path,
+    validate_epistemic_evolution_lifecycle,
+)
+from factor_factory.evo_data_boundary import (
+    end_agent_execution_isolation,
+    install_agent_execution_isolation,
+    project_pre_release_data_access,
+    resolve_evo_pre_release_research_windows as resolve_shared_evo_pre_release_research_windows,
 )
 from factor_factory.state_reuse import (
     BLOCK_STATE_RESOLUTION_MISSING,
@@ -149,6 +167,23 @@ STEP4_RUN_METADATA_OWNED_FIELDS = {
     'formal_signal_coverage',
 }
 FACTOR_CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
+
+# Kept as an explicit test seam without importing the independent Data API at
+# module import time.  EVO Agent stages never receive that package or data
+# credentials; only the Host prefetch/legacy trusted path may resolve it.
+fetch_data_api_dataset: Any | None = None
+
+
+def _host_fetch_data_api_dataset(*args: Any, **kwargs: Any) -> Any:
+    if os.getenv('FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY') == 'DENY':
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_AGENT_DATA_API_FETCH_FORBIDDEN: '
+            'Agent execution must consume the immutable Host prefetch receipt'
+        )
+    fetcher = fetch_data_api_dataset
+    if fetcher is None:
+        from factor_factory.data_api import fetch_data_api_dataset as fetcher
+    return fetcher(*args, **kwargs)
 
 
 def validate_web_evaluation_contract(fsm: dict[str, Any]) -> None:
@@ -720,6 +755,9 @@ def build_backend_runs_stub(report_id: str, evaluation_plan: dict[str, Any], run
 
 
 def current_repo_sha() -> str:
+    admitted = str(os.getenv('FACTORFORGE_ADMITTED_ENGINE_COMMIT') or '')
+    if re.fullmatch(r'[0-9a-f]{40,64}', admitted):
+        return admitted
     try:
         result = subprocess.run(
             ['git', 'rev-parse', 'HEAD'],
@@ -1339,16 +1377,94 @@ def build_shared_evaluation_context(
     target_window: dict[str, Any],
     effective_target_window: dict[str, Any],
     evaluation_contract: dict[str, Any] | None = None,
+    signal_daily_df: Any | None = None,
+    signal_daily_input_path: Path | None = None,
+    pre_release_research_windows: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     run_dir.mkdir(parents=True, exist_ok=True)
     factor_signal_path = run_dir / f'factor_signal__{report_id}.parquet'
     daily_forward_returns_path = run_dir / f'daily_forward_returns__{report_id}.parquet'
     merged_path = run_dir / f'merged_signal_return__{report_id}.parquet'
+    evo_diagnostic_panel_path = run_dir / f'evo_transfer_diagnostic_panel__{report_id}.parquet'
     context_path = run_dir / f'shared_evaluation_context__{report_id}.json'
 
     required_factor_cols = ['ts_code', 'trade_date', signal_col]
     factor_signal = factor_df[required_factor_cols].copy()
+    pre_release_signal_dates: set[str] | None = None
+    if pre_release_research_windows is not None:
+        calendar_dates = validate_trusted_calendar_snapshot()['dates']
+        is_dates = [
+            value
+            for value in calendar_dates
+            if str(pre_release_research_windows['is_start'])
+            <= value
+            <= str(pre_release_research_windows['is_end'])
+        ]
+        purge_days = int(pre_release_research_windows['purge_days'])
+        usable_count = len(is_dates) - purge_days - 2
+        if usable_count < 3:
+            raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_PURGED_IS_TOO_SHORT')
+        pre_release_signal_dates = set(is_dates[:usable_count])
+        factor_dates = normalize_trade_date_series(
+            factor_signal['trade_date']
+        ).dt.strftime('%Y-%m-%d')
+        factor_signal = factor_signal.loc[
+            factor_dates.isin(pre_release_signal_dates)
+        ].copy()
+    diagnostic_trials = (
+        evaluation_contract.get('diagnostic_trials') or []
+        if isinstance(evaluation_contract, dict)
+        else []
+    )
+    diagnostic_daily_df = signal_daily_df if signal_daily_df is not None else daily_df
+    if pre_release_research_windows is not None:
+        diagnostic_dates = normalize_trade_date_series(
+            diagnostic_daily_df['trade_date']
+        )
+        diagnostic_daily_df = diagnostic_daily_df.loc[
+            diagnostic_dates.between(
+                pd.Timestamp(pre_release_research_windows['is_start']),
+                pd.Timestamp(pre_release_research_windows['is_end']),
+            )
+        ].copy()
+    diagnostic_daily_input_path = signal_daily_input_path or daily_input_path
+    diagnostic_signal_frame = diagnostic_daily_df[['ts_code', 'trade_date']].copy()
+    if diagnostic_trials and diagnostic_signal_frame.duplicated(['ts_code', 'trade_date']).any():
+        raise ValueError('EVO diagnostic signal input has duplicate instrument-date keys')
+    for diagnostic in diagnostic_trials:
+        if not isinstance(diagnostic, dict):
+            raise ValueError('shared evaluation diagnostic trial must be an object')
+        signal_column = str(diagnostic.get('signal_column') or '')
+        formula_or_law = str(diagnostic.get('formula_or_law') or '')
+        if not signal_column or not formula_or_law:
+            raise ValueError('shared evaluation diagnostic trial is incomplete')
+        formula_ir = parse_formula(
+            formula_or_law,
+            available_columns=[str(column) for column in diagnostic_daily_df.columns],
+        )
+        if formula_ir.get('parse_status') != 'success':
+            raise ValueError(
+                'shared evaluation diagnostic formula is invalid: '
+                + str(diagnostic.get('trial_id') or signal_column)
+            )
+        diagnostic_frame = evaluate_formula_frame(
+            formula_ir,
+            diagnostic_daily_df,
+            engine='optimized',
+        ).rename(columns={'factor_value': signal_column})
+        factor_signal = factor_signal.merge(
+            diagnostic_frame,
+            on=['ts_code', 'trade_date'],
+            how='left',
+            validate='one_to_one',
+        )
+        diagnostic_signal_frame = diagnostic_signal_frame.merge(
+            diagnostic_frame,
+            on=['ts_code', 'trade_date'],
+            how='left',
+            validate='one_to_one',
+        )
     factor_signal = factor_signal.rename(columns={'ts_code': 'code'}).copy()
     factor_signal['datetime'] = normalize_trade_date_series(factor_signal['trade_date'])
 
@@ -1369,8 +1485,17 @@ def build_shared_evaluation_context(
         isinstance(evaluation_contract, dict)
         and evaluation_contract.get('version') == WEB_EVALUATION_CONTRACT_VERSION
     )
+    evaluation_daily_df = daily_df
+    if pre_release_research_windows is not None:
+        evaluation_dates = normalize_trade_date_series(daily_df['trade_date'])
+        evaluation_daily_df = daily_df.loc[
+            evaluation_dates.between(
+                pd.Timestamp(pre_release_research_windows['is_start']),
+                pd.Timestamp(pre_release_research_windows['is_end']),
+            )
+        ].copy()
     daily_forward = build_forward_return_frame(
-        daily_df[[
+        evaluation_daily_df[[
             col
             for col in [
                 'ts_code',
@@ -1395,6 +1520,13 @@ def build_shared_evaluation_context(
             else None
         ),
     )
+    if pre_release_signal_dates is not None:
+        forward_signal_dates = normalize_trade_date_series(
+            daily_forward['trade_date']
+        ).dt.strftime('%Y-%m-%d')
+        daily_forward = daily_forward.loc[
+            forward_signal_dates.isin(pre_release_signal_dates)
+        ].copy()
     forward_columns = ['datetime', 'code', 'future_return_1d']
     if web_tradeable_timing:
         forward_columns.extend(
@@ -1406,15 +1538,38 @@ def build_shared_evaluation_context(
             ]
         )
         forward_columns.extend(proof_control_columns)
-    merged = factor_signal[['datetime', 'trade_date', 'code', signal_col]].merge(
+    diagnostic_columns = [
+        str(item['signal_column'])
+        for item in diagnostic_trials
+        if isinstance(item, dict) and item.get('signal_column')
+    ]
+    merged = factor_signal[
+        ['datetime', 'trade_date', 'code', signal_col, *diagnostic_columns]
+    ].merge(
         daily_forward[forward_columns],
         on=['datetime', 'code'],
         how='left',
     ).dropna(subset=[signal_col, 'future_return_1d'])
+    evo_diagnostic_panel = None
+    if diagnostic_trials:
+        diagnostic_signal_frame = diagnostic_signal_frame.rename(columns={'ts_code': 'code'})
+        diagnostic_signal_frame['datetime'] = normalize_trade_date_series(
+            diagnostic_signal_frame['trade_date']
+        )
+        evo_diagnostic_panel = diagnostic_signal_frame[
+            ['datetime', 'trade_date', 'code', *diagnostic_columns]
+        ].merge(
+            daily_forward[forward_columns],
+            on=['datetime', 'code'],
+            how='left',
+            validate='one_to_one',
+        ).dropna(subset=['future_return_1d'])
 
     factor_signal.to_parquet(factor_signal_path, index=False)
     daily_forward.to_parquet(daily_forward_returns_path, index=False)
     merged.to_parquet(merged_path, index=False)
+    if evo_diagnostic_panel is not None:
+        evo_diagnostic_panel.to_parquet(evo_diagnostic_panel_path, index=False)
 
     identity = {
         'report_id': report_id,
@@ -1423,6 +1578,10 @@ def build_shared_evaluation_context(
         'factor_values_hash': sha256_file(factor_parquet_path),
         'daily_input_hash': sha256_file(daily_input_path),
         'daily_input_path': str(daily_input_path),
+        'evaluation_daily_input_hash': sha256_file(daily_input_path),
+        'evaluation_daily_input_path': str(daily_input_path),
+        'signal_daily_input_hash': sha256_file(diagnostic_daily_input_path),
+        'signal_daily_input_path': str(diagnostic_daily_input_path),
         'label_policy': (
             dict(evaluation_contract['label_policy'])
             if web_tradeable_timing
@@ -1457,17 +1616,32 @@ def build_shared_evaluation_context(
             'factor_signal_parquet': str(factor_signal_path),
             'daily_forward_returns_parquet': str(daily_forward_returns_path),
             'merged_signal_return_parquet': str(merged_path),
+            'evo_transfer_diagnostic_panel_parquet': (
+                str(evo_diagnostic_panel_path)
+                if evo_diagnostic_panel is not None
+                else None
+            ),
             'quantile_assignment_parquet': None,
         },
         'artifacts': {
             'factor_signal': artifact_contract(factor_signal_path, factor_signal),
             'daily_forward_returns': artifact_contract(daily_forward_returns_path, daily_forward),
             'merged_signal_return': artifact_contract(merged_path, merged),
+            'evo_transfer_diagnostic_panel': (
+                artifact_contract(evo_diagnostic_panel_path, evo_diagnostic_panel)
+                if evo_diagnostic_panel is not None
+                else None
+            ),
         },
         'row_counts': {
             'factor_signal': int(len(factor_signal)),
             'daily_forward_returns': int(len(daily_forward)),
             'merged_signal_return': int(len(merged)),
+            'evo_transfer_diagnostic_panel': (
+                int(len(evo_diagnostic_panel))
+                if evo_diagnostic_panel is not None
+                else 0
+            ),
         },
         'cache_hit': False,
         'invalidated_reason': None,
@@ -2293,6 +2467,136 @@ def _step4_data_contract(dpm: dict[str, Any], handoff: dict[str, Any]) -> dict[s
     return {}
 
 
+def resolve_evo_pre_release_research_windows(
+    report_id: str,
+    dpm: dict[str, Any],
+    *,
+    expected_host_trust_manifest_sha256: str | None = None,
+) -> dict[str, Any] | None:
+    """Resolve a common IS-only boundary for parent and child EVO reports."""
+    try:
+        return resolve_shared_evo_pre_release_research_windows(
+            workspace_root=FACTORFORGE,
+            report_id=report_id,
+            data_prep=dpm,
+            expected_host_trust_manifest_sha256=(
+                expected_host_trust_manifest_sha256
+            ),
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
+def apply_evo_pre_release_data_boundary(
+    report_id: str,
+    dpm: dict[str, Any],
+    handoff: dict[str, Any],
+    *,
+    expected_host_trust_manifest_sha256: str | None = None,
+) -> dict[str, Any] | None:
+    """Clamp Host data access before any formal factor fetch or cache write."""
+
+    windows = resolve_evo_pre_release_research_windows(
+        report_id,
+        dpm,
+        expected_host_trust_manifest_sha256=(
+            expected_host_trust_manifest_sha256
+        ),
+    )
+    if windows is None:
+        return None
+    source_contract = _step4_data_contract(dpm, handoff)
+    if source_contract and source_contract is not dpm.get('step4_data_contract'):
+        dpm['step4_data_contract'] = json.loads(json.dumps(source_contract))
+    try:
+        project_pre_release_data_access(dpm, windows)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if isinstance(handoff.get('step4_data_contract'), dict):
+        handoff['step4_data_contract'] = json.loads(
+            json.dumps(dpm.get('step4_data_contract') or {})
+        )
+    try:
+        project_pre_release_data_access(handoff, windows)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    return dict(windows)
+
+
+def validate_pre_release_step4_data_access(
+    dpm: dict[str, Any], handoff: dict[str, Any]
+) -> None:
+    """Fail before Data API/cache access if an EVO child can see beyond IS."""
+
+    windows = dpm.get('research_windows')
+    if not isinstance(windows, dict):
+        return
+    is_end = _normal_date_value(windows.get('is_end'))
+    is_start = _normal_date_value(windows.get('is_start'))
+    if not is_start or not is_end or is_start > is_end:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_CHILD_PRE_RELEASE_DATA_ACCESS_INVALID: research_windows'
+        )
+    contract = _step4_data_contract(dpm, handoff)
+    allowed_datasets = {'clean_daily_bar', 'daily_basic', 'moneyflow'}
+    for query_set in ('full_queries', 'sample_queries'):
+        raw_queries = contract.get(query_set) if isinstance(contract, dict) else None
+        if raw_queries is None:
+            continue
+        if not isinstance(raw_queries, dict):
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_EVO_CHILD_PRE_RELEASE_DATA_ACCESS_INVALID: '
+                f'{query_set}'
+            )
+        for name, query in raw_queries.items():
+            if name not in allowed_datasets or not isinstance(query, dict):
+                raise SystemExit(
+                    'BLOCK_FACTORFORGE_EVO_CHILD_PRE_RELEASE_DATA_ACCESS_INVALID: '
+                    f'{query_set}.{name}'
+                )
+            if str(query.get('dataset') or name) != name:
+                raise SystemExit(
+                    'BLOCK_FACTORFORGE_EVO_CHILD_PRE_RELEASE_DATA_ACCESS_INVALID: '
+                    f'{query_set}.{name}.dataset'
+                )
+            query_start = _normal_date_value(query.get('start_date'))
+            query_end = _normal_date_value(query.get('end_date'))
+            if not query_start or not query_end or query_start > query_end or query_end > is_end:
+                raise SystemExit(
+                    'BLOCK_FACTORFORGE_EVO_CHILD_PRE_RELEASE_DATA_ACCESS_INVALID: '
+                    f'{query_set}.{name}.window'
+                )
+    for source in (dpm, contract):
+        requirements = (
+            source.get('minute_derived_state_requirements')
+            if isinstance(source, dict)
+            else None
+        )
+        if requirements:
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_EVO_CHILD_PRE_RELEASE_DATA_ACCESS_INVALID: '
+                'minute_derived_state_requirements'
+            )
+    local_inputs = handoff.get('local_input_paths') or dpm.get('local_input_paths') or {}
+    if not isinstance(local_inputs, dict):
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_CHILD_PRE_RELEASE_DATA_ACCESS_INVALID: local_input_paths'
+        )
+    forbidden_paths = {
+        'minute_df_parquet',
+        'minute_df_csv',
+        'minute_streaming_query',
+        'state_df_parquet',
+        'state_df_csv',
+    }
+    exposed = sorted(key for key in forbidden_paths if local_inputs.get(key))
+    if exposed or str(local_inputs.get('input_mode') or 'daily_only') != 'daily_only':
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_CHILD_PRE_RELEASE_DATA_ACCESS_INVALID: '
+            + ','.join(exposed or ['input_mode'])
+        )
+
+
 def _contract_query(contract: dict[str, Any], query_set: str, dataset_id: str) -> dict[str, Any] | None:
     queries = contract.get(query_set) if isinstance(contract, dict) else None
     if not isinstance(queries, dict):
@@ -2409,7 +2713,7 @@ def _load_required_minute_flow_state(
             frames: list[pd.DataFrame] = []
             date_profiles: list[dict[str, Any]] = []
             for date in dates:
-                date_result = fetch_data_api_dataset(
+                date_result = _host_fetch_data_api_dataset(
                     dataset_id,
                     start=date,
                     end=date,
@@ -2439,7 +2743,7 @@ def _load_required_minute_flow_state(
                 'date_fetch_profile_sample': date_profiles[:3] + date_profiles[-3:] if len(date_profiles) > 6 else date_profiles,
             }
         else:
-            result = fetch_data_api_dataset(
+            result = _host_fetch_data_api_dataset(
                 dataset_id,
                 start=dates[0],
                 end=dates[-1],
@@ -2627,7 +2931,7 @@ def compute_factor_from_minute_derived_state(
 
 
 def _fetch_contract_frame(query: dict[str, Any]):
-    result = fetch_data_api_dataset(
+    result = _host_fetch_data_api_dataset(
         str(query.get('dataset')),
         start=str(query.get('start_date')),
         end=str(query.get('end_date')),
@@ -2818,13 +3122,38 @@ def _backtest_base_cache_paths(contract: dict[str, Any]) -> tuple[Path, Path, di
 
 def _load_backtest_base_cache(contract: dict[str, Any]) -> tuple[Path | None, dict[str, Any] | None]:
     data_path, meta_path, identity = _backtest_base_cache_paths(contract)
-    if not data_path.exists() or not meta_path.exists():
+    if (
+        not data_path.is_file()
+        or data_path.is_symlink()
+        or not meta_path.is_file()
+        or meta_path.is_symlink()
+    ):
         return None, None
     try:
         metadata = load_json(meta_path)
     except Exception:
         return None, None
     if metadata.get('identity_hash') != identity.get('identity_hash'):
+        return None, None
+    if metadata.get('artifact_hash') != sha256_file(data_path):
+        return None, None
+    try:
+        cached_frame = pd.read_parquet(data_path)
+    except Exception:
+        return None, None
+    observed_columns = [str(column) for column in cached_frame.columns]
+    row_count = int(len(cached_frame))
+    date_count = int(cached_frame['trade_date'].nunique()) if 'trade_date' in cached_frame.columns and row_count else 0
+    ticker_count = int(cached_frame['ts_code'].nunique()) if 'ts_code' in cached_frame.columns and row_count else 0
+    if (
+        metadata.get('row_count') != row_count
+        or metadata.get('date_count') != date_count
+        or metadata.get('ticker_count') != ticker_count
+        or metadata.get('columns') != observed_columns
+    ):
+        return None, None
+    daily_query = _contract_query(contract, 'full_queries', 'clean_daily_bar')
+    if not daily_query or not _frame_within_query_window(cached_frame, daily_query):
         return None, None
     control_violation = _backtest_base_cache_control_violation(data_path, contract, metadata)
     if control_violation:
@@ -2841,6 +3170,29 @@ def _load_backtest_base_cache(contract: dict[str, Any]) -> tuple[Path | None, di
         'ticker_count': metadata.get('ticker_count'),
         'source': 'persistent_warm_cache',
     }
+
+
+def _frame_within_query_window(
+    frame: pd.DataFrame, query: dict[str, Any]
+) -> bool:
+    if frame.empty or 'trade_date' not in frame.columns:
+        return False
+    requested_start = _normal_date_value(query.get('start_date'))
+    requested_end = _normal_date_value(query.get('end_date'))
+    observed = _normal_date_text(frame['trade_date'])
+    if not requested_start or not requested_end or observed.isna().any():
+        return False
+    return bool(observed.min() >= requested_start and observed.max() <= requested_end)
+
+
+def _require_frame_within_query_window(
+    frame: pd.DataFrame, query: dict[str, Any], *, dataset: str
+) -> None:
+    if not _frame_within_query_window(frame, query):
+        raise SystemExit(
+            'BLOCK_STEP4_DATA_API_QUERY_WINDOW_VIOLATION: '
+            f'{dataset} returned rows outside the frozen query window'
+        )
 
 
 def _write_backtest_base_cache(
@@ -2886,6 +3238,8 @@ def materialize_step4_data_inputs_from_contract(
     report_id: str,
     contract: dict[str, Any],
     run_dir: Path,
+    *,
+    allow_persistent_cache: bool = True,
 ) -> tuple[dict[str, str], dict[str, Any]]:
     if contract.get('version') != 'factorforge_step4_data_contract_v1':
         raise SystemExit('BLOCK_STEP4_DATA_CONTRACT_MISSING: Step4 requires factorforge_step4_data_contract_v1 when local inputs are absent')
@@ -2898,11 +3252,23 @@ def materialize_step4_data_inputs_from_contract(
     data_dir = run_dir / 'step4_data_inputs'
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    cached_base_path, cached_base_profile = _load_backtest_base_cache(contract)
+    cached_base_path, cached_base_profile = (
+        _load_backtest_base_cache(contract)
+        if allow_persistent_cache
+        else (None, None)
+    )
     if cached_base_path is not None and cached_base_profile is not None:
+        cached_frame = pd.read_parquet(cached_base_path)
+        _require_frame_within_query_window(
+            cached_frame, daily_query, dataset='clean_daily_bar_cache'
+        )
+        report_daily_path = (
+            data_dir / f'step4_daily_input__{report_id}__bounded.parquet'
+        )
+        cached_frame.to_parquet(report_daily_path, index=False)
         local_inputs = {
             'input_mode': 'daily_only',
-            'daily_df_parquet': str(cached_base_path),
+            'daily_df_parquet': str(report_daily_path),
             'data_source': 'factorforge_data_api_backtest_base_cache',
         }
         meta = {
@@ -2912,12 +3278,15 @@ def materialize_step4_data_inputs_from_contract(
         moneyflow_query = _contract_query(contract, 'full_queries', 'moneyflow')
         if moneyflow_query:
             signal_df, signal_meta = _fetch_contract_frame(moneyflow_query)
+            _require_frame_within_query_window(
+                signal_df, moneyflow_query, dataset='moneyflow'
+            )
             signal_path = data_dir / f'step4_signal_daily_input__{report_id}__moneyflow.parquet'
             signal_df.to_parquet(signal_path, index=False)
             local_inputs['input_mode'] = 'alternative_daily_plus_clean_daily'
             local_inputs['formula_input_dataset'] = 'moneyflow'
             local_inputs['signal_daily_df_parquet'] = str(signal_path)
-            local_inputs['evaluation_daily_df_parquet'] = str(cached_base_path)
+            local_inputs['evaluation_daily_df_parquet'] = str(report_daily_path)
             meta['moneyflow'] = signal_meta
         minute_query = _contract_query(contract, 'full_queries', 'minute_bar')
         if minute_query:
@@ -2943,19 +3312,39 @@ def materialize_step4_data_inputs_from_contract(
             'result_metadata': meta,
             'backtest_base_reuse_profile': cached_base_profile,
         }
-    if _contract_flag(contract, 'backtest_base_reuse_required'):
+    if allow_persistent_cache and _contract_flag(contract, 'backtest_base_reuse_required'):
         raise SystemExit(
             'BLOCK_FACTORFORGE_BACKTEST_BASE_REUSE_REQUIRED: '
             'Step4 contract requires an existing reusable backtest_base_daily_controls_v1 artifact, '
             'but no matching persistent cache was found.'
         )
 
-    daily_df, daily_meta = _fetch_contract_frame(daily_query)
+    daily_basic_query = _contract_query(contract, 'full_queries', 'daily_basic')
+    enriched_daily_query = dict(daily_query)
+    if daily_basic_query:
+        enriched_daily_query['fields'] = list(dict.fromkeys([
+            *(daily_query.get('fields') or []),
+            *(daily_basic_query.get('fields') or []),
+        ]))
+    try:
+        daily_df, daily_meta = _fetch_contract_frame(enriched_daily_query)
+    except SystemExit:
+        # Backward compatibility for catalogs where controls remain a separate
+        # daily_basic product. The original clean query is still authoritative.
+        daily_df, daily_meta = _fetch_contract_frame(daily_query)
+    _require_frame_within_query_window(
+        daily_df, daily_query, dataset='clean_daily_bar'
+    )
     meta = {'clean_daily_bar': daily_meta}
 
-    daily_basic_query = _contract_query(contract, 'full_queries', 'daily_basic')
-    if daily_basic_query:
+    daily_basic_required_fields = set(daily_basic_query.get('fields') or []) - {
+        'ts_code', 'trade_date'
+    } if daily_basic_query else set()
+    if daily_basic_query and not daily_basic_required_fields <= set(daily_df.columns):
         daily_basic_df, daily_basic_meta = _fetch_contract_frame(daily_basic_query)
+        _require_frame_within_query_window(
+            daily_basic_df, daily_basic_query, dataset='daily_basic'
+        )
         daily_basic_perf = daily_basic_meta.get('performance_profile') if isinstance(daily_basic_meta, dict) else {}
         if _contract_flag(contract, 'daily_basic_parquet_required') and (
             not isinstance(daily_basic_perf, dict)
@@ -2975,28 +3364,45 @@ def materialize_step4_data_inputs_from_contract(
         daily_df = daily_df.merge(daily_basic_df, on=['ts_code', 'trade_date'], how='left')
         meta['daily_basic'] = daily_basic_meta
 
-    daily_path, backtest_base_profile = _write_backtest_base_cache(
-        daily_df,
-        contract,
-        result_metadata=meta,
-    )
+    if allow_persistent_cache:
+        daily_path, backtest_base_profile = _write_backtest_base_cache(
+            daily_df,
+            contract,
+            result_metadata=meta,
+        )
+    else:
+        daily_path = data_dir / f'step4_daily_input__{report_id}__bounded.parquet'
+        backtest_base_profile = {
+            'version': 'factorforge_backtest_base_reuse_profile_v1',
+            'dataset_id': 'report_local_evo_pre_release_daily',
+            'backtest_base_reuse_hit': False,
+            'source': 'report_local_is_only_no_persistent_cache',
+            'row_count': int(len(daily_df)),
+            'date_count': int(daily_df['trade_date'].nunique()),
+            'ticker_count': int(daily_df['ts_code'].nunique()),
+        }
     meta['backtest_base_daily_controls_v1'] = backtest_base_profile
+    report_daily_path = data_dir / f'step4_daily_input__{report_id}__bounded.parquet'
+    daily_df.to_parquet(report_daily_path, index=False)
 
     local_inputs = {
         'input_mode': 'daily_only',
-        'daily_df_parquet': str(daily_path),
+        'daily_df_parquet': str(report_daily_path),
         'data_source': 'factorforge_data_api_full_query',
     }
 
     moneyflow_query = _contract_query(contract, 'full_queries', 'moneyflow')
     if moneyflow_query:
         signal_df, signal_meta = _fetch_contract_frame(moneyflow_query)
+        _require_frame_within_query_window(
+            signal_df, moneyflow_query, dataset='moneyflow'
+        )
         signal_path = data_dir / f'step4_signal_daily_input__{report_id}__moneyflow.parquet'
         signal_df.to_parquet(signal_path, index=False)
         local_inputs['input_mode'] = 'alternative_daily_plus_clean_daily'
         local_inputs['formula_input_dataset'] = 'moneyflow'
         local_inputs['signal_daily_df_parquet'] = str(signal_path)
-        local_inputs['evaluation_daily_df_parquet'] = str(daily_path)
+        local_inputs['evaluation_daily_df_parquet'] = str(report_daily_path)
         meta['moneyflow'] = signal_meta
 
     minute_query = _contract_query(contract, 'full_queries', 'minute_bar')
@@ -3024,6 +3430,348 @@ def materialize_step4_data_inputs_from_contract(
         'result_metadata': meta,
         'backtest_base_reuse_profile': backtest_base_profile,
     }
+
+
+def materialize_step4_contract_inputs_if_required(
+    *,
+    report_id: str,
+    contract: dict[str, Any],
+    run_dir: Path,
+    local_inputs: dict[str, Any],
+    force_contract_inputs: bool,
+    evo_pre_release: bool,
+    existing_profile: dict[str, Any] | None = None,
+    fallback_daily_path: str | None = None,
+    materializer: Any | None = None,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Materialize only outside an EVO receipt-backed Agent execution."""
+
+    minute_path = local_inputs.get('minute_df_parquet') or local_inputs.get(
+        'minute_df_csv'
+    )
+    minute_query = (
+        local_inputs.get('minute_streaming_query')
+        if isinstance(local_inputs.get('minute_streaming_query'), dict)
+        else None
+    )
+    daily_path = (
+        local_inputs.get('daily_df_parquet')
+        or local_inputs.get('daily_df_csv')
+        or fallback_daily_path
+    )
+    input_mode = str(local_inputs.get('input_mode') or '')
+    minute_required = bool(
+        minute_path
+        or minute_query
+        or input_mode in {'price_volume_minute', 'minute_and_daily'}
+    )
+    required = bool(
+        force_contract_inputs
+        or (minute_required and (not minute_path or not daily_path))
+        or ((not minute_required) and not daily_path)
+    )
+    if evo_pre_release:
+        if required:
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+                'receipt_missing_required_local_input'
+            )
+        return dict(local_inputs), existing_profile
+    if not required:
+        return dict(local_inputs), None
+    fetch = materializer or materialize_step4_data_inputs_from_contract
+    fetched_inputs, profile = fetch(report_id, contract, run_dir)
+    return {**local_inputs, **fetched_inputs}, profile
+
+
+def _evo_prefetch_receipt_path(run_dir: Path, report_id: str) -> Path:
+    return run_dir / f'evo_pre_release_data_receipt__{report_id}.json'
+
+
+def _evo_required_fields_for_artifact(
+    role: str,
+    contract: dict[str, Any],
+) -> list[str]:
+    query_names = (
+        ("moneyflow",)
+        if role.startswith("signal_daily")
+        else ("clean_daily_bar", "daily_basic")
+    )
+    fields = ["ts_code", "trade_date"]
+    for name in query_names:
+        query = _contract_query(contract, "full_queries", name) or {}
+        for field in query.get("fields") or []:
+            candidate = str(field)
+            if candidate not in fields:
+                fields.append(candidate)
+    return fields
+
+
+def _evo_expected_open_dates(research_windows: dict[str, Any]) -> list[str]:
+    start = _normal_date_value(research_windows.get("is_start"))
+    end = _normal_date_value(research_windows.get("is_end"))
+    if not start or not end or start > end:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+            'research_windows.calendar_bounds'
+        )
+    calendar = validate_trusted_calendar_snapshot()
+    dates = sorted(
+        {
+            normalized
+            for raw in calendar.get("dates") or []
+            if (normalized := _normal_date_value(raw))
+            and start <= normalized <= end
+        }
+    )
+    if not dates:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+            'calendar_expected_open_dates_empty'
+        )
+    return dates
+
+
+def _evo_prefetch_artifact_projection(
+    *,
+    run_dir: Path,
+    local_inputs: dict[str, Any],
+    research_windows: dict[str, Any],
+    contract: dict[str, Any],
+) -> list[dict[str, Any]]:
+    data_root = (run_dir / 'step4_data_inputs').resolve(strict=False)
+    calendar = validate_trusted_calendar_snapshot()
+    expected_open_dates = _evo_expected_open_dates(research_windows)
+    expected_set = set(expected_open_dates)
+    artifacts: list[dict[str, Any]] = []
+    for key in (
+        'daily_df_parquet',
+        'daily_df_csv',
+        'evaluation_daily_df_parquet',
+        'evaluation_daily_df_csv',
+        'signal_daily_df_parquet',
+        'signal_daily_df_csv',
+    ):
+        raw = local_inputs.get(key)
+        if not raw:
+            continue
+        path = Path(str(raw)).expanduser().resolve(strict=True)
+        if data_root not in path.parents or path.is_symlink() or not path.is_file():
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+                f'{key}.scope'
+            )
+        frame = (
+            pd.read_parquet(path)
+            if path.suffix.lower() == '.parquet'
+            else pd.read_csv(path)
+        )
+        if not _frame_within_query_window(
+            frame,
+            {
+                'start_date': research_windows['is_start'],
+                'end_date': research_windows['is_end'],
+            },
+        ):
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+                f'{key}.window'
+            )
+        observed_dates = sorted(
+            set(_normal_date_text(frame['trade_date']).dropna().tolist())
+        )
+        observed_set = set(observed_dates)
+        missing_dates = sorted(expected_set - observed_set)
+        unexpected_dates = sorted(observed_set - expected_set)
+        required_fields = _evo_required_fields_for_artifact(key, contract)
+        missing_fields = sorted(set(required_fields) - set(frame.columns))
+        coverage_ratio = len(observed_set & expected_set) / len(expected_set)
+        coverage = {
+            'calendar_snapshot_sha256': _stable_json_hash(
+                {
+                    key: calendar.get(key)
+                    for key in (
+                        'snapshot_id',
+                        'raw_file_sha256',
+                        'open_dates_sha256',
+                    )
+                }
+            ),
+            'expected_open_dates': expected_open_dates,
+            'expected_open_dates_sha256': _stable_json_hash(expected_open_dates),
+            'observed_dates': observed_dates,
+            'observed_dates_sha256': _stable_json_hash(observed_dates),
+            'coverage_ratio': coverage_ratio,
+            'missing_open_dates': missing_dates,
+            'unexpected_dates': unexpected_dates,
+            'required_fields': required_fields,
+            'missing_required_fields': missing_fields,
+        }
+        if missing_dates or unexpected_dates or missing_fields or coverage_ratio != 1.0:
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+                f'{key}.full_contract_input_coverage'
+            )
+        artifacts.append(
+            {
+                'role': key,
+                'path': str(path),
+                'sha256': sha256_file(path),
+                'row_count': int(len(frame)),
+                'date_min': _normal_date_text(frame['trade_date']).min(),
+                'date_max': _normal_date_text(frame['trade_date']).max(),
+                'full_contract_input': True,
+                'calendar_coverage': coverage,
+            }
+        )
+    if not artifacts:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: no_daily_artifacts'
+        )
+    return artifacts
+
+
+def materialize_evo_pre_release_data_receipt(
+    *,
+    report_id: str,
+    dpm: dict[str, Any],
+    handoff: dict[str, Any],
+    run_dir: Path,
+) -> dict[str, Any]:
+    windows = dpm.get('research_windows')
+    if not isinstance(windows, dict):
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: research_windows'
+        )
+    contract = _step4_data_contract(dpm, handoff)
+    if not isinstance(contract.get('full_queries'), dict) or not contract[
+        'full_queries'
+    ]:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+            'full_contract_input_required'
+        )
+    local_inputs, profile = materialize_step4_data_inputs_from_contract(
+        report_id, contract, run_dir, allow_persistent_cache=False
+    )
+    if isinstance(local_inputs.get('minute_streaming_query'), dict):
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+            'host_prefetch_did_not_materialize_minute_or_derived_state'
+        )
+    artifacts = _evo_prefetch_artifact_projection(
+        run_dir=run_dir,
+        local_inputs=local_inputs,
+        research_windows=windows,
+        contract=contract,
+    )
+    profile_attestation = {
+        'source': profile.get('source'),
+        'contract_version': profile.get('contract_version'),
+        'queries_sha256': _stable_json_hash(profile.get('queries') or {}),
+        'formal_data_artifacts_sha256': _stable_json_hash(artifacts),
+    }
+    unsigned = {
+        'contract_version': 'factorforge_evo_pre_release_data_receipt_v1',
+        'report_id': report_id,
+        'authority': 'ULTIMATE_HOST_TRUSTED_FETCH_ONLY_NO_FACTOR_EXECUTION',
+        'research_windows': dict(windows),
+        'step4_data_contract_sha256': _stable_json_hash(contract),
+        'full_contract_input': True,
+        'local_inputs': local_inputs,
+        'artifacts': artifacts,
+        'data_api_profile': profile_attestation,
+    }
+    receipt = {**unsigned, 'content_sha256': _stable_json_hash(unsigned)}
+    path = _evo_prefetch_receipt_path(run_dir, report_id)
+    if path.exists() or path.is_symlink():
+        if path.is_symlink() or not path.is_file() or load_json(path) != receipt:
+            raise SystemExit(
+                'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: immutable_retry'
+            )
+        return receipt
+    write_json(path, receipt)
+    return receipt
+
+
+def validate_evo_pre_release_data_receipt(
+    *,
+    report_id: str,
+    dpm: dict[str, Any],
+    handoff: dict[str, Any],
+    run_dir: Path,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    path = _evo_prefetch_receipt_path(run_dir, report_id)
+    if not path.is_file() or path.is_symlink():
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: missing'
+        )
+    receipt = load_json(path)
+    unsigned = dict(receipt)
+    digest = unsigned.pop('content_sha256', None)
+    contract = _step4_data_contract(dpm, handoff)
+    if (
+        receipt.get('contract_version')
+        != 'factorforge_evo_pre_release_data_receipt_v1'
+        or receipt.get('report_id') != report_id
+        or receipt.get('authority')
+        != 'ULTIMATE_HOST_TRUSTED_FETCH_ONLY_NO_FACTOR_EXECUTION'
+        or receipt.get('research_windows') != dpm.get('research_windows')
+        or receipt.get('step4_data_contract_sha256') != _stable_json_hash(contract)
+        or receipt.get('full_contract_input') is not True
+        or digest != _stable_json_hash(unsigned)
+    ):
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: binding'
+        )
+    local_inputs = receipt.get('local_inputs')
+    if not isinstance(local_inputs, dict):
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: local_inputs'
+        )
+    if isinstance(local_inputs.get('minute_streaming_query'), dict):
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+            'deferred_data_api_query_forbidden_in_agent_stage'
+        )
+    expected_artifacts = _evo_prefetch_artifact_projection(
+        run_dir=run_dir,
+        local_inputs=local_inputs,
+        research_windows=dpm['research_windows'],
+        contract=contract,
+    )
+    if receipt.get('artifacts') != expected_artifacts:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: artifact_replay'
+        )
+    profile = dict(receipt.get('data_api_profile') or {})
+    profile['_evo_receipt_artifacts'] = json.loads(
+        json.dumps(receipt.get('artifacts') or [])
+    )
+    return dict(local_inputs), profile
+
+
+def validate_evo_pre_release_artifacts_after_read(
+    *,
+    run_dir: Path,
+    local_inputs: dict[str, Any],
+    research_windows: dict[str, Any],
+    contract: dict[str, Any],
+    expected_artifacts: list[dict[str, Any]],
+) -> None:
+    """Close the receipt-validation/read TOCTOU window before Agent import."""
+
+    replayed = _evo_prefetch_artifact_projection(
+        run_dir=run_dir,
+        local_inputs=local_inputs,
+        research_windows=research_windows,
+        contract=contract,
+    )
+    if replayed != expected_artifacts:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: '
+            'artifact_use_replay'
+        )
 
 
 def build_failure_outputs(report_id: str, factor_id: str | None, implementation_path: str | None, sample_window: dict[str, Any], run_dir: Path, input_paths: dict[str, Path], issues: list[dict[str, Any]], warnings: list[str], failure_reason: str, failed_stage: str, start_utc: str, revision_of: str | None = None) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
@@ -3139,6 +3887,19 @@ def main() -> None:
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
     ap.add_argument('--enable-shared-evaluation-context', action='store_true')
+    ap.add_argument(
+        '--trusted-data-prefetch-only',
+        action='store_true',
+        help='Host-only EVO IS fetch/materialization; never imports factor code.',
+    )
+    ap.add_argument(
+        '--expected-host-trust-manifest-sha256',
+        default=None,
+        help=(
+            'Externally pinned Host public trust-manifest digest required for '
+            'formal EVO child diagnostic execution.'
+        ),
+    )
     args = ap.parse_args()
     enforce_direct_step_policy(args.manifest)
     manifest: dict[str, Any] | None = load_runtime_manifest(args.manifest) if args.manifest else None
@@ -3162,17 +3923,6 @@ def main() -> None:
     state_resolution_path = Path(state_resolution_raw).expanduser() if state_resolution_raw else None
     state_reuse_required = os.getenv('FACTORFORGE_REQUIRE_STATE_REUSE_CONTRACT') == '1'
     state_datamart_reuse: dict[str, Any] | None = None
-    if state_resolution_path and state_resolution_path.exists():
-        try:
-            state_datamart_reuse = build_step4_state_reuse_provenance(
-                state_resolution_path=state_resolution_path,
-                bounded_smoke=False,
-                raw_minute_full_window_scan=False,
-            )
-        except StateReuseBlock as exc:
-            raise SystemExit(str(exc)) from exc
-    elif state_reuse_required:
-        raise SystemExit(f'{BLOCK_STATE_RESOLUTION_MISSING}: {state_resolution_path}')
 
     issues: list[dict[str, Any]] = []
     warnings: list[str] = []
@@ -3197,6 +3947,61 @@ def main() -> None:
         validate_web_evaluation_contract(fsm)
         dpm = load_json(input_paths['data_prep_master'])
         handoff = load_json(input_paths['handoff_to_step4'])
+        apply_evo_pre_release_data_boundary(
+            report_id,
+            dpm,
+            handoff,
+            expected_host_trust_manifest_sha256=(
+                args.expected_host_trust_manifest_sha256
+            ),
+        )
+        if args.trusted_data_prefetch_only:
+            if not isinstance(dpm.get('research_windows'), dict):
+                raise SystemExit(
+                    'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_RECEIPT_INVALID: not_evo'
+                )
+            receipt = materialize_evo_pre_release_data_receipt(
+                report_id=report_id,
+                dpm=dpm,
+                handoff=handoff,
+                run_dir=run_dir,
+            )
+            print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
+            return
+        if state_resolution_path and state_resolution_path.exists():
+            try:
+                state_datamart_reuse = build_step4_state_reuse_provenance(
+                    state_resolution_path=state_resolution_path,
+                    bounded_smoke=False,
+                    raw_minute_full_window_scan=False,
+                )
+            except StateReuseBlock as exc:
+                raise SystemExit(str(exc)) from exc
+        elif state_reuse_required:
+            raise SystemExit(
+                f'{BLOCK_STATE_RESOLUTION_MISSING}: {state_resolution_path}'
+            )
+        evo_diagnostic_contract = fsm.get('evo_transfer_diagnostic_contract')
+        handoff_evo_contract = handoff.get('evo_transfer_diagnostic_contract')
+        if evo_diagnostic_contract is not None or handoff_evo_contract is not None:
+            if not isinstance(evo_diagnostic_contract, dict) or handoff_evo_contract != evo_diagnostic_contract:
+                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_DIAGNOSTIC_CONTRACT_PROJECTION')
+            parent_report_id = str(evo_diagnostic_contract.get('parent_report_id') or '')
+            if not args.expected_host_trust_manifest_sha256:
+                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_EXTERNAL_HOST_TRUST_PIN_REQUIRED')
+            diagnostic_reasons = validate_evo_transfer_diagnostic_contract(
+                evo_diagnostic_contract,
+                workspace_root=FACTORFORGE,
+                parent_report_id=parent_report_id,
+                child_report_id=report_id,
+                expected_host_trust_manifest_sha256=(
+                    args.expected_host_trust_manifest_sha256
+                ),
+            )
+            if diagnostic_reasons:
+                raise ValueError(';'.join(diagnostic_reasons))
+        else:
+            evo_diagnostic_contract = None
         base_identity = handoff.get('artifact_identity') or fsm.get('artifact_identity') or {}
         implementation_mode_decision = (
             handoff.get('implementation_mode_decision')
@@ -3243,7 +4048,59 @@ def main() -> None:
         # build clean layers itself.
         local_inputs = handoff.get('local_input_paths') or dpm.get('local_input_paths') or {}
         step4_contract = _step4_data_contract(dpm, handoff)
-        force_contract_inputs = bool((step4_contract.get('full_queries') or {}) if isinstance(step4_contract, dict) else False)
+        validate_pre_release_step4_data_access(dpm, handoff)
+        evo_pre_release = isinstance(dpm.get('research_windows'), dict)
+        if evo_pre_release:
+            local_inputs, data_api_profile = validate_evo_pre_release_data_receipt(
+                report_id=report_id,
+                dpm=dpm,
+                handoff=handoff,
+                run_dir=run_dir,
+            )
+        else:
+            data_api_profile = None
+        force_contract_inputs = (
+            False
+            if evo_pre_release
+            else bool(
+                (step4_contract.get('full_queries') or {})
+                if isinstance(step4_contract, dict)
+                else False
+            )
+        )
+        legacy_daily_fallback = str(
+            manifest_path(manifest, 'runs', 'step3a_daily_input_csv') or ''
+        )
+        try:
+            local_inputs, data_api_profile = (
+                materialize_step4_contract_inputs_if_required(
+                    report_id=report_id,
+                    contract=step4_contract,
+                    run_dir=run_dir,
+                    local_inputs=local_inputs,
+                    force_contract_inputs=force_contract_inputs,
+                    evo_pre_release=evo_pre_release,
+                    existing_profile=data_api_profile,
+                    fallback_daily_path=legacy_daily_fallback,
+                )
+            )
+        except SystemExit as exc:
+            if evo_pre_release:
+                raise
+            issues.append({
+                'severity': 'error',
+                'code': 'STEP4_DATA_INPUTS_MISSING',
+                'message': str(exc),
+                'evidence': {
+                    'local_input_paths': local_inputs,
+                    'step4_data_contract': _step4_data_contract(dpm, handoff),
+                },
+            })
+            run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'STEP4_DATA_INPUTS_MISSING', 'execution_precheck', start_utc)
+            write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
+            write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
+            write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
+            return
         minute_path = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
         minute_streaming_query = (
             local_inputs.get('minute_streaming_query')
@@ -3253,44 +4110,14 @@ def main() -> None:
         daily_path = (
             local_inputs.get('daily_df_parquet')
             or local_inputs.get('daily_df_csv')
-            or str(manifest_path(manifest, 'runs', 'step3a_daily_input_csv') or '')
+            or legacy_daily_fallback
         )
         input_mode = str(local_inputs.get('input_mode') or '')
-        minute_required = input_mode != 'daily_only'
-        if force_contract_inputs or (minute_required and (not minute_path or not daily_path)) or ((not minute_required) and not daily_path):
-            try:
-                contract_inputs, data_api_profile = materialize_step4_data_inputs_from_contract(
-                    report_id,
-                    step4_contract,
-                    run_dir,
-                )
-            except SystemExit as exc:
-                issues.append({
-                    'severity': 'error',
-                    'code': 'STEP4_DATA_INPUTS_MISSING',
-                    'message': str(exc),
-                    'evidence': {
-                        'local_input_paths': local_inputs,
-                        'step4_data_contract': _step4_data_contract(dpm, handoff),
-                    },
-                })
-                run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'STEP4_DATA_INPUTS_MISSING', 'execution_precheck', start_utc)
-                write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
-                write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
-                write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
-                return
-            local_inputs = {**local_inputs, **contract_inputs}
-            minute_path = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
-            minute_streaming_query = (
-                local_inputs.get('minute_streaming_query')
-                if isinstance(local_inputs.get('minute_streaming_query'), dict)
-                else None
-            )
-            daily_path = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
-            input_mode = str(local_inputs.get('input_mode') or '')
-            minute_required = input_mode != 'daily_only'
-        else:
-            data_api_profile = None
+        minute_required = bool(
+            minute_path
+            or minute_streaming_query
+            or input_mode in {'price_volume_minute', 'minute_and_daily'}
+        )
         if state_reuse_required:
             try:
                 assert_no_raw_minute_full_window_scan(
@@ -3345,6 +4172,17 @@ def main() -> None:
             signal_daily_file = WORKSPACE / signal_daily_file
         daily_df = read_df(evaluation_daily_file)
         signal_daily_df = read_df(signal_daily_file)
+        if evo_pre_release:
+            expected_receipt_artifacts = data_api_profile.pop(
+                '_evo_receipt_artifacts', []
+            )
+            validate_evo_pre_release_artifacts_after_read(
+                run_dir=run_dir,
+                local_inputs=local_inputs,
+                research_windows=dpm['research_windows'],
+                contract=step4_contract,
+                expected_artifacts=expected_receipt_artifacts,
+            )
         expected_reuse_identity = build_step4_reuse_identity(
             report_id=report_id,
             factor_id=factor_id,
@@ -3441,6 +4279,8 @@ def main() -> None:
                 'reuse_gate': step3b_cache_source.get('reuse_gate'),
             }
         else:
+            if evo_pre_release:
+                install_agent_execution_isolation()
             module = import_module_from_path(impl_path)
             if not hasattr(module, 'compute_factor'):
                 issues.append({'severity': 'error', 'code': 'COMPUTE_FACTOR_MISSING', 'message': 'implementation module missing compute_factor', 'evidence': {'path': str(impl_path)}})
@@ -3535,6 +4375,8 @@ def main() -> None:
                     return
             else:
                 result_df = compute_factor_with_contract(module, signal_daily_df, minute_df)
+            if evo_pre_release:
+                end_agent_execution_isolation()
             step4_factor_io_profile = {
                 'version': 'factorforge_step4_factor_io_profile_v1',
                 'source': (
@@ -3669,6 +4511,39 @@ def main() -> None:
             == WEB_EVALUATION_CONTRACT_VERSION
             else None
         )
+        if evo_diagnostic_contract is not None:
+            if web_evaluation_contract is None:
+                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_WEB_EVALUATION_CONTRACT_REQUIRED')
+            web_evaluation_contract = json.loads(json.dumps(web_evaluation_contract))
+            addendum_ref = evo_diagnostic_contract.get('execution_addendum_ref')
+            diagnostic_trials: list[dict[str, Any]] = []
+            if isinstance(addendum_ref, dict):
+                addendum_path = Path(str(addendum_ref.get('path') or '')).expanduser()
+                if not addendum_path.is_absolute():
+                    addendum_path = FACTORFORGE / addendum_path
+                addendum = load_json(addendum_path)
+                diagnostic_trials = [
+                    {
+                        'trial_id': test['test_id'],
+                        'formula_or_law': test['formula_or_law'],
+                        'signal_column': test['signal_column'],
+                    }
+                    for test in (addendum.get('execution_tests') or [])
+                    if isinstance(test, dict)
+                    and test.get('implementation_mode') == 'FORMULA_DIAGNOSTIC'
+                ]
+            existing_diagnostics = list(web_evaluation_contract.get('diagnostic_trials') or [])
+            existing_ids = {
+                str(item.get('trial_id') or '')
+                for item in existing_diagnostics
+                if isinstance(item, dict)
+            }
+            if any(item['trial_id'] in existing_ids for item in diagnostic_trials):
+                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_DIAGNOSTIC_TRIAL_COLLISION')
+            web_evaluation_contract['diagnostic_trials'] = [
+                *existing_diagnostics,
+                *diagnostic_trials,
+            ]
         shared_context_version = (
             'factorforge_shared_evaluation_context_v2'
             if web_evaluation_contract is not None
@@ -3687,6 +4562,7 @@ def main() -> None:
         force_shared_context = (
             data_api_profile is not None
             or str(local_inputs.get('formula_input_dataset') or 'clean_daily_bar') != 'clean_daily_bar'
+            or evo_diagnostic_contract is not None
         )
         if shared_evaluation_context_enabled(args.enable_shared_evaluation_context) or force_shared_context:
             shared_context = build_shared_evaluation_context(
@@ -3703,6 +4579,13 @@ def main() -> None:
                 target_window=target_window,
                 effective_target_window={'start': effective_target_start, 'end': effective_target_end},
                 evaluation_contract=web_evaluation_contract,
+                signal_daily_df=signal_daily_df,
+                signal_daily_input_path=signal_daily_file,
+                pre_release_research_windows=(
+                    dpm.get('research_windows')
+                    if isinstance(dpm.get('research_windows'), dict)
+                    else None
+                ),
             )
             shared_context_profile = {
                 'version': shared_context_version,
@@ -3714,6 +4597,22 @@ def main() -> None:
                 'invalidated_reason': None,
                 'row_counts': shared_context.get('row_counts'),
             }
+        evo_child_execution: dict[str, Any] | None = None
+        if evo_diagnostic_contract is not None:
+            if shared_context is None:
+                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_SHARED_CONTEXT_REQUIRED')
+            try:
+                evo_child_execution = materialize_evo_child_execution_result(
+                    workspace_root=FACTORFORGE,
+                    parent_report_id=str(evo_diagnostic_contract['parent_report_id']),
+                    child_report_id=report_id,
+                    diagnostic_contract=evo_diagnostic_contract,
+                    expected_host_trust_manifest_sha256=(
+                        args.expected_host_trust_manifest_sha256
+                    ),
+                )
+            except EvoChildExecutionError as exc:
+                raise ValueError(';'.join(exc.reasons)) from exc
         evaluation_plan = build_evaluation_plan(handoff)
         backend_runs = build_backend_runs_stub(report_id, evaluation_plan, run_status)
         backend_runs, backend_timing_profile = write_backend_payloads(
@@ -3751,6 +4650,8 @@ def main() -> None:
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
             'state_datamart_reuse': state_datamart_reuse,
             'shared_evaluation_context': shared_context_profile,
+            'evo_transfer_diagnostic_contract': evo_diagnostic_contract,
+            'evo_child_execution': evo_child_execution,
             'backend_timing_profile': backend_timing_profile,
             'research_window_contract': research_window,
         }
@@ -3777,6 +4678,8 @@ def main() -> None:
             'evaluation_results': {'backend_runs': backend_runs},
             'backend_timing_profile': backend_timing_profile,
             'shared_evaluation_context': shared_context_profile,
+            'evo_transfer_diagnostic_contract': evo_diagnostic_contract,
+            'evo_child_execution': evo_child_execution,
             'implementation_mode_decision': implementation_mode_decision,
             'failure_reason': failure_reason,
             'started_at_utc': start_utc,
@@ -3901,6 +4804,8 @@ def main() -> None:
             'evaluation_results': {'backend_runs': backend_runs},
             'backend_timing_profile': backend_timing_profile,
             'shared_evaluation_context': shared_context_profile,
+            'evo_transfer_diagnostic_contract': evo_diagnostic_contract,
+            'evo_child_execution': evo_child_execution,
             'implementation_mode_decision': implementation_mode_decision,
             'key_warnings': warnings,
             'failure_reason': failure_reason,

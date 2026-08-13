@@ -1420,8 +1420,39 @@ def _economic_text(spec_like: dict[str, Any], mechanism_analysis: dict[str, Any]
 
 def _select_baseline_model(economic_text: str, features: dict[str, Any]) -> str:
     text = economic_text.lower()
-    if any(token in text for token in ["earnings", "growth", "cash flow", "fcf", "dcf", "peg", "valuation", "profit", "book"]):
+    if any(
+        token in text
+        for token in [
+            "dcf",
+            "discounted cash flow",
+            "intrinsic value",
+            "present value",
+            "residual-income valuation",
+            "residual income valuation",
+            "valuation gap",
+            "valuation identity",
+        ]
+    ):
         return "valuation_identity"
+    if any(
+        token in text
+        for token in [
+            "earnings",
+            "growth",
+            "cash flow",
+            "fcf",
+            "profit",
+            "book",
+            "accrual",
+            "capital allocation",
+            "financing constraint",
+            "unit economics",
+        ]
+    ):
+        # Fundamental evidence selects the domain, not a universal valuation
+        # model. The research hypothesis or measurement program must opt into
+        # DCF/residual-income valuation explicitly.
+        return "other"
     if any(token in text for token in ["information", "underreaction", "delayed", "diffusion", "attention", "signal extraction"]):
         return "state_space"
     if any(token in text for token in ["liquidity", "impact", "order imbalance", "rebalance", "inventory", "constraint", "market-structure", "market structure"]):
@@ -1443,7 +1474,9 @@ def _normalize_baseline_model_family(value: Any) -> str | None:
         "dcf": "valuation_identity",
         "residual-income valuation": "valuation_identity",
         "residual_income": "valuation_identity",
-        "accounting identity": "valuation_identity",
+        "accounting identity": "other",
+        "accounting quality": "other",
+        "unit economics": "other",
         "structural causal model": "other",
         "linear factor projection": "projection_residualization",
         "price_volume_microstructure": "transient_impact",

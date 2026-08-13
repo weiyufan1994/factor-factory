@@ -51,7 +51,11 @@ from factor_factory.console.web_research_plan import (
 )
 from factor_factory.formula.source_dialects import resolve_source_formula
 from factor_factory.knowledge_reference import stable_hash, tokens
+from factor_factory.oos_exposure_incident import (
+    ensure_empty_oos_exposure_private_registry,
+)
 from factor_factory.research_workspace import build_workspace_manifest, write_workspace_manifest
+from scripts import run_factorforge_ultimate as ultimate_wrapper
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -355,6 +359,11 @@ def _write_catalog(tmp_path: Path) -> Path:
                             "open",
                             "pre_close",
                             "close",
+                            "pct_chg",
+                            "turnover_rate",
+                            "ln_mcap_free",
+                            "volume_ratio",
+                            "total_mv",
                             "forecast_fcf",
                             "wacc",
                             "terminal_growth",
@@ -380,6 +389,27 @@ def _write_catalog(tmp_path: Path) -> Path:
         encoding="utf-8",
     )
     return path
+
+
+def _formal_materializer_env(
+    tmp_path: Path,
+    *,
+    catalog: Path,
+) -> dict[str, str]:
+    """Provide an explicit signed-empty incident registry to CLI fixtures."""
+
+    trust_root = tmp_path / "host-private-incident-trust"
+    installation_id = "web-plan-test-host"
+    ensure_empty_oos_exposure_private_registry(
+        trust_root,
+        installation_id=installation_id,
+    )
+    return {
+        **os.environ,
+        "FACTORFORGE_STATE_CATALOG": str(catalog),
+        "FACTORFORGE_OOS_HOST_TRUST_ROOT": str(trust_root),
+        "FACTORFORGE_OOS_HOST_INSTALLATION_ID": installation_id,
+    }
 
 
 def test_catalog_summary_separates_design_admission_from_formal_dataset_qa(tmp_path):
@@ -690,6 +720,7 @@ def _fill_plan(workspace: Path) -> dict:
         {
             "estimand": PILOT_MECHANISM_TARGET_SYMBOL,
             "observation_map": "gap_i,t = permanent_news_i,t + temporary_pressure_i,t + epsilon_i,t",
+            "executable_formula_projection": plan["research_object"]["formula_or_law"],
             "estimator": "negative opening gap computed from t open and t-1 close",
             "identification_assumptions": [
                 "price fields share an adjustment basis and legal timestamp",
@@ -779,6 +810,35 @@ def _fill_plan(workspace: Path) -> dict:
             ],
         }
     )
+    plan["measurement_program"]["evaluation_design"] = {
+        "primary_metrics": [
+            {
+                "metric": "after_cost_long_side_sharpe",
+                "direction": "greater_than_or_equal",
+                "candidate_threshold": ">= 0.50",
+                "official_threshold": ">= 0.80",
+                "evidence_role": "promotion_gate_evidence",
+            }
+        ],
+        "portfolio_contract": {
+            "long_side_definition": "equal-weight top-decile submitted-score names without sign flipping",
+            "weighting": "equal weight",
+            "rebalance": "daily",
+            "return_path": "close t+1 to close t+2",
+            "nav_construction": "compound one plus daily net long return",
+            "turnover_definition": "one-way half absolute target-weight change",
+            "cost_model": "30 bps times one-way turnover",
+            "capacity_model": "ten percent ADV participation stress",
+            "minimum_eligible_names": 20,
+            "maximum_excluded_fraction": 0.20,
+        },
+        "proof_plan": {
+            "raw_evidence_artifacts": ["scores labels holdings returns metrics"],
+            "hash_policy": "SHA-256 bind every evidence artifact",
+            "replay_obligations": ["recompute from frozen Formula IR and timing contract"],
+            "authority_boundary": "only post-execution Step6 may issue the empirical verdict",
+        },
+    }
     hypotheses = {item["kind"]: item for item in plan["hypotheses"]}
     hypotheses["preferred"].update(
         {
@@ -849,6 +909,206 @@ def _fill_plan(workspace: Path) -> dict:
     assert PLACEHOLDER not in json.dumps(plan)
     plan_path.write_text(json.dumps(plan, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return plan
+
+
+def test_web_packet_rejects_invalid_job_identity_before_writing(tmp_path):
+    workspace = _workspace(tmp_path)
+    request = _request()
+    request["job_id"] = "job_descriptive_name"
+
+    with pytest.raises(WebResearchPlanError) as exc_info:
+        write_web_research_packet(
+            workspace=workspace,
+            worktree=PROJECT_ROOT,
+            request=request,
+            catalogs=[_write_catalog(tmp_path)],
+        )
+
+    assert exc_info.value.token == "BLOCK_FACTORFORGE_WEB_RESEARCH_PLAN_IDENTITY_INVALID"
+    assert exc_info.value.reasons == ("request.job_id",)
+    assert not any(
+        (workspace / "identity" / name).exists()
+        for name in (
+            "web_research_request.json",
+            "web_research_plan.json",
+            "web_research_runtime.md",
+            "data_catalog_summary.json",
+            "factor_knowledge_summary.json",
+        )
+    )
+
+
+def test_materializer_blocks_organization_workspace_without_formal_runtime(tmp_path):
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[catalog],
+    )
+    _fill_plan(workspace)
+    (workspace / "identity" / "research_organization_plan.json").write_text(
+        "{}\n",
+        encoding="utf-8",
+    )
+    env = _formal_materializer_env(tmp_path, catalog=catalog)
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "scripts/materialize_factorforge_web_research.py",
+            "--workspace-root",
+            str(workspace),
+            "--plan",
+            str(workspace / "identity" / "web_research_plan.json"),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+
+    assert proc.returncode == 1
+    assert (
+        "BLOCK_FACTORFORGE_WEB_RESEARCH_ORG_RUNTIME_NOT_FORMAL_COMPLETE"
+        in proc.stderr
+    )
+    assert not (
+        workspace
+        / "objects"
+        / "alpha_idea_master"
+        / "alpha_idea_master__WEB_REPORT.json"
+    ).exists()
+
+
+def test_observation_formula_projection_must_match_formula_ast(tmp_path):
+    workspace = _workspace(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[_write_catalog(tmp_path)],
+    )
+    plan = _fill_plan(workspace)
+    plan["measurement_program"]["observation_and_estimation"][
+        "executable_formula_projection"
+    ] = "abs(open / pre_close - 1.0)"
+
+    with pytest.raises(WebResearchPlanError) as exc_info:
+        validate_plan(plan, workspace=workspace)
+
+    assert (
+        "measurement_program.observation_and_estimation."
+        "executable_formula_projection_mismatch"
+        in exc_info.value.reasons
+    )
+
+
+def test_multiterm_formula_requires_executable_primitive_component_coverage(tmp_path):
+    workspace = _workspace(tmp_path)
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=_request(),
+        catalogs=[_write_catalog(tmp_path)],
+    )
+    plan = _fill_plan(workspace)
+    formula = "-(open / pre_close - 1.0) + abs(close - open) + sign(close - open)"
+    plan["research_object"]["formula_or_law"] = formula
+    plan["data_plan"]["daily_fields"] = ["open", "pre_close", "close"]
+    plan["implementation"]["operators"] = [
+        "abs",
+        "divide",
+        "minus",
+        "negate",
+        "plus",
+        "sign",
+    ]
+    implementation = plan["measurement_program"]["implementation"]
+    base = dict(implementation["components"][0])
+    base.update(
+        {
+            "component_id": "full",
+            "binding_role": "full_formula",
+            "implementation_binding": formula,
+            "input_fields": ["open", "pre_close", "close"],
+        }
+    )
+    primitives = []
+    for component_id, binding, fields in (
+        ("gap", "-(open / pre_close - 1.0)", ["open", "pre_close"]),
+        ("range", "abs(close - open)", ["close", "open"]),
+        ("direction", "sign(close - open)", ["close", "open"]),
+    ):
+        component = dict(base)
+        component.update(
+            {
+                "component_id": component_id,
+                "binding_role": "formula_component",
+                "implementation_binding": binding,
+                "input_fields": fields,
+            }
+        )
+        primitives.append(component)
+    implementation["components"] = [base, *primitives]
+    plan["measurement_program"]["observation_and_estimation"][
+        "executable_formula_projection"
+    ] = formula
+    diagnostics = []
+    leave_one_out = {
+        "gap": "abs(close - open) + sign(close - open)",
+        "range": "-(open / pre_close - 1.0) + sign(close - open)",
+        "direction": "-(open / pre_close - 1.0) + abs(close - open)",
+    }
+    for component in primitives:
+        component_id = component["component_id"]
+        for role, binding in (
+            ("standalone_component", component["implementation_binding"]),
+            ("leave_one_out", leave_one_out[component_id]),
+        ):
+            diagnostics.append(
+                {
+                    "trial_id": f"diag_{role}_{component_id}",
+                    "role": role,
+                    "component_id": component_id,
+                    "formula_or_law": binding,
+                    "affects_acceptance": False,
+                    "multiple_testing_family": "component_diagnostics",
+                }
+            )
+    diagnostics.append(
+        {
+            "trial_id": "diag_sign_oracle",
+            "role": "sign_oracle",
+            "component_id": "full_formula",
+            "formula_or_law": "-1 * (" + formula + ")",
+            "affects_acceptance": False,
+            "multiple_testing_family": "component_diagnostics",
+        }
+    )
+    plan["measurement_program"]["search_policy"][
+        "registered_diagnostic_trials"
+    ] = diagnostics
+    plan["mathematical_mechanism"]["component_map"] = [
+        {
+            "implementation_component_id": item["component_id"],
+            "formula_component": item["implementation_binding"],
+            "model_term": item["math_term_or_functional"],
+            "preserved_information": item["preserved_information"],
+            "deleted_or_aliased_information": item["discarded_information"],
+            "ablation_test": item["ablation_test"],
+        }
+        for item in implementation["components"]
+    ]
+    validate_plan(plan, workspace=workspace)
+
+    implementation["components"].pop()
+    plan["mathematical_mechanism"]["component_map"].pop()
+    with pytest.raises(WebResearchPlanError) as exc_info:
+        validate_plan(plan, workspace=workspace)
+    assert "measurement_program.implementation.additive_component_coverage" in exc_info.value.reasons
 
 
 def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
@@ -1193,6 +1453,7 @@ def test_full_web_plan_accepts_dcf_without_stochastic_or_dimensional_audits(
         {
             "estimand": PILOT_MECHANISM_TARGET_SYMBOL,
             "observation_map": "published forecast_fcf, wacc, terminal_growth and close map to the legal-time perpetuity approximation",
+            "executable_formula_projection": plan["research_object"]["formula_or_law"],
             "estimator": "forecast_fcf/(wacc-terminal_growth)/close-1",
             "identification_assumptions": [
                 "all fundamental inputs use legal publication timestamps and a consistent accounting basis",
@@ -1566,7 +1827,7 @@ def test_constraint_driven_return_source_materializes_and_passes_step1(tmp_path)
         json.dumps(plan, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
-    env = {**os.environ, "FACTORFORGE_STATE_CATALOG": str(catalog)}
+    env = _formal_materializer_env(tmp_path, catalog=catalog)
 
     proc = subprocess.run(
         [
@@ -1613,8 +1874,7 @@ def test_agent_authored_plan_materializes_formal_step1_step2_and_protocol(tmp_pa
     )
     plan = _fill_plan(workspace)
 
-    env = os.environ.copy()
-    env["FACTORFORGE_STATE_CATALOG"] = str(catalog)
+    env = _formal_materializer_env(tmp_path, catalog=catalog)
     proc = subprocess.run(
         [
             sys.executable,
@@ -1691,8 +1951,14 @@ def test_agent_authored_plan_materializes_formal_step1_step2_and_protocol(tmp_pa
         "transaction_cost_bps": 30.0,
         "cost_model_id": "factorforge_step4_turnover_30bps_v1",
         "cost_formula": "one_way_turnover * 0.003",
-        "proof_control_columns": [],
-    }
+            "proof_control_columns": [
+                "pct_chg",
+                "turnover_rate",
+                "ln_mcap_free",
+                "volume_ratio",
+            ],
+            "diagnostic_trials": [],
+        }
     conjecture = json.loads(
         (workspace / "objects" / "research_protocol" / "research_conjecture__WEB_REPORT.json").read_text(
             encoding="utf-8"
@@ -2059,8 +2325,7 @@ def test_configured_catalog_hash_mismatch_blocks_before_step1_write(tmp_path):
     _fill_plan(workspace)
     other_catalog = tmp_path / "other_catalog.json"
     other_catalog.write_text('{"datasets": {}}\n', encoding="utf-8")
-    env = os.environ.copy()
-    env["FACTORFORGE_STATE_CATALOG"] = str(other_catalog)
+    env = _formal_materializer_env(tmp_path, catalog=other_catalog)
 
     proc = subprocess.run(
         [
@@ -2159,8 +2424,7 @@ def test_host_materialization_check_rejects_custom_agent_python(tmp_path):
         catalogs=[catalog],
     )
     _fill_plan(workspace)
-    env = os.environ.copy()
-    env["FACTORFORGE_STATE_CATALOG"] = str(catalog)
+    env = _formal_materializer_env(tmp_path, catalog=catalog)
     subprocess.run(
         [
             sys.executable,
@@ -2290,7 +2554,7 @@ def test_passed_materialization_is_idempotent_and_preregistration_is_immutable(t
         "--plan",
         str(workspace / "identity" / "web_research_plan.json"),
     ]
-    env = {**os.environ, "FACTORFORGE_STATE_CATALOG": str(catalog)}
+    env = _formal_materializer_env(tmp_path, catalog=catalog)
     first = subprocess.run(
         command,
         cwd=PROJECT_ROOT,
@@ -2352,7 +2616,7 @@ def test_legacy_v1_resume_accepts_only_append_only_conversation_context(tmp_path
         catalogs=[catalog],
     )
     _fill_plan(workspace)
-    env = {**os.environ, "FACTORFORGE_STATE_CATALOG": str(catalog)}
+    env = _formal_materializer_env(tmp_path, catalog=catalog)
     materialized = subprocess.run(
         [
             sys.executable,
@@ -2649,7 +2913,7 @@ def test_resume_packet_and_ultimate_enforce_exact_formal_pause(tmp_path):
         catalogs=[catalog],
     )
     _fill_plan(workspace)
-    env = {**os.environ, "FACTORFORGE_STATE_CATALOG": str(catalog)}
+    env = _formal_materializer_env(tmp_path, catalog=catalog)
     materialized = subprocess.run(
         [
             sys.executable,
@@ -2892,3 +3156,186 @@ def test_resume_mapping_preserves_actual_failed_stage(
     )
 
     assert required_web_resume_start_step(workspace, "WEB_REPORT") == expected_step
+
+
+def test_partial_oos_crash_resume_is_host_finalizer_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace = _workspace(tmp_path)
+    catalog = _write_catalog(tmp_path)
+    request = _request_with_messages(["Frozen hypothesis before OOS."])
+    write_web_research_packet(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        request=request,
+        catalogs=[catalog],
+    )
+    _fill_plan(workspace)
+    env = _formal_materializer_env(tmp_path, catalog=catalog)
+    materialized = subprocess.run(
+        [
+            sys.executable,
+            "scripts/materialize_factorforge_web_research.py",
+            "--workspace-root",
+            str(workspace),
+            "--plan",
+            str(workspace / "identity/web_research_plan.json"),
+        ],
+        cwd=PROJECT_ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert materialized.returncode == 0, materialized.stderr
+
+    proof_path = (
+        workspace
+        / "objects/runtime_context"
+        / "ultimate_run_report__WEB_REPORT.json"
+    )
+    proof_path.parent.mkdir(parents=True, exist_ok=True)
+    proof_path.write_text(
+        json.dumps(
+            {
+                "status": "FAIL",
+                "failure": {
+                    "command": "finalize_web_factor_proof",
+                    "returncode": 1,
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    panel_path = (
+        workspace
+        / "objects/research_protocol"
+        / "factor_proof_panel__WEB_REPORT.parquet"
+    )
+    panel_path.parent.mkdir(parents=True, exist_ok=True)
+    panel_path.write_bytes(b"simulated-partial-oos-publication")
+
+    assert required_web_resume_start_step(workspace, "WEB_REPORT") == "6"
+    carrier = tmp_path / "host-private/sealed-oos.parquet"
+    carrier.parent.mkdir(parents=True)
+    carrier.write_bytes(b"host-only-test-carrier")
+    monkeypatch.setattr(
+        ultimate_wrapper,
+        "resolve_web_evo_execution_gate",
+        lambda **_kwargs: {
+            "enabled": True,
+            "current_state": "NO_QUALIFIED_CONTRADICTION",
+            "action": "RELEASE_ORIGINAL_CANDIDATE_OOS",
+            "oos_release_allowed": True,
+            "step5_step6_allowed": True,
+            "council_allowed": False,
+            "oos_artifacts": [str(panel_path.relative_to(workspace))],
+        },
+    )
+    command = [
+        "run_factorforge_ultimate.py",
+        "--report-id",
+        "WEB_REPORT",
+        "--start-step",
+        "6",
+        "--end-step",
+        "all",
+        "--factorforge-root",
+        str(tmp_path / "runtime"),
+        "--factor-id",
+        "WEB_FACTOR",
+        "--research-id",
+        "web_research",
+        "--factor-workspace",
+        str(workspace),
+        "--sealed-oos-carrier",
+        str(carrier),
+        "--sealed-oos-private-root",
+        str(carrier.parent),
+        "--dry-run",
+    ]
+    forbidden_step4 = list(command)
+    forbidden_step4[forbidden_step4.index("6")] = "4"
+    monkeypatch.setenv("FACTORFORGE_STATE_CATALOG", str(catalog))
+    monkeypatch.setattr(sys, "argv", forbidden_step4)
+    assert ultimate_wrapper.main() == 1
+
+    monkeypatch.setattr(sys, "argv", command)
+    assert ultimate_wrapper.main() == 0
+    retry_proof = json.loads(proof_path.read_text(encoding="utf-8"))
+    assert retry_proof["web_oos_recovery"]["recovery_required"] is True
+    assert retry_proof["web_oos_recovery"]["allowed_execution"] == (
+        "HOST_FINALIZER_OR_TERMINAL_ONLY"
+    )
+    assert [item["name"] for item in retry_proof["commands"]] == [
+        "finalize_web_factor_proof"
+    ]
+    command_text = " ".join(retry_proof["commands"][0]["command"])
+    assert "run_step4.py" not in command_text
+    assert "run_step5.py" not in command_text
+    assert "run_step6.py" not in command_text
+
+
+def test_partial_oos_marker_deletion_cannot_downgrade_to_legacy_step4(
+    tmp_path: Path,
+) -> None:
+    workspace = _workspace(tmp_path)
+    panel_path = (
+        workspace
+        / "objects/research_protocol"
+        / "factor_proof_panel__WEB_REPORT.parquet"
+    )
+    panel_path.parent.mkdir(parents=True, exist_ok=True)
+    panel_path.write_bytes(b"simulated-partial-oos-publication")
+    # Both historical routing markers are absent.  Artifact existence itself
+    # remains an irreversible information-release boundary.
+    assert not (workspace / "identity/data_catalog_summary.json").exists()
+    assert not (
+        workspace
+        / "objects/runtime_context"
+        / "ultimate_run_report__WEB_REPORT.json"
+    ).exists()
+    assert required_web_resume_start_step(workspace, "WEB_REPORT") == "6"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "scripts/run_factorforge_ultimate.py",
+            "--report-id",
+            "WEB_REPORT",
+            "--start-step",
+            "4",
+            "--end-step",
+            "all",
+            "--factorforge-root",
+            str(tmp_path / "runtime"),
+            "--factor-id",
+            "WEB_FACTOR",
+            "--research-id",
+            "web_research",
+            "--factor-workspace",
+            str(workspace),
+            "--dry-run",
+        ],
+        cwd=PROJECT_ROOT,
+        text=True,
+        capture_output=True,
+        timeout=120,
+    )
+    assert result.returncode == 1
+    combined = result.stdout + result.stderr
+    assert "run_step4.py" not in combined
+    proof_path = (
+        workspace
+        / "objects/runtime_context"
+        / "ultimate_run_report__WEB_REPORT.json"
+    )
+    if proof_path.exists():
+        proof = json.loads(proof_path.read_text(encoding="utf-8"))
+        assert not any(
+            item.get("name") == "run_step4"
+            for item in proof.get("commands") or []
+            if isinstance(item, dict)
+        )

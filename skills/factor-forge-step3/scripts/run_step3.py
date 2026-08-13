@@ -71,6 +71,10 @@ from factor_factory.state_reuse import (
     resolve_state_dependencies,
     write_resolution_outputs,
 )
+from factor_factory.evo_data_boundary import (
+    project_pre_release_data_access,
+    resolve_evo_pre_release_research_windows,
+)
 from factor_factory.step3.template_runtime import maybe_reexec_from_template_copy
 
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (_legacy_runtime_root_if_accessible() or REPO_ROOT))
@@ -155,7 +159,6 @@ def select_clean_daily_fields_for_formula(
         if (
             field in derived
             or _adv_window(field) is not None
-            or field in daily_basic
             or field in MONEYFLOW_SIGNAL_FIELDS
             or field in {'ts_code', 'trade_date'}
         ):
@@ -1510,7 +1513,9 @@ def materialize_shared_daily_slice(
     local_dir.mkdir(parents=True, exist_ok=True)
     needs_cross_sectional_sample = requires_cross_sectional_sample(formula_ir)
     step3_sample_universe: str | list[str] = 'a_share_all' if needs_cross_sectional_sample else ['000001.SZ', '000002.SZ']
-    daily_fields = select_clean_daily_fields_for_formula(required_fields, formula_ir)
+    daily_fields = select_clean_daily_fields_for_formula(
+        [*(required_fields or []), *(proof_control_fields or [])], formula_ir
+    )
     daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(
         [*(required_fields or []), *(proof_control_fields or [])]
     )
@@ -1525,6 +1530,16 @@ def materialize_shared_daily_slice(
         fields=daily_fields,
         universe=step3_sample_universe,
     )
+    clean_columns = {
+        str(field)
+        for field in ((daily_resolution.get('schema') or {}).get('columns') or [])
+    }
+    daily_basic_fields = [
+        field
+        for field in daily_basic_fields
+        if field in {'ts_code', 'trade_date'} or field not in clean_columns
+    ]
+    daily_basic_required = len(daily_basic_fields) > 2
     daily_basic_resolution = None
     if daily_basic_required:
         daily_basic_resolution = resolve_data_api_dataset(
@@ -2401,6 +2416,18 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         need_daily_basic = False
 
     sample_window = declared_sample_window(fsm, handoff_to_step3, infer_sample_window(factor_id, required_text))
+    try:
+        evo_research_windows = resolve_evo_pre_release_research_windows(
+            workspace_root=FF,
+            report_id=report_id,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if evo_research_windows is not None:
+        sample_window = {
+            'start': evo_research_windows['is_start'],
+            'end': evo_research_windows['is_end'],
+        }
     data_sources = []
     coverage = []
     proxy_rules = []
@@ -2721,6 +2748,15 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'minute_derived_state_requirements': (local_input_paths.get('step4_data_contract') or {}).get('minute_derived_state_requirements') or [],
         'research_window_contract': (local_input_paths.get('step4_data_contract') or {}).get('research_window_contract') or research_window_contract(sample_window),
     }
+    if evo_research_windows is not None:
+        try:
+            project_pre_release_data_access(
+                data_prep_master, evo_research_windows
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        sample_window = dict(data_prep_master['sample_window'])
+        local_input_paths = data_prep_master['local_input_paths']
 
     qlib_adapter_config = {
         'report_id': report_id,

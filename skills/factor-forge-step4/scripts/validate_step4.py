@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +29,7 @@ QLIB_NATIVE_STATUS_VALUES = {
 }
 
 from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.evo_child_execution import validate_evo_child_execution_gate
 
 
 def utc_now() -> str:
@@ -86,6 +88,20 @@ def validate_acceptance_summary(summary: dict[str, Any] | None, issues: list[dic
     identity_missing = [field for field in ['report_id', 'factor_id', 'run_id', 'artifact_root', 'repo_sha'] if not summary.get(field)]
     if identity_missing:
         issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_RUN_IDENTITY_MISSING', 'message': 'acceptance_summary run identity missing', 'evidence': {'missing': identity_missing}})
+    repo_sha = str(summary.get('repo_sha') or '')
+    admitted_engine_commit = str(
+        os.getenv('FACTORFORGE_ADMITTED_ENGINE_COMMIT') or ''
+    )
+    if re.fullmatch(r'[0-9a-f]{40,64}', repo_sha) is None:
+        issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_REPO_IDENTITY_INVALID', 'message': 'acceptance_summary.repo_sha must be an exact commit'})
+    if (
+        os.getenv('FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY') == 'DENY'
+        and (
+            re.fullmatch(r'[0-9a-f]{40,64}', admitted_engine_commit) is None
+            or repo_sha != admitted_engine_commit
+        )
+    ):
+        issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_REPO_IDENTITY_MISMATCH', 'message': 'Agent-stage repo_sha must equal the Host-admitted engine commit'})
     step4 = summary.get('step4') if isinstance(summary.get('step4'), dict) else {}
     if not step4.get('self_quant_status') or step4.get('qlib_native_status') not in QLIB_NATIVE_STATUS_VALUES:
         issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_BACKEND_SPLIT_MISSING', 'message': 'acceptance_summary must split self_quant_status and qlib_native_status'})
@@ -166,6 +182,7 @@ def validate_qlib_taxonomy(payload: dict[str, Any], *, mandatory: bool, issues: 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
+    ap.add_argument('--expected-host-trust-manifest-sha256', default=None)
     args = ap.parse_args()
     rid = args.report_id
 
@@ -209,6 +226,19 @@ def main() -> None:
         issues.append({'severity': 'error', 'code': 'INVALID_RUN_STATUS', 'message': f'invalid run_status={proposed_status}'})
         proposed_status = 'failed'
     validate_formal_signal_coverage(run_master=run_master, diagnostics=diagnostics, issues=issues)
+    for reason in validate_evo_child_execution_gate(
+        workspace_root=FACTORFORGE,
+        report_id=rid,
+        factor_run_master=run_master,
+        expected_host_trust_manifest_sha256=(
+            args.expected_host_trust_manifest_sha256
+        ),
+    ):
+        issues.append({
+            'severity': 'error',
+            'code': 'BLOCK_FACTORFORGE_EVO_CHILD_EXECUTION_GATE',
+            'message': reason,
+        })
 
     output_paths = [Path(p) for p in run_master.get('output_paths', [])]
     output_exists = [p.exists() for p in output_paths]

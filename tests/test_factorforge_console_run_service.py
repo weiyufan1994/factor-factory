@@ -2722,6 +2722,384 @@ def test_evo_v2_memory_gate_runs_after_materializer_and_before_ultimate(
     assert source.is_dir()
 
 
+class _CountingTerminalRejectAdapter(_TerminalRejectAdapter):
+    def __init__(self):
+        self.calls = 0
+
+    def run(self, job, *, worktree: Path, workspace: Path, resume: bool):
+        self.calls += 1
+        return super().run(
+            job,
+            worktree=worktree,
+            workspace=workspace,
+            resume=resume,
+        )
+
+
+def _install_two_turn_memory_gate(
+    *,
+    monkeypatch,
+    service,
+):
+    import factor_factory.console.run_service as module
+
+    calls = {"pipeline": 0, "memory_round": 0, "ultimate": 0}
+    state_holder = {}
+    monkeypatch.setattr(
+        module,
+        "is_validated_evo_v2_memory_runtime_enabled",
+        lambda **_kwargs: True,
+    )
+
+    def load_state(**_kwargs):
+        state = state_holder["state"]
+        return {
+            "artifact_identity": {
+                key: state[key]
+                for key in ("factor_id", "research_id", "report_id")
+            },
+            "events": [state],
+            "current_state": state,
+        }
+
+    monkeypatch.setattr(module, "load_evo_v2_memory_round_state", load_state)
+
+    def prepare_ready(**_kwargs):
+        calls["memory_round"] += 1
+        return {
+            **state_holder["state"],
+            "stage": "COLD_START_VERIFIED_READY",
+            "formal_execution_allowed": True,
+            "pause": {
+                "required": False,
+                "reason": "",
+                "resume_action": "run Ultimate",
+            },
+        }
+
+    monkeypatch.setattr(module, "prepare_evo_v2_memory_round", prepare_ready)
+
+    def execute(current_job, *, workspace, worktree, resume, **_kwargs):
+        calls["pipeline"] += 1
+        if calls["pipeline"] == 1:
+            event_sha256 = "a" * 64
+            state = {
+                "contract_version": "factorforge_evo_v2_memory_runtime_state_v1",
+                "factor_id": current_job.factor_id,
+                "research_id": current_job.research_id,
+                "report_id": current_job.report_id,
+                "generation": 1,
+                "parent_event_sha256": None,
+                "stage": "AWAITING_TRANSFER_AUTHORING_AND_REVIEW",
+                "formal_execution_allowed": False,
+                "event_sha256": event_sha256,
+                "pause": {
+                    "required": True,
+                    "reason": "independent memory review required",
+                    "resume_action": "admit the reviewed transfer",
+                },
+                "authority_guard": {"results_or_oos_accessed": False},
+            }
+            state_holder["state"] = state
+            runtime_root = (
+                Path(workspace)
+                / "objects"
+                / "evo_v2"
+                / current_job.report_id
+                / "memory_runtime"
+            )
+            _write_json(runtime_root / "memory_runtime_state.json", state)
+            _write_json(
+                runtime_root
+                / "events"
+                / f"event_000001_{event_sha256[:12]}.json",
+                state,
+            )
+            receipt_path = (
+                service.config.state_root
+                / "jobs"
+                / current_job.job_id
+                / "formal-execution"
+                / "receipt_20260814T000000Z_abcdefabcdef.json"
+            )
+            _write_json(
+                receipt_path,
+                {
+                    "version": "factorforge_console_host_formal_execution_v2",
+                    "job_id": current_job.job_id,
+                    "factor_id": current_job.factor_id,
+                    "research_id": current_job.research_id,
+                    "report_id": current_job.report_id,
+                    "base_commit": current_job.base_commit,
+                    "resume": False,
+                    "commands": [
+                        {"name": "materialize_web_research", "returncode": 0}
+                    ],
+                },
+            )
+            receipt_path.chmod(0o600)
+            receipt = {
+                "receipt_id": receipt_path.relative_to(
+                    service.config.state_root
+                ).as_posix(),
+                "receipt_sha256": _file_sha256(receipt_path),
+                "ultimate_argv_sha256": "",
+                "ultimate_returncode": None,
+            }
+            raise module.EvoV2MemoryGatePause(state, receipt)
+
+        assert resume is False
+        ready = module.prepare_evo_v2_memory_round(
+            workspace=Path(workspace),
+            worktree=Path(worktree),
+            state_root=service.config.state_root,
+            installation_id=service.config.installation_id,
+            runner=service.agent_adapter,
+        )
+        assert ready["formal_execution_allowed"] is True
+        calls["ultimate"] += 1
+        return {
+            "receipt_id": (
+                f"jobs/{current_job.job_id}/formal-execution/"
+                "receipt_resume_20260814T000100Z.json"
+            ),
+            "receipt_sha256": "b" * 64,
+            "ultimate_argv_sha256": "c" * 64,
+            "ultimate_returncode": 0,
+        }
+
+    monkeypatch.setattr(service, "_execute_host_formal_pipeline", execute)
+    return calls, state_holder
+
+
+def test_evo_v2_memory_pause_resume_carries_attestation_through_both_validations(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _CountingTerminalRejectAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    calls, _state_holder = _install_two_turn_memory_gate(
+        monkeypatch=monkeypatch,
+        service=service,
+    )
+    job = service.submit(_request("Two-turn EVO memory resume"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    lifecycle_path = service._private_lifecycle_path(job.job_id)
+    paused_lifecycle = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+    attestation_id = paused_lifecycle["attestation_id"]
+    assert paused_lifecycle["status"] == "RESUMABLE"
+    assert attestation_id.startswith(
+        f"jobs/{job.job_id}/evo-v2-memory-gates/attestation_"
+    )
+    plan_path = Path(paused.workspace_path) / "identity" / "research_organization_plan.json"
+    plan_sha256 = _file_sha256(plan_path)
+
+    validation_statuses = []
+    original_validate = service._validate_evo_v2_memory_resume_context
+
+    def track_validation(current_job, **kwargs):
+        validation_statuses.append(
+            service._read_private_lifecycle(current_job)["status"]
+        )
+        return original_validate(current_job, **kwargs)
+
+    monkeypatch.setattr(
+        service,
+        "_validate_evo_v2_memory_resume_context",
+        track_validation,
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_research_org_stage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("research organization must not rerun")
+        ),
+    )
+
+    service.request_resume(job.job_id)
+    assert service._read_private_lifecycle(paused)["status"] == "RESUMABLE"
+    claimed = store.claim_next_job()
+    assert claimed is not None and claimed.job_id == job.job_id
+    service._run_job(claimed)
+
+    completed = store.get_job(job.job_id)
+    # The legacy terminal fixture is intentionally rejected by the current
+    # factor-proof reader.  This test owns the lifecycle/memory route only: it
+    # must reach the Ultimate read path without a resume-trust failure.
+    assert completed.execution_status == "BLOCKED"
+    assert (
+        completed.error_code
+        != "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
+    )
+    assert validation_statuses == ["RESUMABLE", "RUNNING"]
+    assert adapter.calls == 1
+    assert calls == {"pipeline": 2, "memory_round": 1, "ultimate": 1}
+    assert _file_sha256(plan_path) == plan_sha256
+    assert service._read_private_lifecycle(completed)["status"] == "RESUMABLE"
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "empty",
+        "absolute",
+        "parent_escape",
+        "wrong_filename",
+        "cross_job",
+        "symlink",
+        "mode",
+        "hardlink",
+        "self_hash",
+        "receipt_hash",
+        "event_hash",
+        "state_hash",
+    ],
+)
+def test_evo_v2_memory_resume_attestation_attacks_are_non_resumable(
+    tmp_path,
+    monkeypatch,
+    attack,
+):
+    adapter = _CountingTerminalRejectAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _install_two_turn_memory_gate(monkeypatch=monkeypatch, service=service)
+    job = service.submit(_request(f"EVO memory resume attack {attack}"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    lifecycle_path = service._private_lifecycle_path(job.job_id)
+    lifecycle = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+    attestation_path = service.config.state_root / lifecycle["attestation_id"]
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+
+    if attack == "empty":
+        lifecycle["attestation_id"] = ""
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "absolute":
+        lifecycle["attestation_id"] = str(attestation_path)
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "parent_escape":
+        lifecycle["attestation_id"] = "../attestation.json"
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "wrong_filename":
+        lifecycle["attestation_id"] = (
+            f"jobs/{job.job_id}/evo-v2-memory-gates/wrong.json"
+        )
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "cross_job":
+        lifecycle["attestation_id"] = lifecycle["attestation_id"].replace(
+            job.job_id,
+            "job_deadbeef00",
+            1,
+        )
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "symlink":
+        backup = attestation_path.with_suffix(".backup")
+        attestation_path.rename(backup)
+        attestation_path.symlink_to(backup)
+    elif attack == "mode":
+        attestation_path.chmod(0o640)
+    elif attack == "hardlink":
+        os.link(attestation_path, attestation_path.with_suffix(".hardlink"))
+    elif attack == "self_hash":
+        attestation["created_at_utc"] = "2026-08-14T00:00:00Z"
+        _write_json(attestation_path, attestation)
+        attestation_path.chmod(0o600)
+    elif attack == "receipt_hash":
+        receipt_path = (
+            service.config.state_root
+            / attestation["formal_execution_receipt_id"]
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["commands"][0]["returncode"] = 1
+        _write_json(receipt_path, receipt)
+        receipt_path.chmod(0o600)
+    elif attack == "event_hash":
+        event_sha256 = paused.result["evo_v2_memory"]["state_ref"][
+            "event_sha256"
+        ]
+        event_path = (
+            Path(paused.workspace_path)
+            / "objects"
+            / "evo_v2"
+            / job.report_id
+            / "memory_runtime"
+            / "events"
+            / f"event_000001_{event_sha256[:12]}.json"
+        )
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        event["pause"]["reason"] = "tampered event"
+        _write_json(event_path, event)
+    elif attack == "state_hash":
+        state_path = (
+            Path(paused.workspace_path)
+            / paused.result["evo_v2_memory"]["state_ref"]["path"]
+        )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["pause"]["reason"] = "tampered"
+        _write_json(state_path, state)
+    else:
+        raise AssertionError(attack)
+
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        service.request_resume(job.job_id)
+    assert service._non_resumable_marker_path(job.job_id).is_file()
+    persisted = service._read_private_lifecycle(paused)
+    assert persisted["status"] == "NON_RESUMABLE"
+    assert (
+        persisted["blocker"]
+        == "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
+    )
+    assert adapter.calls == 1
+
+
+def test_evo_v2_memory_running_crash_is_not_reclassified_as_resumable(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _CountingTerminalRejectAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _install_two_turn_memory_gate(monkeypatch=monkeypatch, service=service)
+    job = service.submit(_request("EVO memory RUNNING crash"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    attestation_id = service._read_private_lifecycle(paused)["attestation_id"]
+
+    service._begin_private_execution(paused, resume=True)
+    running = service._read_private_lifecycle(paused)
+    assert running["status"] == "RUNNING"
+    assert running["attestation_id"] == attestation_id
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        service.request_resume(job.job_id)
+    assert service._non_resumable_marker_path(job.job_id).is_file()
+    assert adapter.calls == 1
+
+
+def test_duplicate_resume_while_worker_is_active_does_not_quarantine_lifecycle(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _CountingTerminalRejectAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _install_two_turn_memory_gate(monkeypatch=monkeypatch, service=service)
+    job = service.submit(_request("EVO memory duplicate active resume"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    service.request_resume(job.job_id)
+    claimed = store.claim_next_job()
+    assert claimed is not None and claimed.job_id == job.job_id
+
+    service._begin_private_execution(claimed, resume=True)
+    lifecycle_before = service._read_private_lifecycle(claimed)
+    assert lifecycle_before["status"] == "RUNNING"
+    with pytest.raises(ValueError, match="paused, blocked, or failed"):
+        service.request_resume(job.job_id)
+    lifecycle_after = service._read_private_lifecycle(claimed)
+    assert lifecycle_after == lifecycle_before
+    assert not service._non_resumable_marker_path(job.job_id).exists()
+    assert adapter.calls == 1
+
+
 def test_memory_write_failure_preserves_official_factor_outcome(
     tmp_path,
     monkeypatch,

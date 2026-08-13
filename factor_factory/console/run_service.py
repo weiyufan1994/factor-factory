@@ -152,7 +152,7 @@ from factor_factory.oos_exposure_incident import (
     ensure_empty_oos_exposure_private_registry,
     oos_exposure_private_registry_guard,
 )
-from factor_factory.research_org.contracts import with_content_hash
+from factor_factory.research_org.contracts import strict_json_loads, with_content_hash
 from factor_factory.research_org.director import (
     DIRECTOR_AUTHORING_RECORD_CONTRACT_VERSION,
 )
@@ -1809,62 +1809,75 @@ class ResearchRunService:
             raise KeyError(job_id)
         validate_pilot_evaluation_request(job.request)
         _require_resume_request_allowed(job)
+        if job.execution_status not in {"REVIEW_REQUIRED", "BLOCKED", "FAILED"}:
+            # Mirror the store CAS eligibility before touching Host-private
+            # lifecycle state.  A duplicate/stale UI request must never turn a
+            # legitimately claimed RUNNING execution into NON_RESUMABLE.
+            raise ValueError("only a paused, blocked, or failed job can be resumed")
         require_catalogs_healthy(self.config)
-        self._require_private_resume_allowed(job)
-        allocation = self.allocator.validate_allocation(
-            factor_id=job.factor_id,
-            research_id=job.research_id,
-            report_id=job.report_id,
-            persisted_worktree_path=job.worktree_path,
-            persisted_workspace_path=job.workspace_path,
-            persisted_base_commit=job.base_commit,
-        )
-        if (
-            job.request.research_scope
-            == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
-        ):
-            job = self.store.request_resume(job_id)
-            self._wake.set()
-            return job
-        active_report_id = _current_authority_report_id(job)
-        with _host_current_authority_transaction(
-            state_root=self.config.state_root,
-            workspace_root=allocation.workspace_path,
-            installation_id=self.config.installation_id,
-        ) as incident_guard:
-            current_authority = validate_current_ultimate_authority(
-                allocation.workspace_path,
-                report_id=active_report_id,
-                expected_factor_verdict=job.factor_verdict,
-                formal_proof_eligible=False,
-                incident_trust_root=(
-                    self.config.state_root / "research-org-trust"
-                ),
-                incident_installation_id=self.config.installation_id,
-                _incident_guard=incident_guard,
+        try:
+            self._require_private_resume_allowed(job)
+            allocation = self.allocator.validate_allocation(
+                factor_id=job.factor_id,
+                research_id=job.research_id,
+                report_id=job.report_id,
+                persisted_worktree_path=job.worktree_path,
+                persisted_workspace_path=job.workspace_path,
+                persisted_base_commit=job.base_commit,
             )
-            if current_authority.get("status") == "BLOCK":
-                raise RuntimeError(
-                    ";".join(
-                        current_authority.get("block_reasons")
-                        or [BLOCK_HOST_FORMAL_EXECUTION_FAILED]
+            if (
+                job.request.research_scope
+                == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+            ):
+                job = self.store.request_resume(job_id)
+                self._wake.set()
+                return job
+            active_report_id = _current_authority_report_id(job)
+            with _host_current_authority_transaction(
+                state_root=self.config.state_root,
+                workspace_root=allocation.workspace_path,
+                installation_id=self.config.installation_id,
+            ) as incident_guard:
+                current_authority = validate_current_ultimate_authority(
+                    allocation.workspace_path,
+                    report_id=active_report_id,
+                    expected_factor_verdict=job.factor_verdict,
+                    formal_proof_eligible=False,
+                    incident_trust_root=(
+                        self.config.state_root / "research-org-trust"
+                    ),
+                    incident_installation_id=self.config.installation_id,
+                    _incident_guard=incident_guard,
+                )
+                if current_authority.get("status") == "BLOCK":
+                    raise RuntimeError(
+                        ";".join(
+                            current_authority.get("block_reasons")
+                            or [BLOCK_HOST_FORMAL_EXECUTION_FAILED]
+                        )
                     )
-                )
-            if _is_evo_v2_child_runtime_pause(job):
-                self._validate_evo_v2_child_runtime_resume(job)
-            elif _is_evo_v2_memory_gate_pause(job):
-                self._validate_evo_v2_memory_resume_context(
+                if _is_evo_v2_child_runtime_pause(job):
+                    self._validate_evo_v2_child_runtime_resume(job)
+                elif _is_evo_v2_memory_gate_pause(job):
+                    self._validate_evo_v2_memory_resume_context(
+                        job,
+                        worktree=allocation.worktree_path,
+                        workspace=allocation.workspace_path,
+                    )
+                else:
+                    self._validate_trusted_resume_context(
+                        job,
+                        worktree=allocation.worktree_path,
+                        workspace=allocation.workspace_path,
+                    )
+                job = self.store.request_resume(job_id)
+        except RuntimeError as exc:
+            if str(exc).startswith(BLOCK_RESUME_TRUST_INVALID):
+                self._mark_job_non_resumable(
                     job,
-                    worktree=allocation.worktree_path,
-                    workspace=allocation.workspace_path,
+                    token=BLOCK_RESUME_TRUST_INVALID,
                 )
-            else:
-                self._validate_trusted_resume_context(
-                    job,
-                    worktree=allocation.worktree_path,
-                    workspace=allocation.workspace_path,
-                )
-            job = self.store.request_resume(job_id)
+            raise
         self._wake.set()
         return job
 
@@ -4618,10 +4631,16 @@ class ResearchRunService:
             isinstance(lifecycle, dict)
             and lifecycle.get("status") == PRIVATE_LIFECYCLE_RESUMABLE
         ):
+            attestation_id = str(lifecycle.get("attestation_id") or "")
+            if not attestation_id:
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: resumable private lifecycle lacks host attestation"
+                )
             self._write_private_lifecycle(
                 job,
                 status=PRIVATE_LIFECYCLE_RUNNING,
                 prior_status=PRIVATE_LIFECYCLE_RESUMABLE,
+                attestation_id=attestation_id,
             )
             if not resume:
                 raise RuntimeError(
@@ -4807,54 +4826,107 @@ class ResearchRunService:
             f"event_{prior_event['generation']:06d}_{prior_event_sha256[:12]}.json"
         )
         event_path = workspace / event_relative
+        state_path = workspace / expected_state_path
         if (
             event_path.is_symlink()
             or not event_path.is_file()
             or _sha256(event_path) != state_ref.get("sha256")
+            or state_path.is_symlink()
+            or not state_path.is_file()
+            or _sha256(state_path) != state_ref.get("sha256")
         ):
             raise RuntimeError(
-                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 paused event readback failed"
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 paused state readback failed"
             )
 
         state_root = self.config.state_root.resolve(strict=True)
 
-        def read_host_json(relative_value: Any, *, label: str) -> tuple[dict[str, Any], Path]:
+        def read_host_json(
+            relative_value: Any,
+            *,
+            label: str,
+            expected_parent: Path,
+            filename_pattern: re.Pattern[str],
+        ) -> tuple[dict[str, Any], Path, str]:
             relative = Path(str(relative_value or ""))
-            if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or not relative.parts
+                or relative.parent != expected_parent
+                or not filename_pattern.fullmatch(relative.name)
+            ):
                 raise RuntimeError(
                     f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 {label} path is unsafe"
                 )
-            path = state_root / relative
-            current = state_root
-            for part in relative.parts:
-                current = current / part
-                if current.is_symlink():
-                    raise RuntimeError(
-                        f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 {label} uses a symlink"
-                    )
             try:
-                resolved = path.resolve(strict=True)
-                resolved.relative_to(state_root)
-                payload = json.loads(resolved.read_text(encoding="utf-8"))
-            except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                raw, file_sha256, observed_id = _read_private_regular_file_once(
+                    state_root,
+                    state_root / relative,
+                    block_token=BLOCK_RESUME_TRUST_INVALID,
+                    label=f"EVO V2 {label}",
+                    required_mode=0o600,
+                )
+                payload = strict_json_loads(raw, label=f"EVO V2 {label}")
+            except Exception as exc:
                 raise RuntimeError(
                     f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 {label} is unreadable"
                 ) from exc
-            if not resolved.is_file() or not isinstance(payload, dict):
+            if observed_id != relative.as_posix() or not isinstance(payload, dict):
                 raise RuntimeError(
                     f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 {label} is invalid"
                 )
-            return payload, resolved
+            return payload, state_root / relative, file_sha256
 
-        attestation, _attestation_path = read_host_json(
+        attestation_parent = (
+            Path("jobs") / job.job_id / "evo-v2-memory-gates"
+        )
+        expected_attestation_name = (
+            f"attestation_{prior_event_sha256[:20]}.json"
+        )
+        attestation, _attestation_path, _attestation_file_sha256 = read_host_json(
             lifecycle.get("attestation_id"),
             label="memory gate attestation",
+            expected_parent=attestation_parent,
+            filename_pattern=re.compile(re.escape(expected_attestation_name)),
         )
+        attestation_unsigned = dict(attestation)
+        attestation_self_sha256 = str(
+            attestation_unsigned.pop("attestation_sha256", "") or ""
+        )
+        expected_attestation_fields = {
+            "version",
+            "job_id",
+            "factor_id",
+            "research_id",
+            "report_id",
+            "stage",
+            "state_event_sha256",
+            "state_file_sha256",
+            "formal_execution_receipt_id",
+            "formal_execution_receipt_sha256",
+            "formal_execution_allowed",
+            "results_or_oos_accessed",
+            "created_at_utc",
+            "attestation_sha256",
+        }
+        if (
+            set(attestation) != expected_attestation_fields
+            or not re.fullmatch(r"[0-9a-f]{64}", attestation_self_sha256)
+            or stable_json_hash(attestation_unsigned) != attestation_self_sha256
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: EVO V2 memory gate attestation self-hash is invalid"
+            )
         expected_identity = self._private_lifecycle_identity(job)
         receipt_id = str(attestation.get("formal_execution_receipt_id") or "")
-        receipt, receipt_path = read_host_json(
+        receipt, _receipt_path, receipt_file_sha256 = read_host_json(
             receipt_id,
             label="memory gate formal receipt",
+            expected_parent=Path("jobs") / job.job_id / "formal-execution",
+            filename_pattern=re.compile(
+                r"receipt_[0-9A-Za-z]+_[0-9a-f]{12}\.json"
+            ),
         )
         commands = receipt.get("commands")
         if (
@@ -4867,7 +4939,7 @@ class ResearchRunService:
             or attestation.get("formal_execution_allowed") is not False
             or attestation.get("results_or_oos_accessed") is not False
             or attestation.get("formal_execution_receipt_sha256")
-            != _sha256(receipt_path)
+            != receipt_file_sha256
             or receipt.get("version")
             != "factorforge_console_host_formal_execution_v2"
             or any(
@@ -11857,6 +11929,7 @@ def _read_private_regular_file_once(
     block_token: str,
     label: str,
     max_bytes: int = 2 * 1024 * 1024,
+    required_mode: int | None = None,
 ) -> tuple[bytes, str, str]:
     root_path = root.resolve(strict=True)
     candidate = path if path.is_absolute() else root_path / path
@@ -11892,6 +11965,10 @@ def _read_private_regular_file_once(
                     not stat.S_ISREG(before.st_mode)
                     or before.st_uid != os.geteuid()
                     or before.st_nlink != 1
+                    or (
+                        required_mode is not None
+                        and stat.S_IMODE(before.st_mode) != required_mode
+                    )
                     or before.st_size <= 0
                     or before.st_size > max_bytes
                 ):
@@ -11923,6 +12000,12 @@ def _read_private_regular_file_once(
         or before.st_size != path_after.st_size
         or before.st_mtime_ns != after.st_mtime_ns
         or before.st_mtime_ns != path_after.st_mtime_ns
+        or before.st_mode != after.st_mode
+        or before.st_mode != path_after.st_mode
+        or before.st_uid != after.st_uid
+        or before.st_uid != path_after.st_uid
+        or before.st_nlink != after.st_nlink
+        or before.st_nlink != path_after.st_nlink
     ):
         raise RuntimeError(f"{block_token}: {label} changed during read")
     content = b"".join(chunks)

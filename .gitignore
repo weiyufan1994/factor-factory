@@ -37,3 +37,7 @@ factor_research/**
 .DS_Store
 .vscode/
 .idea/
+
+# Host-private local runtime state. This tree can contain signing keys,
+# SQLite journals, agent messages, and incident-registry witnesses.
+/.factorforge-canary-state/

@@ -730,6 +730,12 @@ def test_agent_prompt_binds_exact_workspace_and_read_only_catalog(tmp_path):
     assert "identity/factor_knowledge_summary.json" in prompt
     assert "identity/web_research_authoring_contract.json" in prompt
     assert "authoring preflight command" in prompt
+    assert "registered_diagnostic_trials" in prompt
+    assert "exactly one `standalone_component` trial" in prompt
+    assert "exactly one `sign_oracle` trial" in prompt
+    assert "`component_id` is the literal `full_formula`" in prompt
+    assert "exactly `trial_id`, `role`, `component_id`, `formula_or_law`" in prompt
+    assert "An empty diagnostic list is invalid" in prompt
     assert "preserve its Host-filled `identity` and `authoring_contract` objects exactly" in prompt
     assert "skills/factor-forge-ultimate/SKILL.md" not in prompt
     assert "identity/web_execution_ledger.md" in prompt

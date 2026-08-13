@@ -1017,6 +1017,94 @@ def build_authoring_contract(
                 "Web v1 executes only trusted Formula IR operators. Direct-code and hybrid "
                 "routes may be modelled but require a separate trusted isolated code harness."
             ),
+            "registered_diagnostic_trial_contract": {
+                "plan_path": (
+                    "measurement_program.search_policy.registered_diagnostic_trials"
+                ),
+                "closed_item_fields": [
+                    "trial_id",
+                    "role",
+                    "component_id",
+                    "formula_or_law",
+                    "affects_acceptance",
+                    "multiple_testing_family",
+                ],
+                "allowed_roles": [
+                    "standalone_component",
+                    "leave_one_out",
+                    "sign_oracle",
+                    "alias_diagnostic",
+                    "regime_diagnostic",
+                ],
+                "component_scope": {
+                    "source_path": "measurement_program.implementation.components",
+                    "included_when": "binding_role != full_formula",
+                    "component_id_rule": (
+                        "Copy the exact implementation component_id; do not use a label, "
+                        "formula, or invented identifier."
+                    ),
+                },
+                "required_obligations": {
+                    "standalone_component": {
+                        "count_per_scoped_component": 1,
+                        "component_id": "exact scoped implementation component_id",
+                        "formula_rule": (
+                            "Use that component's executable implementation_binding alone."
+                        ),
+                    },
+                    "leave_one_out": {
+                        "count_per_scoped_component": 1,
+                        "component_id": "exact scoped implementation component_id",
+                        "formula_rule": (
+                            "Use the full executable formula with exactly that component "
+                            "removed while preserving the other components."
+                        ),
+                    },
+                    "sign_oracle": {
+                        "total_count_when_scoped_components_exist": 1,
+                        "component_id": "full_formula",
+                        "formula_rule": (
+                            "Use the executable full formula multiplied by -1."
+                        ),
+                    },
+                },
+                "common_field_rules": {
+                    "trial_id": "unique snake_case identifier",
+                    "formula_or_law": "must parse under the frozen Formula IR contract",
+                    "affects_acceptance": False,
+                    "multiple_testing_family": "non-empty registered family identifier",
+                },
+                "trial_budget_rule": (
+                    "1 + len(registered_diagnostic_trials) must be less than or equal "
+                    "to evidence_policy.trial_budget"
+                ),
+                "scaffold": [
+                    {
+                        "trial_id": "diag_standalone_<component_id>",
+                        "role": "standalone_component",
+                        "component_id": "<exact_component_id>",
+                        "formula_or_law": "<component_implementation_binding>",
+                        "affects_acceptance": False,
+                        "multiple_testing_family": "component_diagnostics",
+                    },
+                    {
+                        "trial_id": "diag_leave_one_out_<component_id>",
+                        "role": "leave_one_out",
+                        "component_id": "<exact_component_id>",
+                        "formula_or_law": "<full_formula_without_component>",
+                        "affects_acceptance": False,
+                        "multiple_testing_family": "component_diagnostics",
+                    },
+                    {
+                        "trial_id": "diag_sign_oracle",
+                        "role": "sign_oracle",
+                        "component_id": "full_formula",
+                        "formula_or_law": "-1 * (<full_formula>)",
+                        "affects_acceptance": False,
+                        "multiple_testing_family": "component_diagnostics",
+                    },
+                ],
+            },
         },
         "evidence_window_contract": {
             "submitted_sample_start": str(request.get("sample_start") or ""),
@@ -1343,6 +1431,17 @@ distinct. State the economic incidence and any applicable counterparty,
 persistent mechanism, mathematical object, legal information set, observation
 equation, estimator, market-outcome map, limiting cases, component ablations,
 IS/OOS split, costs, capacity and kill criteria.
+For `measurement_program.search_policy.registered_diagnostic_trials`, use the
+closed schema and scaffold in the Host-authored
+`mechanism_conditioned_measurement_contract.registered_diagnostic_trial_contract`.
+For every implementation component whose `binding_role` is not `full_formula`,
+register exactly one `standalone_component` trial and exactly one
+`leave_one_out` trial, both carrying that component's exact `component_id`.
+When any such component exists, also register exactly one `sign_oracle` with
+the literal `component_id` `full_formula`. Every entry has exactly the six
+contract fields, `affects_acceptance=false`, a unique trial ID, a Formula
+IR-parseable law, and remains within the frozen trial budget. Do not leave the
+diagnostic list empty when non-full-formula components exist.
 The authority order is economic hypothesis -> selected mathematical mechanism
 -> measurement program -> data/operator/code implementation -> empirical
 falsification. Compare a preferred model, a mechanism-distinct alternative and a

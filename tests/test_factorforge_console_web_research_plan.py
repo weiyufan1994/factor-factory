@@ -1104,6 +1104,46 @@ def test_multiterm_formula_requires_executable_primitive_component_coverage(tmp_
     ]
     validate_plan(plan, workspace=workspace)
 
+    empty_diagnostics = json.loads(json.dumps(plan))
+    empty_diagnostics["measurement_program"]["search_policy"][
+        "registered_diagnostic_trials"
+    ] = []
+    with pytest.raises(WebResearchPlanError) as exc_info:
+        validate_plan(empty_diagnostics, workspace=workspace)
+    assert {
+        "measurement_program.search_policy."
+        "standalone_component_obligations_incomplete",
+        "measurement_program.search_policy.leave_one_out_obligations_incomplete",
+        "measurement_program.search_policy.sign_oracle_missing",
+    } <= set(exc_info.value.reasons)
+
+    for missing_role, expected_reason in (
+        (
+            "standalone_component",
+            "measurement_program.search_policy."
+            "standalone_component_obligations_incomplete",
+        ),
+        (
+            "leave_one_out",
+            "measurement_program.search_policy."
+            "leave_one_out_obligations_incomplete",
+        ),
+        (
+            "sign_oracle",
+            "measurement_program.search_policy.sign_oracle_missing",
+        ),
+    ):
+        missing_one_obligation = json.loads(json.dumps(plan))
+        registered = missing_one_obligation["measurement_program"][
+            "search_policy"
+        ]["registered_diagnostic_trials"]
+        missing_one_obligation["measurement_program"]["search_policy"][
+            "registered_diagnostic_trials"
+        ] = [item for item in registered if item["role"] != missing_role]
+        with pytest.raises(WebResearchPlanError) as exc_info:
+            validate_plan(missing_one_obligation, workspace=workspace)
+        assert expected_reason in exc_info.value.reasons
+
     implementation["components"].pop()
     plan["mathematical_mechanism"]["component_map"].pop()
     with pytest.raises(WebResearchPlanError) as exc_info:
@@ -1169,6 +1209,42 @@ def test_unfilled_plan_blocks_with_field_level_reason(tmp_path):
         "required_market_outcome_contract": pilot_market_outcome_contract(),
         "required_mechanism_target_contract": pilot_mechanism_target_contract(),
     }
+    diagnostic_contract = contract["mechanism_conditioned_measurement_contract"][
+        "registered_diagnostic_trial_contract"
+    ]
+    assert diagnostic_contract["closed_item_fields"] == [
+        "trial_id",
+        "role",
+        "component_id",
+        "formula_or_law",
+        "affects_acceptance",
+        "multiple_testing_family",
+    ]
+    assert diagnostic_contract["component_scope"] == {
+        "source_path": "measurement_program.implementation.components",
+        "included_when": "binding_role != full_formula",
+        "component_id_rule": (
+            "Copy the exact implementation component_id; do not use a label, "
+            "formula, or invented identifier."
+        ),
+    }
+    obligations = diagnostic_contract["required_obligations"]
+    assert obligations["standalone_component"]["count_per_scoped_component"] == 1
+    assert obligations["leave_one_out"]["count_per_scoped_component"] == 1
+    assert obligations["sign_oracle"] == {
+        "total_count_when_scoped_components_exist": 1,
+        "component_id": "full_formula",
+        "formula_rule": "Use the executable full formula multiplied by -1.",
+    }
+    assert [item["role"] for item in diagnostic_contract["scaffold"]] == [
+        "standalone_component",
+        "leave_one_out",
+        "sign_oracle",
+    ]
+    assert all(
+        set(item) == set(diagnostic_contract["closed_item_fields"])
+        for item in diagnostic_contract["scaffold"]
+    )
     assert plan["evidence_policy"]["payoff_contract"] == pilot_payoff_contract()
     assert plan["mathematical_mechanism"]["payoff_binding"] == (
         pilot_payoff_binding()

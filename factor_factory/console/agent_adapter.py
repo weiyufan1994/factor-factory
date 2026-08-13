@@ -630,6 +630,20 @@ lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
 5. Never use fixtures, deterministic fallback, local mock, smoke evidence or dry-run output as formal research proof. A missing dataset must produce a precise BLOCK/data request, not invented evidence.
 6. On resume, write only the exact named research memo permitted by the current pause. The host owns Council dispatch, synthesis, evidence interpretation, and every formal wrapper invocation. Do not use the unimplemented `real_agent`/`remote_api` wrapper adapters.
 7. Keep preferred, null and alternative hypotheses distinct. Record economic payer, mathematical object, legal information set, falsifiers, component ablations, costs, long-side economics, IS/OOS boundary and proof-certificate status.
+   For `measurement_program.search_policy.registered_diagnostic_trials`, follow
+   the closed schema and scaffold in
+   `web_research_authoring_contract.json` exactly. For every
+   `measurement_program.implementation.components[]` item whose `binding_role`
+   is not `full_formula`, add exactly one `standalone_component` trial and one
+   `leave_one_out` trial, each using that item's exact `component_id`. If any
+   such component exists, add exactly one `sign_oracle` trial whose
+   `component_id` is the literal `full_formula`. Every diagnostic object has
+   exactly `trial_id`, `role`, `component_id`, `formula_or_law`,
+   `affects_acceptance`, and `multiple_testing_family`; set
+   `affects_acceptance` to false, keep trial IDs unique, use only parseable
+   Formula IR laws, and keep `1 + len(registered_diagnostic_trials)` within
+   `evidence_policy.trial_budget`. An empty diagnostic list is invalid whenever
+   a non-full-formula component exists.
    In the Web v2 pilot, a signal formed after close t is entered at close t+1
    and exited at close t+2, so the executable label is
    `close.shift(-2) / close.shift(-1) - 1`. The close-t to close-t+1 return

@@ -2839,6 +2839,7 @@ def test_host_director_admission_binds_validated_plan_and_real_session(
         report_id=job.report_id,
         implementation_mode="operator",
     )
+    job = replace(job, base_commit=allocation.base_commit)
     service._write_request_artifacts(job, allocation)
     workspace = allocation.workspace_path
     monkeypatch.setattr(module, "validate_plan", lambda *_args, **_kwargs: ({}, {}))
@@ -3036,14 +3037,19 @@ def test_host_director_admission_binds_validated_plan_and_real_session(
         "error_code": "",
         "stdout_tail": "",
         "stderr_tail": "",
+        "research_base_commit": job.base_commit,
+        "engine_commit": service._expected_base_commit,
     }
     for field, forged_value in (
         ("job_id", "job_forged"),
+        ("execution_mode", "shared_gateway"),
         ("session_key_sha256", "0" * 64),
         ("provider", "forged-provider"),
         ("model", "forged-model"),
         ("finished_at_utc", "2026-08-09T00:02:00Z"),
         ("returncode", 1),
+        ("research_base_commit", "0" * 40),
+        ("engine_commit", "1" * 40),
     ):
         forged_receipt = {**valid_receipt, field: forged_value}
         _write_json(receipt_path, forged_receipt)
@@ -3082,6 +3088,79 @@ def test_host_director_admission_binds_validated_plan_and_real_session(
     assert payload["public_research_record"]["handoff"][
         "host_agent_run_receipt_sha256"
     ] == _file_sha256(receipt_path)
+
+
+def test_shared_gateway_host_director_receipt_uses_exact_legacy_schema(
+    tmp_path,
+):
+    from factor_factory.console.agent_adapter import AgentRunResult
+
+    _source, _store, service = _service(tmp_path, _TerminalRejectAdapter())
+    service.config = replace(service.config, execution_mode="shared_gateway")
+    job = service.submit(_request("Shared gateway receipt schema"))
+    receipt_path = (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "agent_run_shared_gateway.json"
+    )
+    session_key = "shared-gateway-session-001"
+    started_at = "2026-08-09T00:00:00Z"
+    finished_at = "2026-08-09T00:01:00Z"
+    agent_result = AgentRunResult(
+        returncode=0,
+        agent_id="shared-gateway-agent",
+        session_key=session_key,
+        started_at_utc=started_at,
+        finished_at_utc=finished_at,
+        stdout_tail="",
+        stderr_tail="",
+        result_path=str(receipt_path),
+        provider=service.config.openclaw_auth_provider,
+        model=service.config.openclaw_model,
+    )
+    legacy_receipt = {
+        "version": "factorforge_console_agent_run_v1",
+        "job_id": job.job_id,
+        "factor_id": job.factor_id,
+        "research_id": job.research_id,
+        "report_id": job.report_id,
+        "agent_id": agent_result.agent_id,
+        "session_key_sha256": hashlib.sha256(
+            session_key.encode("utf-8")
+        ).hexdigest(),
+        "resume": False,
+        "resume_attempt_id": "",
+        "started_at_utc": started_at,
+        "finished_at_utc": finished_at,
+        "returncode": 0,
+        "provider": agent_result.provider,
+        "model": agent_result.model,
+        "error_code": "",
+        "stdout_tail": "",
+        "stderr_tail": "",
+    }
+    _write_json(receipt_path, legacy_receipt)
+
+    assert service._validated_host_agent_receipt(
+        job=job,
+        agent_result=agent_result,
+    ) == receipt_path.resolve(strict=True)
+
+    for forbidden_field, value in (
+        ("execution_mode", "shared_gateway"),
+        ("research_base_commit", "a" * 40),
+        ("engine_commit", "b" * 40),
+    ):
+        _write_json(
+            receipt_path,
+            {**legacy_receipt, forbidden_field: value},
+        )
+        with pytest.raises(RuntimeError, match="receipt binding is invalid"):
+            service._validated_host_agent_receipt(
+                job=job,
+                agent_result=agent_result,
+            )
 
 
 def test_production_ultimate_args_require_formal_complete_signed_runtime(tmp_path):

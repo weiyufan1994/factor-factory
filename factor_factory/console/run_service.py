@@ -2522,9 +2522,24 @@ class ResearchRunService:
             "stdout_tail": agent_result.stdout_tail,
             "stderr_tail": agent_result.stderr_tail,
         }
+        if self.config.execution_mode == "container":
+            required_keys.update(
+                {
+                    "execution_mode",
+                    "research_base_commit",
+                    "engine_commit",
+                }
+            )
+            expected_bindings.update(
+                {
+                    "execution_mode": "container",
+                    "research_base_commit": job.base_commit,
+                    "engine_commit": self._expected_base_commit,
+                }
+            )
         invalid = bool(
             not isinstance(receipt, dict)
-            or set(receipt) - {*required_keys, "execution_mode"}
+            or set(receipt) != required_keys
             or not required_keys.issubset(receipt)
             or any(receipt.get(key) != value for key, value in expected_bindings.items())
             or agent_result.returncode != 0
@@ -2538,10 +2553,6 @@ class ResearchRunService:
             or started.tzinfo is None
             or finished.tzinfo is None
             or started.astimezone(timezone.utc) > finished.astimezone(timezone.utc)
-            or (
-                "execution_mode" in receipt
-                and receipt.get("execution_mode") != self.config.execution_mode
-            )
         )
         if invalid:
             raise RuntimeError(

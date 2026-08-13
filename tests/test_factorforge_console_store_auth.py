@@ -3630,7 +3630,10 @@ def test_console_config_rejects_multiple_production_catalogs(tmp_path):
         )
 
 
-def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_path, monkeypatch):
+def test_container_agent_receipt_cross_validates_with_host_director(
+    tmp_path,
+    monkeypatch,
+):
     import subprocess
     import factor_factory.console.container_agent_adapter as adapter_module
 
@@ -3638,6 +3641,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     from factor_factory.console.config import ConsoleConfig
     from factor_factory.console.container_agent_adapter import ContainerizedOpenClawResearchAgentAdapter
     from factor_factory.console.models import ResearchJob
+    from factor_factory.console.run_service import ResearchRunService
 
     source = tmp_path / "source"
     workspace = source / "factor_research" / "FACTOR" / "research"
@@ -3695,6 +3699,7 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
         research_id="research",
         report_id="report",
         request=_request(),
+        base_commit="b" * 40,
     )
     calls: list[list[str]] = []
     broker_readiness_registry_seen = False
@@ -3797,6 +3802,13 @@ def test_container_agent_uses_read_only_engine_and_one_writable_workspace(tmp_pa
     )
     result = adapter.run(job, worktree=source, workspace=workspace, resume=False)
     assert result.returncode == 0
+    receipt_validator = object.__new__(ResearchRunService)
+    receipt_validator.config = config
+    receipt_validator._expected_base_commit = job.base_commit
+    assert receipt_validator._validated_host_agent_receipt(
+        job=job,
+        agent_result=result,
+    ) == Path(result.result_path).resolve(strict=True)
     assert adapter.denied_secret_values(job.job_id) == (broker_client_token,)
     assert adapter.credential_material_state(job.job_id) == "not_issued"
     probe_commands = [

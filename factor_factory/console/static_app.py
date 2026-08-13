@@ -414,6 +414,11 @@ def make_research_handler(application: ResearchConsoleApplication) -> type[BaseH
                     transaction_cost_bps=float(_field(fields, "transaction_cost_bps", "30")),
                     model=_field(fields, "model", DEEPSEEK_V4_FLASH_MODEL),
                     source_url=_field(fields, "source_url"),
+                    research_scope=_field(
+                        fields,
+                        "research_scope",
+                        "full_formal",
+                    ),
                 )
                 _validate_request_choices(request)
                 job = application.service.submit(
@@ -802,6 +807,7 @@ def _research_form_values(fields: dict[str, list[str]]) -> dict[str, str]:
         "factor_id_hint",
         "content_kind",
         "model",
+        "research_scope",
         "hypothesis",
         "economic_hypothesis",
         "report_input",

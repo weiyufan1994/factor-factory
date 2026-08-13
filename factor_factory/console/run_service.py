@@ -105,6 +105,7 @@ from factor_factory.console.private_job_root import (
     ensure_host_private_job_subdirectory,
 )
 from factor_factory.console.models import (
+    RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
     ResearchJob,
     ResearchRequest,
     validate_pilot_evaluation_request,
@@ -232,6 +233,18 @@ EVO_V2_CHILD_EXECUTION_READY = (
 )
 RESEARCH_ORG_CLARIFICATION_REQUIRED = (
     "FACTORFORGE_CONSOLE_RESEARCH_ORG_CLARIFICATION_REQUIRED"
+)
+PREFORMAL_DESIGN_ONLY_COMPLETE = (
+    "FACTORFORGE_CONSOLE_PREFORMAL_DESIGN_ONLY_COMPLETE"
+)
+PREFORMAL_CHECKPOINT_RECEIPT_TYPE = (
+    "factorforge_console_preformal_design_checkpoint_v1"
+)
+PREFORMAL_CHECKPOINT_POINTER_VERSION = (
+    "factorforge_console_preformal_design_checkpoint_pointer_v1"
+)
+PREFORMAL_RUNTIME_ASSURANCE = (
+    "signed_specialist_runtime_complete_host_director_external"
 )
 HOST_DIRECTOR_RECORD_RELATIVE = "identity/web_research_director_record.json"
 DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
@@ -596,6 +609,14 @@ def _formal_receipt_engine_paths_valid(
 
 
 def _require_resume_request_allowed(job: ResearchJob) -> None:
+    if (
+        job.request.research_scope == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+        and job.current_stage == "preformal_design_complete"
+    ):
+        raise RuntimeError(
+            f"{PREFORMAL_DESIGN_ONLY_COMPLETE}: design-only checkpoints are "
+            "terminal; start a new full_formal task"
+        )
     if job.error_code in NON_RESUMABLE_SECURITY_BLOCKERS:
         raise RuntimeError(
             f"{BLOCK_RESUME_TRUST_INVALID}: prior security blocker is not resumable; "
@@ -1594,14 +1615,137 @@ class ResearchRunService:
         self._health_checked_at = 0.0
         self._health_cached = False
         self._health_ttl_seconds = 30.0
+        self._startup_reconciliation_healthy = True
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
             return
         self.store.pause_interrupted_jobs()
+        self._startup_reconciliation_healthy = (
+            self._reconcile_preformal_terminal_lifecycles()
+        )
+        with self._health_lock:
+            self._health_checked_at = 0.0
+            self._health_cached = False
         self._stop.clear()
         self._thread = threading.Thread(target=self._worker_loop, name="factorforge-console-worker", daemon=True)
         self._thread.start()
+
+    def _reconcile_preformal_terminal_lifecycles(self) -> bool:
+        try:
+            jobs = self.store.list_jobs(limit=500)
+        except Exception:
+            return False
+        startup_healthy = True
+        for job in jobs:
+            if (
+                job.request.research_scope
+                != RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+                or job.current_stage != "preformal_design_complete"
+                or job.execution_status != "REVIEW_REQUIRED"
+                or not job.workspace_path
+            ):
+                continue
+            try:
+                self._reconcile_preformal_terminal_lifecycle(job)
+            except Exception:
+                if not self._quarantine_failed_preformal_reconciliation(job):
+                    startup_healthy = False
+        return startup_healthy
+
+    def _reconcile_preformal_terminal_lifecycle(self, job: ResearchJob) -> None:
+        lifecycle = self._read_private_lifecycle(job)
+        if (
+            not isinstance(lifecycle, dict)
+            or lifecycle.get("status") != PRIVATE_LIFECYCLE_RUNNING
+        ):
+            return
+        workspace = Path(job.workspace_path).expanduser().resolve(strict=True)
+        with workspace_transaction_lock(
+            self.config.state_root,
+            workspace,
+            error_code=BLOCK_RESUME_TRUST_INVALID,
+        ):
+            replay = self._replay_preformal_design_checkpoint(
+                job,
+                workspace=workspace,
+            )
+        projected_checkpoint = (
+            job.result.get("preformal_design", {}).get("checkpoint", {})
+            if isinstance(job.result, dict)
+            else {}
+        )
+        if (
+            not isinstance(projected_checkpoint, dict)
+            or projected_checkpoint.get("receipt_id")
+            != replay["receipt_id"]
+            or projected_checkpoint.get("receipt_sha256")
+            != replay["receipt_sha256"]
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: terminal preformal DB projection "
+                "does not match signed checkpoint"
+            )
+        self._finish_private_execution(
+            job,
+            status=PRIVATE_LIFECYCLE_TERMINAL,
+            attestation_id=replay["receipt_id"],
+        )
+        self.store.append_event(
+            job.job_id,
+            "PREFORMAL_DESIGN_LIFECYCLE_RECONCILED",
+            "Host 已重放签名设计检查点并补全终态生命周期。",
+            {"receipt_id": replay["receipt_id"]},
+        )
+
+    def _quarantine_failed_preformal_reconciliation(
+        self,
+        job: ResearchJob,
+    ) -> bool:
+        public_message = (
+            "Host 未能安全重放终态设计检查点；当前任务已禁止续跑，"
+            "请新建隔离任务。"
+        )
+        try:
+            self._mark_job_non_resumable(
+                job,
+                token=BLOCK_RESUME_TRUST_INVALID,
+            )
+            self.store.update_job(
+                job.job_id,
+                execution_status="BLOCKED",
+                protocol_status="BLOCK",
+                factor_verdict="BLOCK",
+                formal_proof_eligible=False,
+                current_stage="blocked",
+                error_code=BLOCK_RESUME_TRUST_INVALID,
+                error_message=public_message,
+                result=_result_without_resume_attestation(
+                    self.store.get_job(job.job_id) or job
+                ),
+                finished_at_utc=utc_now(),
+            )
+            self.store.append_event(
+                job.job_id,
+                "PREFORMAL_DESIGN_RECONCILIATION_BLOCKED",
+                public_message,
+                {"code": BLOCK_RESUME_TRUST_INVALID},
+            )
+            return True
+        except Exception:
+            try:
+                self.store.append_event(
+                    job.job_id,
+                    "PREFORMAL_DESIGN_RECONCILIATION_HEALTH_BLOCKED",
+                    (
+                        "终态设计检查点恢复失败，且不可续跑分类未能"
+                        "可靠持久化；Runner 已进入不健康状态，未执行队列任务。"
+                    ),
+                    {"code": BLOCK_RESUME_TRUST_INVALID},
+                )
+            except Exception:
+                pass
+            return False
 
     def stop(self, timeout: float = 10.0) -> None:
         self._stop.set()
@@ -1624,6 +1768,8 @@ class ResearchRunService:
             return self._health_cached
 
     def _compute_healthcheck(self) -> bool:
+        if not self._startup_reconciliation_healthy:
+            return False
         adapter_health = getattr(self.agent_adapter, "healthcheck", None)
         try:
             source_ready = self.allocator.validate_ready() == self._expected_base_commit
@@ -1673,6 +1819,13 @@ class ResearchRunService:
             persisted_workspace_path=job.workspace_path,
             persisted_base_commit=job.base_commit,
         )
+        if (
+            job.request.research_scope
+            == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+        ):
+            job = self.store.request_resume(job_id)
+            self._wake.set()
+            return job
         active_report_id = _current_authority_report_id(job)
         with _host_current_authority_transaction(
             state_root=self.config.state_root,
@@ -1798,13 +1951,136 @@ class ResearchRunService:
         return self.store.cancel_queued(job_id)
 
     def run_once(self) -> ResearchJob | None:
-        if not catalogs_healthy(self.config):
+        if (
+            not self._startup_reconciliation_healthy
+            or not catalogs_healthy(self.config)
+        ):
             return None
         job = self.store.claim_next_job()
         if job is None:
             return None
         self._run_job(job)
         return self.store.get_job(job.job_id)
+
+    def replay_preformal_design_checkpoint(
+        self,
+        job_id: str,
+    ) -> dict[str, Any]:
+        job = self.store.get_job(job_id)
+        if job is None:
+            raise KeyError(job_id)
+        if (
+            job.request.research_scope
+            != RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+            or job.current_stage != "preformal_design_complete"
+            or not job.workspace_path
+        ):
+            raise ValueError("job has no terminal preformal design checkpoint")
+        workspace = Path(job.workspace_path).expanduser().resolve(strict=True)
+        with workspace_transaction_lock(
+            self.config.state_root,
+            workspace,
+            error_code=BLOCK_RESUME_TRUST_INVALID,
+        ):
+            return self._replay_preformal_design_checkpoint(
+                job,
+                workspace=workspace,
+            )
+
+    def _preformal_current_pointer_exists(self, job: ResearchJob) -> bool:
+        pointer = (
+            self.config.state_root
+            / "jobs"
+            / job.job_id
+            / "preformal_design"
+            / "current.json"
+        )
+        return pointer.exists() or pointer.is_symlink()
+
+    def _record_preformal_design_completion(
+        self,
+        job: ResearchJob,
+        *,
+        checkpoint: dict[str, Any],
+        recovered: bool,
+    ) -> None:
+        summary = (
+            "独立 Research Org 已完成研究设计并通过正式独立性核验；"
+            "任务按 design-only 范围停在取数、实现、回测和 OOS 之前。"
+        )
+        result = {
+            "summary": summary,
+            "next_actions": [
+                "如需进入正式 Step3-6，请新建 full_formal 任务并显式提交。"
+            ],
+            "research_organization": {
+                "state": "COMPLETE",
+                "runtime_id": checkpoint["organization_runtime_id"],
+                "result_count": checkpoint["organization_result_count"],
+                "formal_independence_verified": True,
+                "runtime_assurance": PREFORMAL_RUNTIME_ASSURANCE,
+            },
+            "preformal_design": {
+                "scope": RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+                "status": "CHECKPOINTED",
+                "current_factor_empirical_verdict": "NOT_ISSUED",
+                "formal": False,
+                "formal_proof_eligible": False,
+                "production_eligible": False,
+                "promotion_allowed": False,
+                "host_data_lease_requested": False,
+                "data_materializer_invoked": False,
+                "ultimate_invoked": False,
+                "step3_6_invoked": False,
+                "oos_allocated": False,
+                "oos_read": False,
+                "oos_released": False,
+                "oos_consumed": False,
+                "resume_allowed": False,
+                "checkpoint": {
+                    key: checkpoint[key]
+                    for key in (
+                        "status",
+                        "receipt_id",
+                        "receipt_sha256",
+                        "trust_manifest_sha256",
+                        "workspace_tree_sha256",
+                        "organization_runtime_sha256",
+                        "organization_results_sha256",
+                    )
+                },
+            },
+        }
+        self.store.update_job(
+            job.job_id,
+            execution_status="REVIEW_REQUIRED",
+            protocol_status="PAUSED",
+            factor_verdict="UNKNOWN",
+            council_status="NOT_STARTED",
+            formal_proof_eligible=False,
+            current_stage="preformal_design_complete",
+            error_code=PREFORMAL_DESIGN_ONLY_COMPLETE,
+            error_message=summary,
+            result=result,
+            finished_at_utc=utc_now(),
+        )
+        self.store.append_event(
+            job.job_id,
+            (
+                "PREFORMAL_DESIGN_CHECKPOINT_RECOVERED"
+                if recovered
+                else "PREFORMAL_DESIGN_CHECKPOINTED"
+            ),
+            summary,
+            {
+                "scope": RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+                "receipt_id": checkpoint["receipt_id"],
+                "current_factor_empirical_verdict": "NOT_ISSUED",
+                "formal": False,
+                "promotion_allowed": False,
+                "recovered": recovered,
+            },
+        )
 
     def _research_org_runtime_available(self) -> bool:
         return bool(
@@ -2537,6 +2813,61 @@ class ResearchRunService:
             )
             self._begin_private_execution(job, resume=resume)
             validate_public_source_url(job.request.source_url)
+            if (
+                resume
+                and job.request.research_scope
+                == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+            ):
+                allocation = self.allocator.validate_allocation(
+                    factor_id=job.factor_id,
+                    research_id=job.research_id,
+                    report_id=job.report_id,
+                    persisted_worktree_path=job.worktree_path,
+                    persisted_workspace_path=job.workspace_path,
+                    persisted_base_commit=job.base_commit,
+                )
+                worktree = allocation.worktree_path
+                workspace = allocation.workspace_path
+                isolation_failures = audit_factor_worktree(worktree, workspace)
+                if isolation_failures:
+                    raise RuntimeError(
+                        f"{BLOCK_ISOLATION_AUDIT_FAILED}: "
+                        f"{'; '.join(isolation_failures)}"
+                    )
+                with workspace_transaction_lock(
+                    self.config.state_root,
+                    workspace,
+                    error_code=BLOCK_RESUME_TRUST_INVALID,
+                ):
+                    if self._preformal_current_pointer_exists(job):
+                        preformal_checkpoint = (
+                            self._replay_preformal_design_checkpoint(
+                                job,
+                                workspace=workspace,
+                            )
+                        )
+                    else:
+                        try:
+                            preformal_checkpoint = (
+                                self._write_preformal_design_checkpoint(
+                                    job,
+                                    workspace=workspace,
+                                )
+                            )
+                        except (OSError, RuntimeError, ValueError) as exc:
+                            raise RuntimeError(
+                                f"{BLOCK_RESUME_TRUST_INVALID}: interrupted "
+                                "design-only task lacks a replayable checkpoint "
+                                "or signed COMPLETE organization runtime"
+                            ) from exc
+                self._record_preformal_design_completion(
+                    job,
+                    checkpoint=preformal_checkpoint,
+                    recovered=True,
+                )
+                private_completion_status = PRIVATE_LIFECYCLE_TERMINAL
+                private_attestation_id = preformal_checkpoint["receipt_id"]
+                return
             if resume:
                 allocation = self.allocator.validate_allocation(
                     factor_id=job.factor_id,
@@ -3422,6 +3753,36 @@ class ResearchRunService:
                     private_completion_status = PRIVATE_LIFECYCLE_TERMINAL
                     return
 
+            if (
+                current_job.request.research_scope
+                == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+            ):
+                isolation_failures = audit_factor_worktree(worktree, workspace)
+                if isolation_failures:
+                    raise RuntimeError(
+                        f"{BLOCK_ISOLATION_AUDIT_FAILED}: "
+                        f"{'; '.join(isolation_failures)}"
+                    )
+                with workspace_transaction_lock(
+                    self.config.state_root,
+                    workspace,
+                    error_code=BLOCK_RESUME_TRUST_INVALID,
+                ):
+                    preformal_checkpoint = (
+                        self._write_preformal_design_checkpoint(
+                            current_job,
+                            workspace=workspace,
+                        )
+                    )
+                self._record_preformal_design_completion(
+                    current_job,
+                    checkpoint=preformal_checkpoint,
+                    recovered=False,
+                )
+                private_completion_status = PRIVATE_LIFECYCLE_TERMINAL
+                private_attestation_id = preformal_checkpoint["receipt_id"]
+                return
+
             if validated_resume_artifacts is not None:
                 _require_validated_resume_artifacts_unchanged(
                     workspace,
@@ -4230,6 +4591,19 @@ class ResearchRunService:
             )
         lifecycle = self._read_private_lifecycle(job)
         if (
+            resume
+            and job.request.research_scope
+            == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+            and isinstance(lifecycle, dict)
+            and lifecycle.get("status") == PRIVATE_LIFECYCLE_RUNNING
+        ):
+            # A process may die after the create-once signed checkpoint but
+            # before the DB projection.  Only the dedicated preformal recovery
+            # branch may consume this RUNNING lifecycle, and that branch must
+            # replay a signed pointer or prove the org runtime COMPLETE before
+            # creating one.  It never re-enters an Agent/formal route.
+            return
+        if (
             isinstance(lifecycle, dict)
             and lifecycle.get("status") == PRIVATE_LIFECYCLE_RESUMABLE
         ):
@@ -4334,6 +4708,13 @@ class ResearchRunService:
                 f"{BLOCK_RESUME_TRUST_INVALID}: runner-private non-resumable marker exists"
             )
         lifecycle = self._read_private_lifecycle(job)
+        if (
+            job.request.research_scope
+            == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+            and isinstance(lifecycle, dict)
+            and lifecycle.get("status") == PRIVATE_LIFECYCLE_RUNNING
+        ):
+            return
         if not isinstance(lifecycle, dict) or lifecycle.get("status") != PRIVATE_LIFECYCLE_RESUMABLE:
             raise RuntimeError(
                 f"{BLOCK_RESUME_TRUST_INVALID}: private lifecycle is not resumable"
@@ -6984,18 +7365,479 @@ class ResearchRunService:
                     f"{BLOCK_EVIDENCE_IDENTITY_MISMATCH}: {key} expected={value!r} actual={actual!r}"
                 )
 
+    @staticmethod
+    def _preformal_forbidden_artifacts(workspace: Path) -> list[str]:
+        forbidden: list[str] = []
+        for path in sorted(workspace.rglob("*")):
+            if not path.exists() and not path.is_symlink():
+                continue
+            relative = path.relative_to(workspace).as_posix()
+            name = path.name.lower()
+            if (
+                relative == "identity/web_research_bootstrap_result.json"
+                or relative.startswith("objects/evo_v2/")
+                or relative.startswith("objects/runtime_context/ultimate_run_report__")
+                or name.startswith("evo_oos_allocation__")
+                or name.startswith("oos_release_manifest__")
+            ):
+                forbidden.append(relative)
+        return forbidden
+
+    @staticmethod
+    def _workspace_refs_under(
+        workspace: Path,
+        relative_root: str,
+    ) -> list[dict[str, str]]:
+        relative = Path(relative_root)
+        if (
+            relative.is_absolute()
+            or relative == Path(".")
+            or ".." in relative.parts
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: research organization root is unsafe"
+            )
+        root = workspace / relative
+        resolved_workspace = workspace.resolve(strict=True)
+        resolved_root = root.resolve(strict=True)
+        try:
+            resolved_root.relative_to(resolved_workspace)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: research organization root escapes workspace"
+            ) from exc
+        refs: list[dict[str, str]] = []
+        for path in sorted(resolved_root.rglob("*")):
+            item_relative = path.relative_to(resolved_workspace).as_posix()
+            if path.is_symlink() or (not path.is_file() and not path.is_dir()):
+                raise RuntimeError(
+                    f"{BLOCK_RESUME_TRUST_INVALID}: unsafe organization artifact "
+                    f"{item_relative}"
+                )
+            if path.is_file():
+                refs.append({"path": item_relative, "sha256": _sha256(path)})
+        return refs
+
+    def _validated_preformal_organization_binding(
+        self,
+        job: ResearchJob,
+        *,
+        workspace: Path,
+    ) -> dict[str, Any]:
+        bundle = validate_research_organization_bundle(
+            workspace=workspace,
+            require_results=True,
+        )
+        plan = load_research_organization_plan(workspace)
+        expected_identity = {
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "job_id": job.job_id,
+        }
+        if plan.get("identity") != expected_identity:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: organization identity changed"
+            )
+        runtime = validate_research_organization_runtime(
+            workspace=workspace,
+            require_complete=True,
+            private_root=(
+                self.config.state_root
+                / "jobs"
+                / job.job_id
+                / "research_org_private"
+            ),
+            trust_root=self.config.state_root / "research-org-trust",
+            installation_id=self.config.installation_id,
+            require_formal=True,
+        )
+        ledger = (
+            runtime.get("transactional_ledger")
+            if isinstance(runtime.get("transactional_ledger"), dict)
+            else {}
+        )
+        if (
+            bundle.get("execution_state") != "COMPLETE"
+            or runtime.get("lifecycle") != "COMPLETE"
+            or runtime.get("formal_independence_verified") is not True
+            or runtime.get("runtime_assurance") != PREFORMAL_RUNTIME_ASSURANCE
+            or ledger.get("ledger_state") != "COMPLETE"
+            or ledger.get("formal_independence_verified") is not True
+            or ledger.get("assurance") != PREFORMAL_RUNTIME_ASSURANCE
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: formal organization runtime is incomplete"
+            )
+        policy = plan.get("workspace_policy")
+        if not isinstance(policy, dict):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: organization workspace policy is missing"
+            )
+        organization_root = str(policy.get("organization_root") or "")
+        result_root = str(policy.get("result_root") or "")
+        runtime_refs = self._workspace_refs_under(
+            workspace,
+            f"{organization_root}/runtime",
+        )
+        result_refs = self._workspace_refs_under(workspace, result_root)
+        expected_result_count = int(runtime.get("result_count") or 0)
+        if (
+            not runtime_refs
+            or len(result_refs) != expected_result_count
+            or int(bundle.get("result_count") or 0) != expected_result_count
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: organization runtime/result set is incomplete"
+            )
+        return {
+            "plan_sha256": str(plan.get("plan_sha256") or ""),
+            "runtime_id": str(runtime.get("runtime_id") or ""),
+            "lifecycle": "COMPLETE",
+            "formal_independence_verified": True,
+            "runtime_assurance": PREFORMAL_RUNTIME_ASSURANCE,
+            "runtime_projection_sha256": stable_json_hash(runtime),
+            "transactional_ledger_sha256": stable_json_hash(ledger),
+            "runtime_artifact_refs": runtime_refs,
+            "result_artifact_refs": result_refs,
+            "runtime_artifact_count": len(runtime_refs),
+            "result_count": expected_result_count,
+        }
+
+    def _write_preformal_design_checkpoint(
+        self,
+        job: ResearchJob,
+        *,
+        workspace: Path,
+    ) -> dict[str, Any]:
+        if job.request.research_scope != RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: preformal scope is not authorized"
+            )
+        forbidden = self._preformal_forbidden_artifacts(workspace)
+        if forbidden:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: formal/OOS artifacts already exist: "
+                f"{', '.join(forbidden)}"
+            )
+        organization_binding = self._validated_preformal_organization_binding(
+            job,
+            workspace=workspace,
+        )
+        trust_store = load_runtime_trust_store(
+            self.config.state_root / "research-org-trust",
+            installation_id=self.config.installation_id,
+        )
+        preformal_snapshot_parent = ensure_host_private_job_subdirectory(
+            self.config.state_root,
+            job.job_id,
+            ("preformal_design", "snapshots"),
+            create=True,
+        )
+        snapshot = self._snapshot_workspace_evidence(
+            job,
+            workspace,
+            snapshot_parent=preformal_snapshot_parent,
+        )
+        snapshot_entries = _workspace_evidence_tree(snapshot)
+        snapshot_relative = snapshot.relative_to(
+            self.config.state_root.resolve(strict=True)
+        ).as_posix()
+        receipt = trust_store.sign(
+            "host_admission",
+            {
+                "receipt_type": PREFORMAL_CHECKPOINT_RECEIPT_TYPE,
+                "checkpoint_id": f"preformal_{uuid.uuid4().hex}",
+                "issued_at_utc": utc_now(),
+                "identity": self._private_lifecycle_identity(job),
+                "request_binding": {
+                    "research_scope": RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+                    "request_sha256": stable_json_hash(job.request.to_dict()),
+                },
+                "research_organization": organization_binding,
+                "workspace_evidence": {
+                    "snapshot_relative_path": snapshot_relative,
+                    "workspace_tree_sha256": stable_json_hash(snapshot_entries),
+                    "file_count": len(snapshot_entries),
+                },
+                "authority_boundary": {
+                    "current_factor_empirical_verdict": "NOT_ISSUED",
+                    "factor_verdict": "UNKNOWN",
+                    "formal": False,
+                    "formal_proof_eligible": False,
+                    "production_eligible": False,
+                    "promotion_allowed": False,
+                    "resume_allowed": False,
+                },
+                "negative_execution_attestation": {
+                    "host_data_lease_requested": False,
+                    "data_materializer_invoked": False,
+                    "ultimate_invoked": False,
+                    "step3_6_invoked": False,
+                    "oos_allocated": False,
+                    "oos_read": False,
+                    "oos_released": False,
+                    "oos_consumed": False,
+                    "forbidden_artifacts_absent": True,
+                },
+                "trust_manifest_sha256": trust_store.public_manifest[
+                    "manifest_sha256"
+                ],
+            },
+        )
+        checkpoint_root = ensure_host_private_job_subdirectory(
+            self.config.state_root,
+            job.job_id,
+            ("preformal_design",),
+            create=True,
+        )
+        receipt_root = ensure_host_private_job_subdirectory(
+            self.config.state_root,
+            job.job_id,
+            ("preformal_design", "receipts"),
+            create=True,
+        )
+        receipt_id = str(receipt["receipt_id"])
+        receipt_path = receipt_root / f"receipt_{receipt_id}.json"
+        _write_private_json_once(
+            receipt_path,
+            receipt,
+            root=self.config.state_root,
+            block_token=BLOCK_RESUME_TRUST_INVALID,
+            label="preformal design receipt",
+        )
+        pointer = {
+            "version": PREFORMAL_CHECKPOINT_POINTER_VERSION,
+            "identity": self._private_lifecycle_identity(job),
+            "receipt_id": receipt_id,
+            "receipt_sha256": _sha256(receipt_path),
+        }
+        _write_private_json_once(
+            checkpoint_root / "current.json",
+            pointer,
+            root=self.config.state_root,
+            block_token=BLOCK_RESUME_TRUST_INVALID,
+            label="preformal design current pointer",
+        )
+        return self._replay_preformal_design_checkpoint(
+            job,
+            workspace=workspace,
+        )
+
+    def _replay_preformal_design_checkpoint(
+        self,
+        job: ResearchJob,
+        *,
+        workspace: Path,
+    ) -> dict[str, Any]:
+        state_root = self.config.state_root.resolve(strict=True)
+        checkpoint_root = ensure_host_private_job_subdirectory(
+            state_root,
+            job.job_id,
+            ("preformal_design",),
+            create=False,
+        )
+        _recover_private_json_once_publish(
+            checkpoint_root / "current.json",
+            root=state_root,
+            block_token=BLOCK_RESUME_TRUST_INVALID,
+            label="preformal design current pointer",
+        )
+        pointer_bytes, _pointer_sha256, _pointer_relative = (
+            _read_private_regular_file_once(
+                state_root,
+                checkpoint_root / "current.json",
+                block_token=BLOCK_RESUME_TRUST_INVALID,
+                label="preformal design current pointer",
+            )
+        )
+        try:
+            pointer = json.loads(pointer_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: preformal pointer is invalid JSON"
+            ) from exc
+        expected_identity = self._private_lifecycle_identity(job)
+        if (
+            not isinstance(pointer, dict)
+            or set(pointer)
+            != {"version", "identity", "receipt_id", "receipt_sha256"}
+            or pointer.get("version") != PREFORMAL_CHECKPOINT_POINTER_VERSION
+            or pointer.get("identity") != expected_identity
+            or not re.fullmatch(r"[0-9a-f]{64}", str(pointer.get("receipt_id") or ""))
+            or not re.fullmatch(
+                r"[0-9a-f]{64}", str(pointer.get("receipt_sha256") or "")
+            )
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: preformal pointer identity is invalid"
+            )
+        receipt_id = str(pointer["receipt_id"])
+        receipt_path = (
+            checkpoint_root / "receipts" / f"receipt_{receipt_id}.json"
+        )
+        _recover_private_json_once_publish(
+            receipt_path,
+            root=state_root,
+            block_token=BLOCK_RESUME_TRUST_INVALID,
+            label="preformal design receipt",
+        )
+        receipt_bytes, receipt_sha256, _receipt_relative = (
+            _read_private_regular_file_once(
+                state_root,
+                receipt_path,
+                block_token=BLOCK_RESUME_TRUST_INVALID,
+                label="preformal design receipt",
+            )
+        )
+        try:
+            receipt = json.loads(receipt_bytes.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: preformal receipt is invalid JSON"
+            ) from exc
+        trust_store = load_runtime_trust_store(
+            state_root / "research-org-trust",
+            installation_id=self.config.installation_id,
+        )
+        verification_reasons = (
+            trust_store.verify(receipt, expected_issuer="host_admission")
+            if isinstance(receipt, dict)
+            else ["receipt.object_required"]
+        )
+        expected_boundary = {
+            "current_factor_empirical_verdict": "NOT_ISSUED",
+            "factor_verdict": "UNKNOWN",
+            "formal": False,
+            "formal_proof_eligible": False,
+            "production_eligible": False,
+            "promotion_allowed": False,
+            "resume_allowed": False,
+        }
+        expected_negative = {
+            "host_data_lease_requested": False,
+            "data_materializer_invoked": False,
+            "ultimate_invoked": False,
+            "step3_6_invoked": False,
+            "oos_allocated": False,
+            "oos_read": False,
+            "oos_released": False,
+            "oos_consumed": False,
+            "forbidden_artifacts_absent": True,
+        }
+        if (
+            verification_reasons
+            or receipt_sha256 != pointer["receipt_sha256"]
+            or not isinstance(receipt, dict)
+            or receipt.get("receipt_id") != receipt_id
+            or receipt.get("receipt_type") != PREFORMAL_CHECKPOINT_RECEIPT_TYPE
+            or receipt.get("identity") != expected_identity
+            or receipt.get("request_binding")
+            != {
+                "research_scope": RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+                "request_sha256": stable_json_hash(job.request.to_dict()),
+            }
+            or receipt.get("authority_boundary") != expected_boundary
+            or receipt.get("negative_execution_attestation") != expected_negative
+            or receipt.get("trust_manifest_sha256")
+            != trust_store.public_manifest["manifest_sha256"]
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: preformal receipt failed signed replay"
+            )
+        organization_binding = self._validated_preformal_organization_binding(
+            job,
+            workspace=workspace,
+        )
+        if receipt.get("research_organization") != organization_binding:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: organization evidence changed"
+            )
+        workspace_evidence = receipt.get("workspace_evidence")
+        if not isinstance(workspace_evidence, dict):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: workspace evidence is missing"
+            )
+        snapshot_relative = Path(
+            str(workspace_evidence.get("snapshot_relative_path") or "")
+        )
+        if snapshot_relative.is_absolute() or ".." in snapshot_relative.parts:
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: snapshot reference is unsafe"
+            )
+        snapshot = (state_root / snapshot_relative).resolve(strict=True)
+        expected_snapshot_parent = ensure_host_private_job_subdirectory(
+            state_root,
+            job.job_id,
+            ("preformal_design", "snapshots"),
+            create=False,
+        )
+        if (
+            snapshot.parent != expected_snapshot_parent
+            or not snapshot.name.startswith("workspace_")
+            or snapshot.is_symlink()
+            or not snapshot.is_dir()
+            or snapshot.stat().st_mode & 0o222
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: snapshot is not immutable Host evidence"
+            )
+        snapshot_entries = _workspace_evidence_tree(snapshot)
+        current_entries = _workspace_evidence_tree(workspace)
+        tree_sha256 = stable_json_hash(snapshot_entries)
+        if (
+            snapshot_entries != current_entries
+            or workspace_evidence
+            != {
+                "snapshot_relative_path": snapshot_relative.as_posix(),
+                "workspace_tree_sha256": tree_sha256,
+                "file_count": len(snapshot_entries),
+            }
+            or self._preformal_forbidden_artifacts(workspace)
+        ):
+            raise RuntimeError(
+                f"{BLOCK_RESUME_TRUST_INVALID}: preformal workspace evidence changed"
+            )
+        return {
+            "status": "PASS",
+            "receipt_id": receipt_id,
+            "receipt_sha256": receipt_sha256,
+            "trust_manifest_sha256": trust_store.public_manifest[
+                "manifest_sha256"
+            ],
+            "workspace_tree_sha256": tree_sha256,
+            "organization_runtime_sha256": organization_binding[
+                "runtime_projection_sha256"
+            ],
+            "organization_results_sha256": stable_json_hash(
+                organization_binding["result_artifact_refs"]
+            ),
+            "organization_runtime_id": organization_binding["runtime_id"],
+            "organization_result_count": organization_binding["result_count"],
+        }
+
     def _snapshot_workspace_evidence(
         self,
         job: ResearchJob,
         workspace: Path,
+        *,
+        snapshot_parent: Path | None = None,
     ) -> Path:
         source_root = workspace.resolve(strict=True)
         state_root = self.config.state_root.resolve(strict=True)
-        snapshot_parent = (
-            state_root / "attestations" / job.job_id / "snapshots"
-        )
-        snapshot_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        snapshot_parent.chmod(0o700)
+        if snapshot_parent is None:
+            snapshot_parent = (
+                state_root / "attestations" / job.job_id / "snapshots"
+            )
+            snapshot_parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            snapshot_parent.chmod(0o700)
+        snapshot_parent = snapshot_parent.resolve(strict=True)
+        try:
+            snapshot_parent.relative_to(state_root)
+        except ValueError as exc:
+            raise RuntimeError(
+                f"{BLOCK_ISOLATION_AUDIT_FAILED}: snapshot parent escapes Host state"
+            ) from exc
         suffix = f"{_stamp(utc_now())}_{uuid.uuid4().hex[:12]}"
         final_root = snapshot_parent / f"workspace_{suffix}"
         temporary_root = snapshot_parent / f".workspace_{suffix}.tmp"
@@ -10968,8 +11810,9 @@ def _open_private_parent_fd(
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NOFOLLOW", 0)
     )
-    descriptor = os.open(root_path, directory_flags)
+    descriptor = -1
     try:
+        descriptor = os.open(root_path, directory_flags)
         for part in relative.parts[:-1]:
             next_descriptor = os.open(part, directory_flags, dir_fd=descriptor)
             os.close(descriptor)
@@ -10979,9 +11822,19 @@ def _open_private_parent_fd(
                 raise RuntimeError(
                     f"{block_token}: {label} parent is unsafe"
                 )
-        yield descriptor, relative.parts[-1]
     except OSError as exc:
+        if descriptor >= 0:
+            os.close(descriptor)
         raise RuntimeError(f"{block_token}: {label} parent is unsafe") from exc
+    except Exception:
+        if descriptor >= 0:
+            os.close(descriptor)
+        raise
+    try:
+        # Keep caller I/O outside the traversal exception handler.  Otherwise
+        # a failed create-once publish would be mislabeled as an unsafe parent
+        # and its durable temporary file could escape cleanup.
+        yield descriptor, relative.parts[-1]
     finally:
         os.close(descriptor)
 
@@ -11258,3 +12111,185 @@ def _write_json_atomic(
         json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n",
         root=root,
     )
+
+
+def _write_private_json_once(
+    path: Path,
+    payload: dict[str, Any],
+    *,
+    root: Path,
+    block_token: str,
+    label: str,
+) -> None:
+    encoded = (
+        json.dumps(
+            payload,
+            allow_nan=False,
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+    temporary_name = f".{path.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        with _open_private_parent_fd(
+            root,
+            path,
+            block_token=block_token,
+            label=label,
+        ) as (parent_descriptor, name):
+            descriptor = os.open(
+                temporary_name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+            try:
+                offset = 0
+                while offset < len(encoded):
+                    offset += os.write(descriptor, encoded[offset:])
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            try:
+                os.link(
+                    temporary_name,
+                    name,
+                    src_dir_fd=parent_descriptor,
+                    dst_dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileExistsError:
+                os.unlink(temporary_name, dir_fd=parent_descriptor)
+                raise
+            os.fsync(parent_descriptor)
+            os.unlink(temporary_name, dir_fd=parent_descriptor)
+            os.fsync(parent_descriptor)
+    except FileExistsError as exc:
+        raise RuntimeError(
+            f"{block_token}: {label} is create-once and already exists"
+        ) from exc
+    except OSError as exc:
+        try:
+            with _open_private_parent_fd(
+                root,
+                path,
+                block_token=block_token,
+                label=f"{label} temporary cleanup",
+            ) as (parent_descriptor, _name):
+                try:
+                    os.unlink(temporary_name, dir_fd=parent_descriptor)
+                    os.fsync(parent_descriptor)
+                except FileNotFoundError:
+                    pass
+        except RuntimeError:
+            pass
+        raise RuntimeError(f"{block_token}: {label} write failed") from exc
+
+
+def _recover_private_json_once_publish(
+    path: Path,
+    *,
+    root: Path,
+    block_token: str,
+    label: str,
+) -> bool:
+    """Finish the sole safe crash window in the create-once link publish."""
+
+    try:
+        with _open_private_parent_fd(
+            root,
+            path,
+            block_token=block_token,
+            label=f"{label} recovery",
+        ) as (parent_descriptor, name):
+            try:
+                destination = os.stat(
+                    name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                return False
+            if (
+                not stat.S_ISREG(destination.st_mode)
+                or destination.st_uid != os.geteuid()
+            ):
+                raise RuntimeError(
+                    f"{block_token}: {label} recovery destination is unsafe"
+                )
+            if destination.st_nlink == 1:
+                return False
+            if destination.st_nlink != 2:
+                raise RuntimeError(
+                    f"{block_token}: {label} recovery link count is invalid"
+                )
+
+            temporary_pattern = re.compile(
+                rf"\.{re.escape(name)}\.[0-9a-f]{{32}}\.tmp\Z"
+            )
+            linked_temporary_names: list[str] = []
+            for entry_name in os.listdir(parent_descriptor):
+                if not temporary_pattern.fullmatch(entry_name):
+                    continue
+                entry = os.stat(
+                    entry_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                if (
+                    entry.st_dev == destination.st_dev
+                    and entry.st_ino == destination.st_ino
+                ):
+                    linked_temporary_names.append(entry_name)
+            if len(linked_temporary_names) != 1:
+                raise RuntimeError(
+                    f"{block_token}: {label} recovery hardlink evidence is invalid"
+                )
+
+            temporary_name = linked_temporary_names[0]
+            linked_before = os.stat(
+                temporary_name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            destination_before = os.stat(
+                name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if any(
+                metadata.st_dev != destination.st_dev
+                or metadata.st_ino != destination.st_ino
+                or not stat.S_ISREG(metadata.st_mode)
+                for metadata in (linked_before, destination_before)
+            ):
+                raise RuntimeError(
+                    f"{block_token}: {label} recovery hardlink changed"
+                )
+            os.unlink(temporary_name, dir_fd=parent_descriptor)
+            os.fsync(parent_descriptor)
+            destination_after = os.stat(
+                name,
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+            if (
+                destination_after.st_dev != destination.st_dev
+                or destination_after.st_ino != destination.st_ino
+                or destination_after.st_size != destination.st_size
+                or destination_after.st_mtime_ns != destination.st_mtime_ns
+                or destination_after.st_nlink != 1
+                or not stat.S_ISREG(destination_after.st_mode)
+            ):
+                raise RuntimeError(
+                    f"{block_token}: {label} recovery destination changed"
+                )
+            return True
+    except OSError as exc:
+        raise RuntimeError(f"{block_token}: {label} recovery failed") from exc

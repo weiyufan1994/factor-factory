@@ -12,7 +12,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from factor_factory.console.models import ResearchJob, ResearchMessage, ResearchRequest
+from factor_factory.console.models import (
+    RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+    ResearchJob,
+    ResearchMessage,
+    ResearchRequest,
+)
 from factor_factory.console.report_upload import (
     ResearchAttachment,
     ResearchAttachmentUpload,
@@ -732,6 +737,13 @@ class ResearchJobStore:
         job = self.get_job(job_id)
         if job is None:
             raise KeyError(job_id)
+        if (
+            job.request.research_scope == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+            and job.current_stage == "preformal_design_complete"
+        ):
+            raise ValueError(
+                "preformal_design_only is terminal; start a new full_formal task"
+            )
         if job.execution_status not in {"REVIEW_REQUIRED", "BLOCKED", "FAILED"}:
             raise ValueError("only a paused, blocked, or failed job can be resumed")
         resumed = self.update_job(

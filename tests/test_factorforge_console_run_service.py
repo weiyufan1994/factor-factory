@@ -1997,6 +1997,657 @@ def test_routed_console_runs_specialists_around_host_director(
     assert episode["authority"] == "historical_episode_candidate_only"
 
 
+class _PreformalDesignAdapter:
+    def __init__(self):
+        self.host_runs = 0
+        self.data_lease_calls = 0
+
+    def run(self, job, *, worktree: Path, workspace: Path, resume: bool):
+        from factor_factory.console.agent_adapter import AgentRunResult
+
+        assert resume is False
+        self.host_runs += 1
+        (workspace / "identity" / "web_execution_ledger.md").write_text(
+            "preformal host director design completed\n",
+            encoding="utf-8",
+        )
+        result_path = workspace / "identity" / "web_agent_completion.json"
+        _write_json(result_path, {"execution_status": "AUTHORING_COMPLETE"})
+        _write_json(
+            workspace / "identity" / "web_research_director_record.json",
+            {"status": "HOST_AUTHORED_PREFORMAL_DESIGN"},
+        )
+        return AgentRunResult(
+            returncode=0,
+            agent_id=f"agent-{job.job_id}",
+            session_key=f"session-{job.job_id}",
+            started_at_utc="2026-08-13T00:00:00Z",
+            finished_at_utc="2026-08-13T00:01:00Z",
+            stdout_tail="preformal design complete",
+            stderr_tail="",
+            result_path=str(result_path),
+        )
+
+    def run_research_org_session(self, _invocation):
+        raise AssertionError("orchestration test patches the signed org runtime")
+
+    def cancel_research_org_session(self, _runtime_instance_id):
+        return True
+
+    def denied_secret_values(self, _job_id: str):
+        return ()
+
+    def deactivate_denied_secrets(self, _job_id: str):
+        return None
+
+    def prepare_host_data_environment(self, _job_id: str):
+        self.data_lease_calls += 1
+        raise AssertionError("design-only may not request a Host data lease")
+
+
+def _patch_preformal_design_runtime(monkeypatch, module, service):
+    from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
+
+    ensure_runtime_trust_store(
+        service.config.state_root / "research-org-trust",
+        installation_id=service.config.installation_id,
+    )
+    runtime_calls = []
+    assurance = "signed_specialist_runtime_complete_host_director_external"
+
+    def fake_runtime(**_kwargs):
+        runtime_calls.append(len(runtime_calls) + 1)
+        if len(runtime_calls) == 1:
+            return {
+                "lifecycle": "WAITING_HOST_RESULT",
+                "result_count": 3,
+                "formal_independence_verified": False,
+            }
+        return {
+            "runtime_id": "runtime_preformal_test",
+            "lifecycle": "COMPLETE",
+            "result_count": 7,
+            "formal_independence_verified": True,
+            "runtime_assurance": assurance,
+            "transactional_ledger": {
+                "ledger_state": "COMPLETE",
+                "formal_independence_verified": True,
+                "assurance": assurance,
+            },
+        }
+
+    def signed_binding(job, *, workspace):
+        plan = json.loads(
+            (workspace / "identity" / "research_organization_plan.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        result_refs = [
+            {
+                "path": (
+                    f"objects/research_organization/{job.report_id}/results/"
+                    f"role_{index}.json"
+                ),
+                "sha256": f"{index + 1:064x}",
+            }
+            for index in range(7)
+        ]
+        return {
+            "plan_sha256": plan["plan_sha256"],
+            "runtime_id": "runtime_preformal_test",
+            "lifecycle": "COMPLETE",
+            "formal_independence_verified": True,
+            "runtime_assurance": assurance,
+            "runtime_projection_sha256": "a" * 64,
+            "transactional_ledger_sha256": "b" * 64,
+            "runtime_artifact_refs": [
+                {
+                    "path": (
+                        f"objects/research_organization/{job.report_id}/runtime/"
+                        "runtime_state.json"
+                    ),
+                    "sha256": "c" * 64,
+                }
+            ],
+            "result_artifact_refs": result_refs,
+            "runtime_artifact_count": 1,
+            "result_count": 7,
+        }
+
+    monkeypatch.setattr(module, "run_research_organization_runtime", fake_runtime)
+    monkeypatch.setattr(
+        module,
+        "validate_research_organization_bundle",
+        lambda **_kwargs: {"state": "ROUTED"},
+    )
+    monkeypatch.setattr(
+        service,
+        "_admit_host_research_director_result",
+        lambda **_kwargs: {"verdict": "PASS"},
+    )
+    monkeypatch.setattr(
+        service,
+        "_validated_preformal_organization_binding",
+        signed_binding,
+    )
+    return runtime_calls
+
+
+def test_preformal_design_only_runner_checkpoints_before_data_formal_and_oos(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+    from factor_factory.research_org.runtime_trust import load_runtime_trust_store
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    runtime_calls = _patch_preformal_design_runtime(
+        monkeypatch, module, service
+    )
+    formal_calls = []
+    oos_calls = []
+    monkeypatch.setattr(
+        service,
+        "_execute_host_formal_pipeline",
+        lambda *_args, **_kwargs: formal_calls.append(True),
+    )
+    monkeypatch.setattr(
+        module,
+        "ensure_empty_oos_exposure_private_registry",
+        lambda *_args, **_kwargs: oos_calls.append(True),
+    )
+    job = service.submit(
+        ResearchRequest(
+            title="DeepSeek price-volume design canary",
+            hypothesis=(
+                "Price-volume occupation geometry may identify constrained "
+                "liquidity transfer without yet asserting empirical alpha."
+            ),
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+
+    service.run_once()
+
+    paused = store.get_job(job.job_id)
+    assert paused.execution_status == "REVIEW_REQUIRED"
+    assert paused.protocol_status == "PAUSED"
+    assert paused.current_stage == "preformal_design_complete"
+    assert paused.factor_verdict == "UNKNOWN"
+    assert paused.council_status == "NOT_STARTED"
+    assert paused.formal_proof_eligible is False
+    assert runtime_calls == [1, 2]
+    assert adapter.host_runs == 1
+    assert adapter.data_lease_calls == 0
+    assert formal_calls == []
+    assert oos_calls == []
+    boundary = paused.result["preformal_design"]
+    assert boundary["current_factor_empirical_verdict"] == "NOT_ISSUED"
+    assert boundary["formal"] is False
+    assert boundary["promotion_allowed"] is False
+    assert boundary["resume_allowed"] is False
+    checkpoint = boundary["checkpoint"]
+    assert checkpoint["status"] == "PASS"
+    assert service.replay_preformal_design_checkpoint(job.job_id) == {
+        **checkpoint,
+        "organization_runtime_id": "runtime_preformal_test",
+        "organization_result_count": 7,
+    }
+
+    pointer_path = (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "preformal_design"
+        / "current.json"
+    )
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    receipt_path = (
+        pointer_path.parent
+        / "receipts"
+        / f"receipt_{pointer['receipt_id']}.json"
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    trust = load_runtime_trust_store(
+        service.config.state_root / "research-org-trust",
+        installation_id=service.config.installation_id,
+    )
+    assert trust.verify(receipt, expected_issuer="host_admission") == []
+    assert receipt["request_binding"]["research_scope"] == (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+    )
+    assert len(receipt["research_organization"]["result_artifact_refs"]) == 7
+    assert receipt["negative_execution_attestation"] == {
+        "host_data_lease_requested": False,
+        "data_materializer_invoked": False,
+        "ultimate_invoked": False,
+        "step3_6_invoked": False,
+        "oos_allocated": False,
+        "oos_read": False,
+        "oos_released": False,
+        "oos_consumed": False,
+        "forbidden_artifacts_absent": True,
+    }
+    workspace = Path(paused.workspace_path)
+    assert not (workspace / "identity/web_research_bootstrap_result.json").exists()
+    assert not list(workspace.glob("objects/runtime_context/ultimate_run_report__*"))
+    assert not (workspace / "objects/evo_v2").exists()
+
+    public_json = json.dumps(paused.to_dict(), ensure_ascii=False, sort_keys=True)
+    assert str(service.config.state_root) not in public_json
+    assert "snapshot_relative_path" not in public_json
+    assert "receipt_path" not in public_json
+    with pytest.raises(RuntimeError, match="terminal; start a new full_formal task"):
+        service.request_resume(job.job_id)
+    with pytest.raises(ValueError, match="terminal; start a new full_formal task"):
+        store.request_resume(job.job_id)
+
+
+def test_preformal_checkpoint_crash_before_db_projection_replays_same_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    runtime_calls = _patch_preformal_design_runtime(
+        monkeypatch, module, service
+    )
+    original_record = service._record_preformal_design_completion
+    monkeypatch.setattr(
+        service,
+        "_record_preformal_design_completion",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    job = service.submit(
+        ResearchRequest(
+            title="Crash-safe design canary",
+            hypothesis="Mechanism-only checkpoint before any empirical execution.",
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        service.run_once()
+
+    pointer_path = (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "preformal_design"
+        / "current.json"
+    )
+    first_pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    assert adapter.host_runs == 1
+    assert runtime_calls == [1, 2]
+    assert service._read_private_lifecycle(job)["status"] == "RUNNING"
+
+    store.pause_interrupted_jobs()
+    monkeypatch.setattr(
+        service,
+        "_record_preformal_design_completion",
+        original_record,
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    recovered = store.get_job(job.job_id)
+    second_pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    assert recovered.current_stage == "preformal_design_complete"
+    assert recovered.result["preformal_design"]["checkpoint"]["receipt_id"] == (
+        first_pointer["receipt_id"]
+    )
+    assert second_pointer == first_pointer
+    assert adapter.host_runs == 1
+    assert runtime_calls == [1, 2]
+    assert adapter.data_lease_calls == 0
+    assert service._read_private_lifecycle(job)["status"] == "TERMINAL"
+
+
+def test_private_json_once_does_not_publish_partial_final_file(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    root = root.resolve(strict=True)
+    parent = root / "checkpoint"
+    parent.mkdir(mode=0o700)
+    destination = parent / "current.json"
+    original_link = module.os.link
+
+    def crash_before_publish(*_args, **_kwargs):
+        raise OSError("simulated publish crash")
+
+    monkeypatch.setattr(module.os, "link", crash_before_publish)
+    with pytest.raises(RuntimeError, match="write failed"):
+        module._write_private_json_once(
+            destination,
+            {"status": "complete"},
+            root=root,
+            block_token="BLOCK_TEST",
+            label="checkpoint",
+        )
+    assert not destination.exists()
+    assert list(parent.iterdir()) == []
+
+    monkeypatch.setattr(module.os, "link", original_link)
+    module._write_private_json_once(
+        destination,
+        {"status": "complete"},
+        root=root,
+        block_token="BLOCK_TEST",
+        label="checkpoint",
+    )
+    assert json.loads(destination.read_text(encoding="utf-8")) == {
+        "status": "complete"
+    }
+
+
+def test_private_json_once_crash_after_link_recovers_only_same_inode_temp(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+
+    import factor_factory.console.run_service as module
+
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    root = root.resolve(strict=True)
+    parent = root / "checkpoint"
+    parent.mkdir(mode=0o700)
+    destination = parent / "current.json"
+    original_unlink = module.os.unlink
+    crash_state = {"raised": False}
+
+    def crash_after_link(path, *args, **kwargs):
+        name = os.fspath(path)
+        if (
+            not crash_state["raised"]
+            and name.startswith(".current.json.")
+            and destination.exists()
+        ):
+            crash_state["raised"] = True
+            raise KeyboardInterrupt("simulated process death after link publish")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "unlink", crash_after_link)
+    with pytest.raises(KeyboardInterrupt, match="after link publish"):
+        module._write_private_json_once(
+            destination,
+            {"status": "complete"},
+            root=root,
+            block_token="BLOCK_TEST",
+            label="checkpoint",
+        )
+    monkeypatch.setattr(module.os, "unlink", original_unlink)
+
+    linked_temp = next(parent.glob(".current.json.*.tmp"))
+    assert destination.stat().st_ino == linked_temp.stat().st_ino
+    assert destination.stat().st_nlink == 2
+    different_inode_temp = parent / f".current.json.{'f' * 32}.tmp"
+    different_inode_temp.write_text("attacker-controlled\n", encoding="utf-8")
+    assert destination.stat().st_ino != different_inode_temp.stat().st_ino
+
+    assert module._recover_private_json_once_publish(
+        destination,
+        root=root,
+        block_token="BLOCK_TEST",
+        label="checkpoint",
+    ) is True
+
+    assert destination.stat().st_nlink == 1
+    assert not linked_temp.exists()
+    assert different_inode_temp.read_text(encoding="utf-8") == (
+        "attacker-controlled\n"
+    )
+    content, _sha256, _relative = module._read_private_regular_file_once(
+        root,
+        destination,
+        block_token="BLOCK_TEST",
+        label="checkpoint",
+    )
+    assert json.loads(content.decode("utf-8")) == {"status": "complete"}
+    assert module._recover_private_json_once_publish(
+        destination,
+        root=root,
+        block_token="BLOCK_TEST",
+        label="checkpoint",
+    ) is False
+
+
+def test_preformal_snapshot_parent_symlink_escape_is_blocked(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+    from factor_factory.console.private_job_root import ensure_host_private_job_root
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _patch_preformal_design_runtime(monkeypatch, module, service)
+    job = service.submit(
+        ResearchRequest(
+            title="Symlink escape design canary",
+            hypothesis="A complete mechanism design with an explicit falsifier.",
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+    private_job = ensure_host_private_job_root(
+        service.config.state_root,
+        job.job_id,
+        create=True,
+    )
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    (private_job / "preformal_design").symlink_to(
+        outside,
+        target_is_directory=True,
+    )
+
+    service.run_once()
+
+    blocked = store.get_job(job.job_id)
+    assert blocked.execution_status == "BLOCKED"
+    assert blocked.formal_proof_eligible is False
+    assert list(outside.iterdir()) == []
+    assert adapter.data_lease_calls == 0
+
+
+def test_preformal_db_projection_crash_reconciles_running_private_lifecycle(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _patch_preformal_design_runtime(monkeypatch, module, service)
+    original_finish = service._finish_private_execution
+    monkeypatch.setattr(
+        service,
+        "_finish_private_execution",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    job = service.submit(
+        ResearchRequest(
+            title="Lifecycle reconciliation canary",
+            hypothesis="A design checkpoint that remains pre-empirical.",
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        service.run_once()
+
+    projected = store.get_job(job.job_id)
+    assert projected.current_stage == "preformal_design_complete"
+    assert service._read_private_lifecycle(job)["status"] == "RUNNING"
+    monkeypatch.setattr(service, "_finish_private_execution", original_finish)
+
+    service._reconcile_preformal_terminal_lifecycles()
+
+    assert service._read_private_lifecycle(job)["status"] == "TERMINAL"
+    assert store.get_job(job.job_id).current_stage == "preformal_design_complete"
+    assert adapter.host_runs == 1
+    assert adapter.data_lease_calls == 0
+
+
+def test_startup_reconciliation_quarantines_damaged_job_and_continues(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    runtime_calls = _patch_preformal_design_runtime(
+        monkeypatch,
+        module,
+        service,
+    )
+
+    def create_running_checkpoint(title):
+        job = service.submit(
+            ResearchRequest(
+                title=title,
+                hypothesis="A design checkpoint that remains pre-empirical.",
+                research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+            )
+        )
+        with monkeypatch.context() as crash_patch:
+            crash_patch.setattr(
+                service,
+                "_finish_private_execution",
+                lambda *_args, **_kwargs: (
+                    _ for _ in ()
+                ).throw(KeyboardInterrupt()),
+            )
+            with pytest.raises(KeyboardInterrupt):
+                service.run_once()
+        return store.get_job(job.job_id)
+
+    damaged = create_running_checkpoint("Damaged startup reconciliation")
+    runtime_calls.clear()
+    intact = create_running_checkpoint("Intact startup reconciliation")
+    damaged_workspace = Path(damaged.workspace_path)
+    damaged_workspace.rename(tmp_path / "damaged-preformal-workspace")
+
+    try:
+        service.start()
+
+        assert service._thread is not None
+        assert service._thread.is_alive()
+        assert service.healthcheck() is True
+        blocked = store.get_job(damaged.job_id)
+        assert blocked.execution_status == "BLOCKED"
+        assert blocked.protocol_status == "BLOCK"
+        assert blocked.factor_verdict == "BLOCK"
+        assert blocked.current_stage == "blocked"
+        assert blocked.error_code == module.BLOCK_RESUME_TRUST_INVALID
+        assert service._read_private_lifecycle(damaged)["status"] == "NON_RESUMABLE"
+        assert service._non_resumable_marker_path(damaged.job_id).is_file()
+        assert any(
+            event["event_type"] == "PREFORMAL_DESIGN_RECONCILIATION_BLOCKED"
+            for event in store.list_events(damaged.job_id)
+        )
+        assert service._read_private_lifecycle(intact)["status"] == "TERMINAL"
+        assert any(
+            event["event_type"] == "PREFORMAL_DESIGN_LIFECYCLE_RECONCILED"
+            for event in store.list_events(intact.job_id)
+        )
+        assert runtime_calls == [1, 2]
+        assert adapter.host_runs == 2
+    finally:
+        service.stop()
+
+
+def test_startup_reconciliation_marker_failure_makes_runner_unhealthy(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _patch_preformal_design_runtime(monkeypatch, module, service)
+    damaged = service.submit(
+        ResearchRequest(
+            title="Unclassified startup reconciliation",
+            hypothesis="A design checkpoint that remains pre-empirical.",
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+    with monkeypatch.context() as crash_patch:
+        crash_patch.setattr(
+            service,
+            "_finish_private_execution",
+            lambda *_args, **_kwargs: (
+                _ for _ in ()
+            ).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            service.run_once()
+    projected = store.get_job(damaged.job_id)
+    Path(projected.workspace_path).rename(
+        tmp_path / "unclassified-preformal-workspace"
+    )
+    queued = service.submit(_request("Queued behind unhealthy startup"))
+    monkeypatch.setattr(
+        service,
+        "_mark_job_non_resumable",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("fail")),
+    )
+
+    try:
+        service.start()
+
+        assert service._thread is not None
+        assert service._thread.is_alive()
+        assert service.healthcheck() is False
+        assert service.run_once() is None
+        assert store.get_job(queued.job_id).execution_status == "QUEUED"
+        unclassified = store.get_job(damaged.job_id)
+        assert unclassified.execution_status == "REVIEW_REQUIRED"
+        assert unclassified.current_stage == "preformal_design_complete"
+        assert any(
+            event["event_type"]
+            == "PREFORMAL_DESIGN_RECONCILIATION_HEALTH_BLOCKED"
+            for event in store.list_events(damaged.job_id)
+        )
+    finally:
+        service.stop()
+
+
 def test_evo_v2_memory_gate_runs_after_materializer_and_before_ultimate(
     tmp_path,
     monkeypatch,

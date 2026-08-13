@@ -470,6 +470,46 @@ def test_research_request_rejects_dns_resolution_to_private_address(monkeypatch)
         )
 
 
+def test_research_request_scope_is_explicit_only_for_design_only_and_legacy_hash_stable():
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_FULL_FORMAL,
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+    from factor_factory.console.web_research_plan import stable_json_hash
+
+    legacy_payload = {
+        "contract_version": "factorforge_console_research_request_v1",
+        "title": "legacy factor",
+        "hypothesis": "legacy signed request",
+        "input_kind": "hypothesis",
+        "factor_id_hint": "",
+        "universe": "a_share_all",
+        "sample_start": "2016-01-01",
+        "sample_end": "2025-07-11",
+        "forward_horizon": "1d",
+        "transaction_cost_bps": 30.0,
+        "model": "",
+        "source_url": "",
+    }
+    legacy_hash = stable_json_hash(legacy_payload)
+    restored = ResearchRequest.from_dict(legacy_payload)
+
+    assert restored.research_scope == RESEARCH_SCOPE_FULL_FORMAL
+    assert restored.to_dict() == legacy_payload
+    assert stable_json_hash(restored.to_dict()) == legacy_hash
+
+    design_only = ResearchRequest(
+        title="design factor",
+        hypothesis="signed preformal design",
+        research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+    )
+    assert (
+        design_only.to_dict()["research_scope"]
+        == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+    )
+
+
 def test_job_store_uses_external_sqlite_and_serial_claiming(tmp_path):
     from factor_factory.console.store import ResearchJobStore
 

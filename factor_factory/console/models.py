@@ -50,6 +50,12 @@ PILOT_TRANSACTION_COST_BPS = 30.0
 PILOT_COST_MODEL_ID = "factorforge_step4_turnover_30bps_v1"
 PILOT_UNIVERSE = "a_share_all"
 PILOT_MODEL = "deepseek-v4-flash"
+RESEARCH_SCOPE_FULL_FORMAL = "full_formal"
+RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY = "preformal_design_only"
+VALID_RESEARCH_SCOPES = {
+    RESEARCH_SCOPE_FULL_FORMAL,
+    RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+}
 RESEARCH_JOB_VERSION = "factorforge_console_research_job_v1"
 RESEARCH_MESSAGE_VERSION = "factorforge_console_research_message_v1"
 VALID_MESSAGE_ROLES = {"user"}
@@ -475,6 +481,7 @@ class ResearchRequest:
     transaction_cost_bps: float = PILOT_TRANSACTION_COST_BPS
     model: str = ""
     source_url: str = ""
+    research_scope: str = RESEARCH_SCOPE_FULL_FORMAL
 
     def __post_init__(self) -> None:
         if not self.title.strip():
@@ -489,12 +496,23 @@ class ResearchRequest:
             raise ValueError(f"invalid research input_kind: {self.input_kind!r}")
         if self.model and self.model != PILOT_MODEL:
             raise ValueError(f"web Pilot supports only the {PILOT_MODEL} model")
+        if self.research_scope not in VALID_RESEARCH_SCOPES:
+            raise ValueError(
+                f"invalid research_scope: {self.research_scope!r}"
+            )
         validate_public_source_url(self.source_url)
         if not 0 <= float(self.transaction_cost_bps) <= 200:
             raise ValueError("transaction_cost_bps must be between 0 and 200")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"contract_version": RESEARCH_REQUEST_VERSION, **asdict(self)}
+        payload = asdict(self)
+        # Keep the historical full-formal wire representation byte-for-byte
+        # compatible for persisted request/conversation hash replay.  The new
+        # field is emitted only for the non-default scope that needs an
+        # explicit authority boundary.
+        if self.research_scope == RESEARCH_SCOPE_FULL_FORMAL:
+            payload.pop("research_scope", None)
+        return {"contract_version": RESEARCH_REQUEST_VERSION, **payload}
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ResearchRequest":
@@ -514,6 +532,9 @@ class ResearchRequest:
             ),
             model=str(payload.get("model") or ""),
             source_url=str(payload.get("source_url") or ""),
+            research_scope=str(
+                payload.get("research_scope") or RESEARCH_SCOPE_FULL_FORMAL
+            ),
         )
 
 

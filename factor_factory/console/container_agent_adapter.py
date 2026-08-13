@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import importlib.util
 import json
@@ -4066,51 +4067,131 @@ class ContainerizedOpenClawResearchAgentAdapter:
         git_dir: Path,
         engine_commit: str,
     ) -> Callable[[dict[str, Any], dict[str, Any]], list[str]]:
-        formula_source = self._read_verified_engine_blob(
-            engine_root=engine_root,
-            git_dir=git_dir,
-            engine_commit=engine_commit,
-            relative=Path("factor_factory/mechanism_math/formula_specific.py"),
+        module_relatives = (
+            (
+                "factor_factory.artifact_identity",
+                Path("factor_factory/artifact_identity.py"),
+            ),
+            (
+                "factor_factory.formula.field_aliases",
+                Path("factor_factory/formula/field_aliases.py"),
+            ),
+            (
+                "factor_factory.formula.ir",
+                Path("factor_factory/formula/ir.py"),
+            ),
+            (
+                "factor_factory.formula.registry",
+                Path("factor_factory/formula/registry.py"),
+            ),
+            (
+                "factor_factory.formula.semantics",
+                Path("factor_factory/formula/semantics.py"),
+            ),
+            (
+                "factor_factory.formula.parser",
+                Path("factor_factory/formula/parser.py"),
+            ),
+            (
+                "factor_factory.knowledge_reference",
+                Path("factor_factory/knowledge_reference.py"),
+            ),
+            (
+                "factor_factory.measurement_program",
+                Path("factor_factory/measurement_program.py"),
+            ),
+            (
+                "factor_factory.mechanism_math.formula_specific",
+                Path("factor_factory/mechanism_math/formula_specific.py"),
+            ),
+            (
+                "factor_factory.mechanism_math.main_agent_memo",
+                Path("factor_factory/mechanism_math/main_agent_memo.py"),
+            ),
         )
-        memo_source = self._read_verified_engine_blob(
-            engine_root=engine_root,
-            git_dir=git_dir,
-            engine_commit=engine_commit,
-            relative=Path("factor_factory/mechanism_math/main_agent_memo.py"),
+        verified_sources = tuple(
+            (
+                logical_name,
+                relative,
+                self._read_verified_engine_blob(
+                    engine_root=engine_root,
+                    git_dir=git_dir,
+                    engine_commit=engine_commit,
+                    relative=relative,
+                ),
+            )
+            for logical_name, relative in module_relatives
         )
-        package_name = f"_factorforge_trusted_mechanism_{uuid.uuid4().hex}"
-        package = types.ModuleType(package_name)
-        package.__path__ = []  # type: ignore[attr-defined]
-        formula_name = f"{package_name}.formula_specific"
-        memo_name = f"{package_name}.main_agent_memo"
-        formula_module = types.ModuleType(formula_name)
-        formula_module.__package__ = package_name
-        formula_module.__file__ = "<trusted-engine>/formula_specific.py"
-        memo_module = types.ModuleType(memo_name)
-        memo_module.__package__ = package_name
-        memo_module.__file__ = "<trusted-engine>/main_agent_memo.py"
-        sys.modules[package_name] = package
-        sys.modules[formula_name] = formula_module
-        sys.modules[memo_name] = memo_module
+        package_name = f"_factorforge_trusted_engine_{uuid.uuid4().hex}"
+        trusted_factor_factory = f"{package_name}.factor_factory"
+        registered_names: list[str] = []
+
+        def register_module(module: types.ModuleType) -> None:
+            sys.modules[module.__name__] = module
+            registered_names.append(module.__name__)
+            parent_name, separator, child_name = module.__name__.rpartition(".")
+            if separator:
+                setattr(sys.modules[parent_name], child_name, module)
+
+        for namespace in (
+            package_name,
+            trusted_factor_factory,
+            f"{trusted_factor_factory}.formula",
+            f"{trusted_factor_factory}.mechanism_math",
+        ):
+            package = types.ModuleType(namespace)
+            package.__package__ = namespace
+            package.__path__ = []  # type: ignore[attr-defined]
+            register_module(package)
+
+        def trusted_import(
+            name: str,
+            globals: dict[str, Any] | None = None,
+            locals: dict[str, Any] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> Any:
+            if level == 0 and (
+                name == "factor_factory" or name.startswith("factor_factory.")
+            ):
+                imported = builtins.__import__(
+                    f"{package_name}.{name}",
+                    globals,
+                    locals,
+                    fromlist,
+                    level,
+                )
+                if not fromlist:
+                    return sys.modules[trusted_factor_factory]
+                return imported
+            return builtins.__import__(name, globals, locals, fromlist, level)
+
+        trusted_builtins = dict(vars(builtins))
+        trusted_builtins["__import__"] = trusted_import
+        loaded_modules: dict[str, types.ModuleType] = {}
         try:
-            exec(
-                compile(
-                    formula_source,
-                    formula_module.__file__,
-                    "exec",
-                    dont_inherit=True,
-                ),
-                formula_module.__dict__,
-            )
-            exec(
-                compile(
-                    memo_source,
-                    memo_module.__file__,
-                    "exec",
-                    dont_inherit=True,
-                ),
-                memo_module.__dict__,
-            )
+            for logical_name, relative, source in verified_sources:
+                module_name = f"{package_name}.{logical_name}"
+                module = types.ModuleType(module_name)
+                module.__package__ = module_name.rpartition(".")[0]
+                module.__file__ = (
+                    f"/__factorforge_trusted__/{relative.as_posix()}"
+                )
+                module.__dict__["__builtins__"] = trusted_builtins
+                register_module(module)
+                exec(
+                    compile(
+                        source,
+                        module.__file__,
+                        "exec",
+                        dont_inherit=True,
+                    ),
+                    module.__dict__,
+                )
+                loaded_modules[logical_name] = module
+            memo_module = loaded_modules[
+                "factor_factory.mechanism_math.main_agent_memo"
+            ]
             validator = getattr(
                 memo_module,
                 "validate_main_agent_mechanism_memo",
@@ -4124,9 +4205,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted mechanism validator is invalid"
             ) from exc
         finally:
-            sys.modules.pop(memo_name, None)
-            sys.modules.pop(formula_name, None)
-            sys.modules.pop(package_name, None)
+            for registered_name in reversed(registered_names):
+                sys.modules.pop(registered_name, None)
 
     def _load_verified_council_validator(
         self,
@@ -4136,32 +4216,160 @@ class ContainerizedOpenClawResearchAgentAdapter:
         engine_commit: str,
         workspace: Path,
     ) -> Callable[..., list[str]]:
-        source = self._read_verified_engine_blob(
-            engine_root=engine_root,
-            git_dir=git_dir,
-            engine_commit=engine_commit,
-            relative=Path(
-                "skills/factor-forge-step6/scripts/"
-                "validate_agentic_council_result.py"
+        module_relatives = (
+            (
+                "factor_factory.research_workspace",
+                Path("factor_factory/research_workspace.py"),
+            ),
+            (
+                "factor_factory.research_org.contracts",
+                Path("factor_factory/research_org/contracts.py"),
+            ),
+            (
+                "factor_factory.research_org.runtime_trust",
+                Path("factor_factory/research_org/runtime_trust.py"),
+            ),
+            (
+                "factor_factory.human_approval",
+                Path("factor_factory/human_approval.py"),
+            ),
+            (
+                "factor_factory.oos_exposure_incident",
+                Path("factor_factory/oos_exposure_incident.py"),
+            ),
+            (
+                "factor_factory.evo_oos",
+                Path("factor_factory/evo_oos.py"),
+            ),
+            (
+                "factor_factory.research_evidence",
+                Path("factor_factory/research_evidence.py"),
+            ),
+            (
+                "factor_factory.research_release",
+                Path("factor_factory/research_release.py"),
+            ),
+            (
+                "factor_factory.metric_verifier",
+                Path("factor_factory/metric_verifier.py"),
+            ),
+            (
+                "factor_factory.research_proof",
+                Path("factor_factory/research_proof.py"),
+            ),
+            (
+                "factor_factory.research_obligation_verifier",
+                Path("factor_factory/research_obligation_verifier.py"),
+            ),
+            (
+                "factor_factory.evo_v2",
+                Path("factor_factory/evo_v2.py"),
+            ),
+            (
+                "factor_factory.measurement_program",
+                Path("factor_factory/measurement_program.py"),
+            ),
+            (
+                "factor_factory.research_conjecture",
+                Path("factor_factory/research_conjecture.py"),
+            ),
+            (
+                "factor_factory.revision_council.evo_v2",
+                Path("factor_factory/revision_council/evo_v2.py"),
+            ),
+            (
+                "factor_factory.revision_council.production",
+                Path("factor_factory/revision_council/production.py"),
+            ),
+            (
+                "factor_factory._trusted_council_validator",
+                Path(
+                    "skills/factor-forge-step6/scripts/"
+                    "validate_agentic_council_result.py"
+                ),
             ),
         )
-        module_name = f"_factorforge_trusted_council_{uuid.uuid4().hex}"
-        module = types.ModuleType(module_name)
-        module.__file__ = (
-            "/__factorforge_trusted__/skills/factor-forge-step6/scripts/"
-            "validate_agentic_council_result.py"
-        )
-        original_sys_path = list(sys.path)
-        try:
-            exec(
-                compile(
-                    source,
-                    module.__file__,
-                    "exec",
-                    dont_inherit=True,
+        verified_sources = tuple(
+            (
+                logical_name,
+                relative,
+                self._read_verified_engine_blob(
+                    engine_root=engine_root,
+                    git_dir=git_dir,
+                    engine_commit=engine_commit,
+                    relative=relative,
                 ),
-                module.__dict__,
             )
+            for logical_name, relative in module_relatives
+        )
+        package_name = f"_factorforge_trusted_council_{uuid.uuid4().hex}"
+        trusted_factor_factory = f"{package_name}.factor_factory"
+        registered_names: list[str] = []
+
+        def register_module(module: types.ModuleType) -> None:
+            sys.modules[module.__name__] = module
+            registered_names.append(module.__name__)
+            parent_name, separator, child_name = module.__name__.rpartition(".")
+            if separator:
+                setattr(sys.modules[parent_name], child_name, module)
+
+        for namespace in (
+            package_name,
+            trusted_factor_factory,
+            f"{trusted_factor_factory}.research_org",
+            f"{trusted_factor_factory}.revision_council",
+        ):
+            package = types.ModuleType(namespace)
+            package.__package__ = namespace
+            package.__path__ = []  # type: ignore[attr-defined]
+            register_module(package)
+
+        def trusted_import(
+            name: str,
+            globals: dict[str, Any] | None = None,
+            locals: dict[str, Any] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> Any:
+            if level == 0 and (
+                name == "factor_factory" or name.startswith("factor_factory.")
+            ):
+                imported = builtins.__import__(
+                    f"{package_name}.{name}",
+                    globals,
+                    locals,
+                    fromlist,
+                    level,
+                )
+                if not fromlist:
+                    return sys.modules[trusted_factor_factory]
+                return imported
+            return builtins.__import__(name, globals, locals, fromlist, level)
+
+        trusted_builtins = dict(vars(builtins))
+        trusted_builtins["__import__"] = trusted_import
+        loaded_modules: dict[str, types.ModuleType] = {}
+        try:
+            for logical_name, relative, source in verified_sources:
+                module_name = f"{package_name}.{logical_name}"
+                module = types.ModuleType(module_name)
+                module.__package__ = module_name.rpartition(".")[0]
+                module.__file__ = str(engine_root / relative)
+                module.__dict__["__builtins__"] = trusted_builtins
+                register_module(module)
+                exec(
+                    compile(
+                        source,
+                        module.__file__,
+                        "exec",
+                        dont_inherit=True,
+                    ),
+                    module.__dict__,
+                )
+                loaded_modules[logical_name] = module
+            module = loaded_modules[
+                "factor_factory._trusted_council_validator"
+            ]
             validator = getattr(module, "validate_agentic_result", None)
             if not callable(validator):
                 raise RuntimeError("trusted Council validator callable is missing")
@@ -4173,7 +4381,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted Council validator is invalid"
             ) from exc
         finally:
-            sys.path[:] = original_sys_path
+            for registered_name in reversed(registered_names):
+                sys.modules.pop(registered_name, None)
 
     def _prepare_git_view(self, *, runtime_root: Path, worktree: Path, base_commit: str) -> Path:
         commit = base_commit.strip().lower()

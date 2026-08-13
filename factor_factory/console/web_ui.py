@@ -6,7 +6,13 @@ from html import escape
 from typing import Any
 
 from factor_factory.console.math_render import render_equation_statement
-from factor_factory.console.models import PILOT_MODEL, ResearchJob, ResearchMessage
+from factor_factory.console.models import (
+    PILOT_MODEL,
+    RESEARCH_SCOPE_FULL_FORMAL,
+    RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+    ResearchJob,
+    ResearchMessage,
+)
 from factor_factory.formula.source_dialects import (
     valid_source_formula_contract,
 )
@@ -23,6 +29,7 @@ NON_RESUMABLE_SECURITY_ERRORS = {
 }
 GENERIC_RESUME_DISABLED_ERRORS = {
     "FACTORFORGE_CONSOLE_EXPLICIT_HUMAN_DECISION_REQUIRED",
+    "FACTORFORGE_CONSOLE_PREFORMAL_DESIGN_ONLY_COMPLETE",
 }
 
 
@@ -165,6 +172,17 @@ def _research_form(csrf_token: str, values: dict[str, str] | None = None) -> str
     factor_id_hint = escape(submitted.get("factor_id_hint", ""))
     sample_start = escape(submitted.get("sample_start", "2016-01-01"))
     sample_end = escape(submitted.get("sample_end", "2025-07-11"))
+    research_scope = submitted.get(
+        "research_scope", RESEARCH_SCOPE_FULL_FORMAL
+    )
+    full_scope_selected = (
+        " selected" if research_scope == RESEARCH_SCOPE_FULL_FORMAL else ""
+    )
+    design_scope_selected = (
+        " selected"
+        if research_scope == RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+        else ""
+    )
     legacy_kind = submitted.get("content_kind", "hypothesis")
     legacy_content = submitted.get("hypothesis", "")
     economic_hypothesis = escape(
@@ -197,6 +215,7 @@ def _research_form(csrf_token: str, values: dict[str, str] | None = None) -> str
         <div class="details-grid">
           <div class="field"><label for="factor-id">因子 ID（可选）</label><input id="factor-id" name="factor_id_hint" maxlength="64" value="{factor_id_hint}" placeholder="留空时由系统生成"></div>
           <div class="field"><label for="model">研究模型</label><select id="model" name="model"><option value="{escape(PILOT_MODEL)}">DeepSeek V4 Flash</option></select></div>
+          <div class="field"><label for="research-scope">运行范围</label><select id="research-scope" name="research_scope"><option value="{RESEARCH_SCOPE_FULL_FORMAL}"{full_scope_selected}>完整正式研究（默认）</option><option value="{RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY}"{design_scope_selected}>仅研究设计，不取数/回测/OOS</option></select><span class="field-help">仅研究设计会在独立研究组织完成后形成签名检查点，不能从该任务直接续跑正式步骤。</span></div>
           <div class="field"><label for="universe">股票池</label><select id="universe" name="universe"><option value="a_share_all">全部 A 股（Data API 清洗口径）</option></select></div>
           <div class="field"><label>收益观察期</label><input type="hidden" name="forward_horizon" value="1d"><div class="fixed-contract">收盘 t 形成信号，t+1 收盘成交，t+2 收盘退出</div></div>
           <div class="field"><label for="sample-start">样本开始</label><input id="sample-start" name="sample_start" type="date" value="{sample_start}" required></div>
@@ -1512,6 +1531,7 @@ def _stage_label(stage: str) -> str:
         "researching": "机制、实现与回测",
         "verifying": "证据核验",
         "review_required": "等待复核",
+        "preformal_design_complete": "研究设计检查点完成",
         "completed": "研究完成",
         "blocked": "研究阻断",
         "resume_requested": "准备继续",

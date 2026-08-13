@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import stat
 import uuid
 from pathlib import Path
@@ -1605,13 +1606,21 @@ def prepare_evo_v2_memory_review_session(
     worktree: Path,
     state_root: Path,
     installation_id: str,
+    host_job_id: str,
+    host_plan_identity: Mapping[str, Any],
     projection: Mapping[str, Any],
     experience_transfer_bundle: Mapping[str, Any],
     transfer_use_receipt: Mapping[str, Any],
     source_execution_receipts: list[Mapping[str, Any]],
     timeout_seconds: int = 1800,
 ) -> tuple[ResearchOrgSessionInvocation, dict[str, Any], Path]:
-    """Prepare a disposable V2 reviewer session with staged read-only inputs."""
+    """Prepare a disposable V2 reviewer session with staged read-only inputs.
+
+    ``host_plan_identity`` is a Host-caller projection from its already
+    validated plan or equivalent non-Web Host authority.  This function binds
+    the operational job identity to the review artifact identity while keeping
+    that job ID out of signed artifact semantics.
+    """
 
     worktree = Path(worktree).expanduser().resolve(strict=True)
     workspace = Path(workspace).expanduser().resolve(strict=True)
@@ -1641,6 +1650,23 @@ def prepare_evo_v2_memory_review_session(
         != transfer_use_receipt.get("content_sha256")
     ):
         _raise("evo_v2_review_projection_input")
+    plan_identity = (
+        host_plan_identity if isinstance(host_plan_identity, Mapping) else None
+    )
+    projection_identity = projection.get("artifact_identity")
+    if (
+        re.fullmatch(r"job_[a-f0-9]{10}", host_job_id) is None
+        or not isinstance(plan_identity, Mapping)
+        or set(plan_identity)
+        != {"job_id", "factor_id", "research_id", "report_id"}
+        or not isinstance(projection_identity, Mapping)
+        or plan_identity.get("job_id") != host_job_id
+        or any(
+            plan_identity.get(field) != projection_identity.get(field)
+            for field in ("factor_id", "research_id", "report_id")
+        )
+    ):
+        _raise("evo_v2_review_host_job_id")
     review_root = _assert_private_root(
         state_root / EVO_V2_REVIEW_SESSIONS_ROOT_NAME,
         repo_root=worktree,
@@ -1648,7 +1674,7 @@ def prepare_evo_v2_memory_review_session(
         create=True,
     )
     token = uuid.uuid4().hex
-    reviewer_session_id = f"session_evo_v2_review_{token[:24]}"
+    reviewer_session_id = f"session_{token}"
     runtime_instance_id = f"fforg-evo-v2-review-{token[:16]}"
     session_root = _ensure_private_directory(review_root, reviewer_session_id)
     context_root = _ensure_private_directory(session_root, "context")
@@ -1777,6 +1803,7 @@ def prepare_evo_v2_memory_review_session(
         adapter_challenge=uuid.uuid4().hex,
         dependency_admissions=(),
         parent_session_uid=None,
+        host_job_id=host_job_id,
     )
     return invocation, request, review_root
 

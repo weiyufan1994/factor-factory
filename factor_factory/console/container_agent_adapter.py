@@ -127,6 +127,31 @@ PRE_OOS_ROOT_SYNTHESIS_TASK_VERSION = (
 )
 
 
+def _research_org_host_job_id(
+    invocation: ResearchOrgSessionInvocation,
+) -> str:
+    """Resolve the Host routing key without changing semantic identity.
+
+    EVO memory invocations deliberately carry an artifact identity without a
+    Console ``job_id``.  Ordinary organization invocations retain the legacy
+    identity field.  If both sources are present they must agree exactly.
+    """
+
+    operational = str(invocation.host_job_id or "")
+    identity_value = invocation.identity.get("job_id")
+    embedded = str(identity_value or "")
+    if operational and embedded and operational != embedded:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: research organization host job identity mismatch"
+        )
+    job_id = operational or embedded
+    if re.fullmatch(r"job_[a-f0-9]{10}", job_id) is None:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: research organization host job identity is invalid"
+        )
+    return job_id
+
+
 def _validate_pre_oos_root_synthesis_task(
     job: ResearchJob,
     workspace: Path,
@@ -1886,14 +1911,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
     ) -> ResearchOrgSessionOutcome:
         """Run one signed research-organization session or sign its failure."""
 
+        host_job_id = _research_org_host_job_id(invocation)
         started = utc_now()
         try:
-            return self._run_research_org_session_owned(invocation)
+            return self._run_research_org_session_owned(
+                invocation,
+                host_job_id=host_job_id,
+            )
         except Exception as exc:  # noqa: BLE001 - adapter is the trust boundary.
             return self._failed_research_org_session_outcome(
                 invocation,
                 started_at_utc=started,
                 error=exc,
+                host_job_id=host_job_id,
             )
 
     def run_researcher_memory_review_session(
@@ -1906,7 +1936,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: memory reviewer role is invalid"
             )
-        job_id = str(invocation.identity.get("job_id") or "")
+        job_id = _research_org_host_job_id(invocation)
         try:
             outcome = self.run_research_org_session(invocation)
             from factor_factory.researcher_memory_review import (
@@ -1925,6 +1955,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
     def _run_research_org_session_owned(
         self,
         invocation: ResearchOrgSessionInvocation,
+        *,
+        host_job_id: str,
     ) -> ResearchOrgSessionOutcome:
         """Run one research-organization role in one owned staged-context container."""
 
@@ -1976,7 +2008,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             expected_key=self._broker_client_token(),
         )
 
-        job_id = invocation.identity["job_id"]
+        job_id = host_job_id
         with self._research_org_credential_lock:
             self._initialize_credential_material_state(job_id, resume=False)
             first_issuance = self.credential_material_state(job_id) == "not_issued"
@@ -2290,6 +2322,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         *,
         started_at_utc: str,
         error: Exception,
+        host_job_id: str,
     ) -> ResearchOrgSessionOutcome:
         container_name = invocation.runtime_instance_id
         termination_proof = self.reconcile_research_org_session(
@@ -2318,7 +2351,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             (private_root / "research_org_task.md").unlink(missing_ok=True)
             invocation.private_output_path.unlink(missing_ok=True)
 
-        job_id = str(invocation.identity.get("job_id") or "")
+        job_id = host_job_id
         model = _pinned_container_model(self.config.openclaw_model)
         agent_id = _safe_runtime_token(
             f"research-org-{invocation.role_id}-{invocation.attempt_id[-8:]}"

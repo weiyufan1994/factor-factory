@@ -361,6 +361,108 @@ def test_memory_reviewer_always_deactivates_owned_secret_registry(
     assert cleanup_calls == [invocation.identity["job_id"]]
 
 
+def test_host_job_id_is_operational_only_and_dual_source_must_match(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import factor_factory.console.container_agent_adapter as module
+
+    config = _config(tmp_path)
+    invocation = _invocation(tmp_path, config)
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    observed: list[str] = []
+    monkeypatch.setattr(
+        adapter,
+        "_run_research_org_session_owned",
+        lambda _invocation, *, host_job_id: (
+            observed.append(host_job_id),
+            object(),
+        )[1],
+    )
+
+    assert adapter.run_research_org_session(invocation) is not None
+    assert observed == [invocation.identity["job_id"]]
+    assert "host_job_id" not in invocation.identity
+
+    explicit = replace(invocation, host_job_id=invocation.identity["job_id"])
+    assert adapter.run_research_org_session(explicit) is not None
+    assert observed[-1] == invocation.identity["job_id"]
+
+    with pytest.raises(RuntimeError, match="host job identity mismatch"):
+        adapter.run_research_org_session(
+            replace(invocation, host_job_id="job_abcdef1234")
+        )
+
+    artifact_only = replace(
+        invocation,
+        identity={
+            "factor_id": "FACTOR",
+            "research_id": "research",
+            "report_id": "REPORT",
+            "branch_id": "main",
+            "run_id": "run_REPORT",
+        },
+    )
+    with pytest.raises(RuntimeError, match="host job identity is invalid"):
+        adapter.run_research_org_session(artifact_only)
+    routed = replace(artifact_only, host_job_id="job_1234567890")
+    assert adapter.run_research_org_session(routed) is not None
+    assert observed[-1] == "job_1234567890"
+    assert set(routed.identity) == {
+        "factor_id",
+        "research_id",
+        "report_id",
+        "branch_id",
+        "run_id",
+    }
+
+
+def test_failed_artifact_identity_uses_host_job_for_session_routing(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = _config(tmp_path)
+    invocation = replace(
+        _invocation(tmp_path, config),
+        identity={
+            "factor_id": "FACTOR",
+            "research_id": "research",
+            "report_id": "REPORT",
+            "branch_id": "main",
+            "run_id": "run_REPORT",
+        },
+        host_job_id="job_1234567890",
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+    monkeypatch.setattr(
+        adapter,
+        "_run_research_org_session_owned",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("prelaunch")),
+    )
+    monkeypatch.setattr(
+        adapter,
+        "reconcile_research_org_session",
+        lambda runtime_id: _termination_proof(config, runtime_id, confirmed=True),
+    )
+    captured_receipts: list[dict] = []
+    monkeypatch.setattr(
+        adapter,
+        "_sign_research_org_adapter_receipt",
+        lambda _invocation, **kwargs: captured_receipts.append(kwargs) or {},
+    )
+
+    outcome = adapter.run_research_org_session(invocation)
+    assert outcome.returncode == 1
+    expected_session_key = (
+        "agent:research-org-price_volume_researcher-90abcdef:"
+        "job_1234567890:session_1234567890abcdef1234567890abcdef"
+    )
+    assert outcome.provider_session_handle_sha256 == hashlib.sha256(
+        expected_session_key.encode("utf-8")
+    ).hexdigest()
+    assert captured_receipts[0]["receipt_type"] == "FAILED"
+
+
 def test_container_research_org_session_uses_staged_read_only_context(
     tmp_path: Path,
     monkeypatch,

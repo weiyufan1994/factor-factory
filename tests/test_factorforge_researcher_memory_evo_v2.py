@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from pathlib import Path
 
 import pytest
@@ -251,6 +252,13 @@ def _completed_review_decision(
         worktree=PROJECT_ROOT,
         state_root=tmp_path,
         installation_id=trust_store.installation_id,
+        host_job_id="job_123abc4567",
+        host_plan_identity={
+            "job_id": "job_123abc4567",
+            "factor_id": projection["artifact_identity"]["factor_id"],
+            "research_id": projection["artifact_identity"]["research_id"],
+            "report_id": projection["artifact_identity"]["report_id"],
+        },
         projection=projection,
         experience_transfer_bundle=artifacts["experience_transfer_bundle"],
         transfer_use_receipt=artifacts["transfer_use_receipt"],
@@ -330,6 +338,123 @@ def _completed_review_decision(
     return decision
 
 
+def test_evo_review_uses_canonical_session_id_and_bound_host_routing(
+    tmp_path: Path,
+) -> None:
+    workspace = tmp_path / "factor_workspace"
+    artifacts = _build_bundle(workspace)
+    paths = materialize_evo_v2_bundle(
+        artifacts,
+        workspace_root=workspace,
+        report_id=REPORT_ID,
+    )
+    relative_paths = evo_v2_relative_paths(REPORT_ID)
+    trust_store = ensure_runtime_trust_store(
+        tmp_path / "research-org-trust",
+        installation_id="evo-v2-memory-test",
+    )
+    projection = build_evo_v2_memory_review_projection(
+        experience_transfer_bundle=artifacts["experience_transfer_bundle"],
+        transfer_use_receipt=artifacts["transfer_use_receipt"],
+        experience_transfer_bundle_ref={
+            "path": relative_paths["experience_transfer_bundle"],
+            "sha256": sha256_file(paths["experience_transfer_bundle"]),
+        },
+        transfer_use_receipt_ref={
+            "path": relative_paths["transfer_use_receipt"],
+            "sha256": sha256_file(paths["transfer_use_receipt"]),
+        },
+        trust_store=trust_store,
+        source_workspace=workspace,
+    )
+    source_receipt = _adapter_completion_receipt(
+        trust_store=trust_store,
+        artifact_identity=projection["artifact_identity"],
+        role_id="knowledge_librarian",
+        session_id="session_0123456789abcdef0123456789abcdef",
+        runtime_instance_id="fforg-source-author-01234567",
+        runtime_id="runtime_evo_v2_source_001",
+        task_id="task_evo_v2_source_001",
+        attempt_id="attempt_evo_v2_source_001",
+        plan_sha256="5" * 64,
+        task_sha256="6" * 64,
+        context_manifest_sha256="7" * 64,
+        output_bytes=b'{"source":"runtime-author"}\n',
+    )
+    plan_identity = {
+        "job_id": "job_123abc4567",
+        "factor_id": projection["artifact_identity"]["factor_id"],
+        "research_id": projection["artifact_identity"]["research_id"],
+        "report_id": projection["artifact_identity"]["report_id"],
+    }
+    common = {
+        "workspace": workspace,
+        "worktree": PROJECT_ROOT,
+        "state_root": tmp_path,
+        "installation_id": trust_store.installation_id,
+        "projection": projection,
+        "experience_transfer_bundle": artifacts["experience_transfer_bundle"],
+        "transfer_use_receipt": artifacts["transfer_use_receipt"],
+        "source_execution_receipts": [source_receipt],
+    }
+    invocation, _request, _review_root = prepare_evo_v2_memory_review_session(
+        **common,
+        host_job_id=plan_identity["job_id"],
+        host_plan_identity=plan_identity,
+    )
+    assert re.fullmatch(r"session_[a-f0-9]{32}", invocation.session_id)
+    assert invocation.host_job_id == plan_identity["job_id"]
+    assert "job_id" not in invocation.identity
+
+    with pytest.raises(
+        ResearchOrganizationError,
+        match="evo_v2_review_host_job_id",
+    ):
+        prepare_evo_v2_memory_review_session(
+            **common,
+            host_job_id="",
+            host_plan_identity=plan_identity,
+        )
+    with pytest.raises(
+        ResearchOrganizationError,
+        match="evo_v2_review_host_job_id",
+    ):
+        prepare_evo_v2_memory_review_session(
+            **common,
+            host_job_id=plan_identity["job_id"],
+            host_plan_identity={},
+        )
+    with pytest.raises(
+        ResearchOrganizationError,
+        match="evo_v2_review_host_job_id",
+    ):
+        prepare_evo_v2_memory_review_session(
+            **common,
+            host_job_id=plan_identity["job_id"],
+            host_plan_identity={**plan_identity, "branch_id": "main"},
+        )
+    with pytest.raises(
+        ResearchOrganizationError,
+        match="evo_v2_review_host_job_id",
+    ):
+        prepare_evo_v2_memory_review_session(
+            **common,
+            host_job_id="job_abcdef1234",
+            host_plan_identity=plan_identity,
+        )
+    mismatched_identity = dict(plan_identity)
+    mismatched_identity["report_id"] = "OTHER_REPORT"
+    with pytest.raises(
+        ResearchOrganizationError,
+        match="evo_v2_review_host_job_id",
+    ):
+        prepare_evo_v2_memory_review_session(
+            **common,
+            host_job_id=plan_identity["job_id"],
+            host_plan_identity=mismatched_identity,
+        )
+
+
 def _completed_cold_start_search(
     *,
     tmp_path: Path,
@@ -354,6 +479,7 @@ def _completed_cold_start_search(
         worktree=PROJECT_ROOT,
         state_root=tmp_path,
         installation_id=trust_store.installation_id,
+        host_job_id="job_123abc4567",
         artifact_identity=transfer["artifact_identity"],
         mechanism_fingerprint=transfer["mechanism_fingerprint"],
         checked_indexes=[role_index_ref, factor_index_ref],

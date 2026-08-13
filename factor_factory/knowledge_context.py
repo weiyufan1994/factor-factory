@@ -692,6 +692,7 @@ def prepare_evo_v2_cold_start_search_session(
     worktree: Path,
     state_root: Path,
     installation_id: str,
+    host_job_id: str,
     artifact_identity: Mapping[str, Any],
     mechanism_fingerprint: Mapping[str, Any],
     checked_indexes: Sequence[Mapping[str, Any]],
@@ -726,6 +727,8 @@ def prepare_evo_v2_cold_start_search_session(
         )
     ):
         reasons.append("cold_start_search_identity")
+    if re.fullmatch(r"job_[a-f0-9]{10}", host_job_id) is None:
+        reasons.append("cold_start_search_host_job_id")
     resolved_indexes: list[dict[str, Any]] = []
     observed_ids: set[str] = set()
     for item in checked_indexes:
@@ -764,7 +767,7 @@ def prepare_evo_v2_cold_start_search_session(
         create=True,
     )
     token = uuid.uuid4().hex
-    session_id = f"session_evo_v2_search_{token[:24]}"
+    session_id = f"session_{token}"
     runtime_instance_id = f"fforg-evo-v2-search-{token[:16]}"
     task_id = f"evo_v2_memory_search_{token[:24]}"
     session_root = _ensure_private_directory(session_root_parent, session_id)
@@ -850,6 +853,7 @@ def prepare_evo_v2_cold_start_search_session(
         adapter_challenge=uuid.uuid4().hex,
         dependency_admissions=(),
         parent_session_uid=None,
+        host_job_id=host_job_id,
     )
     return invocation, request, session_root_parent
 

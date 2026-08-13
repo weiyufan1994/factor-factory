@@ -252,6 +252,14 @@ def _identity_from_plan(plan: Mapping[str, Any]) -> dict[str, str]:
     return output
 
 
+def _host_job_id_from_plan(plan: Mapping[str, Any]) -> str:
+    identity = plan.get("identity")
+    job_id = str(identity.get("job_id") or "") if isinstance(identity, Mapping) else ""
+    if re.fullmatch(r"job_[a-f0-9]{10}", job_id) is None:
+        _raise(BLOCK_EVO_V2_MEMORY_RUNTIME_INVALID, "plan_host_job_id")
+    return job_id
+
+
 def build_evo_v2_mechanism_fingerprint(
     plan: Mapping[str, Any],
 ) -> dict[str, str]:
@@ -867,6 +875,7 @@ def prepare_evo_v2_memory_round(
     plan = read_workspace_json(workspace, "identity/web_research_plan.json")
     validate_plan(dict(plan), workspace=workspace)
     identity = _identity_from_plan(plan)
+    host_job_id = _host_job_id_from_plan(plan)
     report_id = identity["report_id"]
     fingerprint = build_evo_v2_mechanism_fingerprint(plan)
     trust_store = load_runtime_trust_store(
@@ -1019,6 +1028,7 @@ def prepare_evo_v2_memory_round(
             worktree=worktree,
             state_root=state_root,
             installation_id=installation_id,
+            host_job_id=host_job_id,
             artifact_identity=identity,
             mechanism_fingerprint=fingerprint,
             checked_indexes=index_refs,

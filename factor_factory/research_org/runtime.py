@@ -216,6 +216,11 @@ class ResearchOrgSessionInvocation:
     adapter_challenge: str = ""
     dependency_admissions: tuple[dict[str, Any], ...] = ()
     parent_session_uid: str | None = None
+    # Host-only operational routing.  This is intentionally separate from
+    # ``identity`` so artifact identities and signed semantic receipts do not
+    # acquire a Console job identifier.  Legacy/ordinary organization calls
+    # may continue to route through ``identity.job_id``.
+    host_job_id: str = ""
 
 
 @dataclass(frozen=True)

@@ -3,10 +3,17 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
+import shutil
+import sqlite3
 from pathlib import Path
 
 import pytest
 
+from factor_factory.console.config import ConsoleConfig
+from factor_factory.console.container_agent_adapter import (
+    ContainerizedOpenClawResearchAgentAdapter,
+)
 from factor_factory.console.web_research_plan import write_web_research_packet
 from factor_factory.evo_memory_runtime import (
     BLOCK_EVO_V2_HISTORICAL_EPISODE_INVALID,
@@ -45,6 +52,118 @@ from tests.test_factorforge_researcher_memory_evo_v2 import (
     _materialized_admission,
 )
 from factor_factory.researcher_memory import persist_evo_v2_memory_admission
+
+
+def _write_deterministic_memory_container_runtime(
+    executable: Path,
+    runtime_state: Path,
+) -> None:
+    runtime_state.mkdir(mode=0o700)
+    executable.write_text(
+        f'''#!/usr/bin/env python3
+import json
+import re
+import sys
+from pathlib import Path
+
+STATE = Path({str(runtime_state)!r})
+args = sys.argv[1:]
+with (STATE / "calls.jsonl").open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(args, separators=(",", ":")) + "\\n")
+
+if not args:
+    raise SystemExit(64)
+if args[0] == "inspect":
+    print(f"Error: No such object: {{args[-1]}}", file=sys.stderr)
+    raise SystemExit(1)
+if args[0] in {{"stop", "rm"}}:
+    print(f"Error: No such object: {{args[-1]}}", file=sys.stderr)
+    raise SystemExit(1)
+if args[0] != "run":
+    raise SystemExit(65)
+
+mode_path = STATE / "mode"
+mode = mode_path.read_text(encoding="utf-8").strip() if mode_path.exists() else "success"
+if "agents" in args and "add" in args:
+    if mode == "prelaunch_failure":
+        print("deterministic prelaunch failure", file=sys.stderr)
+        raise SystemExit(9)
+    home = next(item.split("=", 1)[1] for item in args if item.startswith("HOME="))
+    profile_name = args[args.index("--profile") + 1]
+    profile = Path(home) / f".openclaw-{{profile_name}}" / "openclaw.json"
+    payload = json.loads(profile.read_text(encoding="utf-8"))
+    agent_id = args[args.index("add") + 1]
+    record = {{
+        "id": agent_id,
+        "workspace": args[args.index("--workspace") + 1],
+        "agentDir": args[args.index("--agent-dir") + 1],
+        "model": args[args.index("--model") + 1],
+    }}
+    payload.setdefault("agents", {{}})["list"] = [{{"id": "main"}}, record]
+    profile.write_text(json.dumps(payload, sort_keys=True) + "\\n", encoding="utf-8")
+    print("{{}}")
+    raise SystemExit(0)
+if "agent" in args and "--message-file" in args:
+    prompt = Path(args[args.index("--message-file") + 1]).read_text(encoding="utf-8")
+    request_match = re.search(r"frozen request at\\s*`([^`]+)`", prompt)
+    output_match = re.search(r"private-output JSON object to\\s*`([^`]+)`", prompt)
+    if request_match is None or output_match is None:
+        print("deterministic prompt binding missing", file=sys.stderr)
+        raise SystemExit(10)
+    request = json.loads(Path(request_match.group(1)).read_text(encoding="utf-8"))
+    output = {{
+        "contract_version": "factorforge_agent_private_output_v1",
+        "status": "PASS",
+        "public_research_record": {{
+            "contract_version": "factorforge_researcher_memory_evo_v2_cold_start_search_agent_record_v1",
+            "artifact_identity": request["artifact_identity"],
+            "executor_role_id": "knowledge_librarian",
+            "query_sha256": request["query"]["query_sha256"],
+            "checked_indexes": request["checked_indexes"],
+            "admissible_hits": [],
+            "admissible_hit_count": 0,
+            "memory_state": "COLD_START_NO_ADMISSIBLE_MEMORY",
+        }},
+    }}
+    Path(output_match.group(1)).write_text(
+        json.dumps(output, indent=2, sort_keys=True) + "\\n",
+        encoding="utf-8",
+    )
+    print(json.dumps({{"status": "completed"}}))
+    raise SystemExit(0)
+raise SystemExit(66)
+''',
+        encoding="utf-8",
+    )
+    executable.chmod(0o700)
+
+
+def _write_broker_auth_seed(path: Path, *, key: str) -> Path:
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE auth_profile_store (store_key TEXT NOT NULL PRIMARY KEY, store_json TEXT NOT NULL, updated_at INTEGER NOT NULL)"
+        )
+        connection.execute(
+            "INSERT INTO auth_profile_store VALUES (?, ?, ?)",
+            (
+                "primary",
+                json.dumps(
+                    {
+                        "version": 1,
+                        "profiles": {
+                            "deepseek:console": {
+                                "provider": "deepseek",
+                                "type": "api_key",
+                                "key": key,
+                            }
+                        },
+                    }
+                ),
+                1,
+            ),
+        )
+    path.chmod(0o600)
+    return path
 
 
 def _prepared_workspace(tmp_path: Path) -> Path:
@@ -185,6 +304,112 @@ def test_pre_result_memory_gate_pauses_then_accepts_only_signed_zero_hit(
             installation_id=trust_store.installation_id,
             runner=runner,
         )
+
+
+def test_cold_search_real_adapter_prelaunch_failure_retries_new_generation(
+    tmp_path: Path,
+    request: pytest.FixtureRequest,
+) -> None:
+    fixture_root = PROJECT_ROOT / f".pytest-memory-runtime-{tmp_path.name}"
+    fixture_root.mkdir(parents=True)
+    request.addfinalizer(lambda: shutil.rmtree(fixture_root, ignore_errors=True))
+    workspace = _prepared_workspace(fixture_root / "research")
+    state_root = tmp_path / "state"
+    state_root.mkdir(mode=0o700)
+    trust_store = ensure_runtime_trust_store(
+        state_root / "research-org-trust",
+        installation_id="evo-memory-runtime-test",
+    )
+    runtime_state = tmp_path / "deterministic-runtime-state"
+    runtime = tmp_path / "deterministic-container-runtime"
+    _write_deterministic_memory_container_runtime(runtime, runtime_state)
+    (runtime_state / "mode").write_text(
+        "prelaunch_failure\n",
+        encoding="utf-8",
+    )
+    broker_token = "deterministic-broker-token"
+    token_file = tmp_path / "broker-token"
+    token_file.write_text(broker_token, encoding="utf-8")
+    token_file.chmod(0o600)
+    secret_root = tmp_path / "secret-scan"
+    secret_root.mkdir(mode=0o700)
+    config = ConsoleConfig(
+        source_repo=PROJECT_ROOT,
+        state_root=state_root,
+        worktree_root=tmp_path / "runs",
+        openclaw_auth_seed_db=_write_broker_auth_seed(
+            tmp_path / "openclaw-auth.sqlite",
+            key=broker_token,
+        ),
+        openclaw_profile_template=(
+            PROJECT_ROOT / "deploy/factorforge-console/openclaw.json.example"
+        ),
+        model_broker_client_token_file=token_file,
+        model_broker_secret_scan_root=secret_root,
+        container_runtime=str(runtime),
+        agent_container_image="sha256:" + "a" * 64,
+        installation_id=trust_store.installation_id,
+        auth_disabled=True,
+    )
+    adapter = ContainerizedOpenClawResearchAgentAdapter(config)
+
+    failed = prepare_evo_v2_memory_round(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        state_root=state_root,
+        installation_id=trust_store.installation_id,
+        runner=adapter,
+    )
+    assert failed["generation"] == 1
+    assert failed["stage"] == "AWAITING_ADMISSIBLE_SOURCE_OR_ZERO_HIT"
+    assert failed["formal_execution_allowed"] is False
+
+    (runtime_state / "mode").write_text("success\n", encoding="utf-8")
+    ready = prepare_evo_v2_memory_round(
+        workspace=workspace,
+        worktree=PROJECT_ROOT,
+        state_root=state_root,
+        installation_id=trust_store.installation_id,
+        runner=adapter,
+    )
+    assert ready["generation"] == 2
+    assert ready["stage"] == "COLD_START_VERIFIED_READY"
+    assert ready["formal_execution_allowed"] is True
+    sessions = sorted(
+        path.name
+        for path in (
+            state_root / "researcher-memory-evo-v2-retrieval-sessions"
+        ).iterdir()
+        if path.is_dir()
+    )
+    assert len(sessions) == 2
+    assert all(re.fullmatch(r"session_[a-f0-9]{32}", item) for item in sessions)
+    assert all("evo_v2_search" not in item for item in sessions)
+
+    calls = [
+        json.loads(line)
+        for line in (runtime_state / "calls.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    ]
+    run_calls = [call for call in calls if call and call[0] == "run"]
+    assert run_calls
+    assert all(
+        "factorforge.console.job=job_123abc4567" in call
+        for call in run_calls
+    )
+    receipt = json.loads(
+        (
+            workspace
+            / "objects/evo_v2/WEB_REPORT/memory_runtime/cold_start_search_receipt.json"
+        ).read_text(encoding="utf-8")
+    )
+    signed_identity = receipt["retrieval_runtime"][
+        "adapter_completion_receipt"
+    ]["identity"]
+    assert "job_id" not in signed_identity
+    assert signed_identity["factor_id"] == "WEB_FACTOR"
+    adapter.clear_denied_secrets("job_123abc4567")
 
 
 def _write_terminal_sources(

@@ -354,6 +354,9 @@ def _prepare_review_invocation(
             dict(material["authoring_admission_ref"]),
         ),
         parent_session_uid=None,
+        host_job_id=str(
+            material["admission"]["task"]["identity"]["job_id"]
+        ),
     )
 
 

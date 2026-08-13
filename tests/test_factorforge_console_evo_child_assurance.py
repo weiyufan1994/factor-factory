@@ -276,6 +276,11 @@ def test_assurance_launch_only_restart_reconciles_before_new_review(
     class CrashAfterReview:
         def run_research_org_session(self, invocation):
             launched.append(invocation.runtime_instance_id)
+            assert invocation.host_job_id == (
+                bundle["agent_authored_child_web_research_plan"]["identity"][
+                    "job_id"
+                ]
+            )
             delegate.run_research_org_session(invocation)
             raise RuntimeError("simulated_review_host_kill")
 
@@ -291,6 +296,11 @@ def test_assurance_launch_only_restart_reconciles_before_new_review(
 
         def run_research_org_session(self, invocation):
             launched.append(invocation.runtime_instance_id)
+            assert invocation.host_job_id == (
+                bundle["agent_authored_child_web_research_plan"]["identity"][
+                    "job_id"
+                ]
+            )
             return delegate.run_research_org_session(invocation)
 
     result = materialize_evo_child_assurance(
@@ -309,6 +319,14 @@ def test_assurance_launch_only_restart_reconciles_before_new_review(
         (path / "retry_authorized_journal.json").is_file()
         for path in sessions
     ) == 1
+    launch_payloads = [
+        json.loads((path / "launch_journal.json").read_text(encoding="utf-8"))
+        for path in sessions
+    ]
+    assert all(
+        "host_job_id" not in payload["invocation"]
+        for payload in launch_payloads
+    )
 
 
 def test_assurance_private_lock_prevents_duplicate_review_agents(

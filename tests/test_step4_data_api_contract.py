@@ -610,10 +610,10 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(
     )
     daily_df = pd.DataFrame(
         [
-            {"ts_code": "000001.SZ", "trade_date": "20260102", "close": 100.0, "pct_chg": 0.0, "total_mv": 10.0, "turnover_rate": 1.0},
-            {"ts_code": "000001.SZ", "trade_date": "20260105", "close": 110.0, "pct_chg": 2.0, "total_mv": 11.0, "turnover_rate": 1.1},
-            {"ts_code": "000001.SZ", "trade_date": "20260106", "close": 121.0, "pct_chg": 3.0, "total_mv": 12.0, "turnover_rate": 1.2},
-            {"ts_code": "000001.SZ", "trade_date": "20260107", "close": 108.9, "pct_chg": 4.0, "total_mv": 13.0, "turnover_rate": 1.3},
+            {"ts_code": "000001.SZ", "trade_date": "20260102", "close": 100.0, "pct_chg": 0.0, "turnover_rate": 1.0, "ln_mcap_free": 20.0, "volume_ratio": 0.8},
+            {"ts_code": "000001.SZ", "trade_date": "20260105", "close": 110.0, "pct_chg": 2.0, "turnover_rate": 1.1, "ln_mcap_free": 20.1, "volume_ratio": 0.9},
+            {"ts_code": "000001.SZ", "trade_date": "20260106", "close": 121.0, "pct_chg": 3.0, "turnover_rate": 1.2, "ln_mcap_free": 20.2, "volume_ratio": 1.0},
+            {"ts_code": "000001.SZ", "trade_date": "20260107", "close": 108.9, "pct_chg": 4.0, "turnover_rate": 1.3, "ln_mcap_free": 20.3, "volume_ratio": 1.1},
         ]
     )
     factor_path = tmp_path / "factor.parquet"
@@ -633,7 +633,12 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(
             "holding_period_sessions": 1,
             "return_window": "close_t_plus_1_to_close_t_plus_2",
         },
-        "proof_control_columns": ["total_mv", "turnover_rate"],
+        "proof_control_columns": [
+            "pct_chg",
+            "turnover_rate",
+            "ln_mcap_free",
+            "volume_ratio",
+        ],
         "diagnostic_trials": [
             {
                 "trial_id": "diag_close",
@@ -662,7 +667,14 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(
         evaluation_contract=contract,
     )
 
+    daily_forward = pd.read_parquet(
+        context["paths"]["daily_forward_returns_parquet"]
+    )
     merged = pd.read_parquet(context["paths"]["merged_signal_return_parquet"])
+    assert daily_forward.columns.is_unique
+    assert merged.columns.is_unique
+    assert daily_forward.columns.tolist().count("pct_chg") == 1
+    assert merged.columns.tolist().count("pct_chg") == 1
     first = float(merged.loc[merged["trade_date"] == "20260102", "future_return_1d"].iloc[0])
     assert first == pytest.approx(121.0 / 110.0 - 1.0)
     assert first != pytest.approx(0.02)
@@ -671,8 +683,10 @@ def test_web_shared_evaluation_uses_delayed_close_ratio_not_pct_chg(
     assert str(first_row["label_end_date"]) == "20260106"
     assert float(first_row["label_start_price"]) == pytest.approx(110.0)
     assert float(first_row["label_end_price"]) == pytest.approx(121.0)
-    assert float(first_row["total_mv"]) == pytest.approx(10.0)
+    assert float(first_row["pct_chg"]) == pytest.approx(0.0)
     assert float(first_row["turnover_rate"]) == pytest.approx(1.0)
+    assert float(first_row["ln_mcap_free"]) == pytest.approx(20.0)
+    assert float(first_row["volume_ratio"]) == pytest.approx(0.8)
     assert float(first_row["diagnostic__diag_close"]) == pytest.approx(-100.0)
     assert context["version"] == "factorforge_shared_evaluation_context_v2"
     assert context["label_policy"] == contract["label_policy"]
@@ -747,3 +761,118 @@ def test_web_shared_evaluation_excludes_suspended_security_label_path(
     assert merged["code"].tolist() == ["000001.SZ"]
     assert merged.iloc[0]["label_start_date"] == "20260105"
     assert merged.iloc[0]["label_end_date"] == "20260106"
+
+
+def test_web_shared_evaluation_dedupes_repeated_proof_control_input(
+    tmp_path,
+    monkeypatch,
+):
+    run_step4 = _load_run_step4()
+    calendar = ["2026-01-02", "2026-01-05", "2026-01-06"]
+    monkeypatch.setattr(
+        run_step4,
+        "validate_trusted_calendar_snapshot",
+        lambda: {"dates": calendar},
+    )
+    factor_df = pd.DataFrame(
+        [{"ts_code": "000001.SZ", "trade_date": "20260102", "signal": 1.0}]
+    )
+    daily_df = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": date.replace("-", ""),
+                "close": 100.0 + index,
+                "pct_chg": float(index),
+                "turnover_rate": 1.0 + index,
+            }
+            for index, date in enumerate(calendar)
+        ]
+    )
+    factor_path = tmp_path / "factor.parquet"
+    daily_path = tmp_path / "daily.parquet"
+    factor_df.to_parquet(factor_path, index=False)
+    daily_df.to_parquet(daily_path, index=False)
+
+    context = run_step4.build_shared_evaluation_context(
+        report_id="REPEATED_CONTROLS",
+        factor_id="F",
+        implementation_mode_decision={"implementation_mode": "operator"},
+        base_identity={"spec_hash": "spec", "code_hash": "code"},
+        run_dir=tmp_path / "run",
+        factor_df=factor_df,
+        daily_df=daily_df,
+        signal_col="signal",
+        factor_parquet_path=factor_path,
+        daily_input_path=daily_path,
+        target_window={"start": "20260102", "end": "20260106"},
+        effective_target_window={"start": "20260102", "end": "20260106"},
+        evaluation_contract={
+            "version": "factorforge_web_evaluation_contract_v2",
+            "label_policy": {},
+            "proof_control_columns": [
+                "pct_chg",
+                "pct_chg",
+                "turnover_rate",
+                "turnover_rate",
+            ],
+        },
+    )
+
+    daily_forward = pd.read_parquet(
+        context["paths"]["daily_forward_returns_parquet"]
+    )
+    merged = pd.read_parquet(context["paths"]["merged_signal_return_parquet"])
+    assert daily_forward.columns.is_unique
+    assert merged.columns.is_unique
+    assert daily_forward.columns.tolist().count("pct_chg") == 1
+    assert daily_forward.columns.tolist().count("turnover_rate") == 1
+    assert merged.columns.tolist().count("pct_chg") == 1
+    assert merged.columns.tolist().count("turnover_rate") == 1
+
+
+def test_web_shared_evaluation_rejects_whitespace_mutated_proof_control(
+    tmp_path,
+):
+    run_step4 = _load_run_step4()
+    factor_df = pd.DataFrame(
+        [{"ts_code": "000001.SZ", "trade_date": "20260102", "signal": 1.0}]
+    )
+    daily_df = pd.DataFrame(
+        [
+            {
+                "ts_code": "000001.SZ",
+                "trade_date": "20260102",
+                "close": 100.0,
+                "pct_chg": 1.0,
+            }
+        ]
+    )
+    factor_path = tmp_path / "factor.parquet"
+    daily_path = tmp_path / "daily.parquet"
+    factor_df.to_parquet(factor_path, index=False)
+    daily_df.to_parquet(daily_path, index=False)
+
+    with pytest.raises(
+        ValueError,
+        match=r"shared evaluation context requires daily columns: \[' pct_chg '\]",
+    ):
+        run_step4.build_shared_evaluation_context(
+            report_id="WHITESPACE_CONTROL",
+            factor_id="F",
+            implementation_mode_decision={"implementation_mode": "operator"},
+            base_identity={"spec_hash": "spec", "code_hash": "code"},
+            run_dir=tmp_path / "run",
+            factor_df=factor_df,
+            daily_df=daily_df,
+            signal_col="signal",
+            factor_parquet_path=factor_path,
+            daily_input_path=daily_path,
+            target_window={"start": "20260102", "end": "20260102"},
+            effective_target_window={"start": "20260102", "end": "20260102"},
+            evaluation_contract={
+                "version": "factorforge_web_evaluation_contract_v2",
+                "label_policy": {},
+                "proof_control_columns": [" pct_chg "],
+            },
+        )

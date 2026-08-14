@@ -1468,16 +1468,21 @@ def build_shared_evaluation_context(
     factor_signal = factor_signal.rename(columns={'ts_code': 'code'}).copy()
     factor_signal['datetime'] = normalize_trade_date_series(factor_signal['trade_date'])
 
+    def ordered_unique_columns(columns: list[str]) -> list[str]:
+        return list(dict.fromkeys(columns))
+
     proof_control_columns = (
-        [
+        ordered_unique_columns([
             str(column)
             for column in (evaluation_contract.get('proof_control_columns') or [])
             if str(column).strip()
-        ]
+        ])
         if isinstance(evaluation_contract, dict)
         else []
     )
-    required_daily_cols = ['ts_code', 'trade_date', 'close', *proof_control_columns]
+    required_daily_cols = ordered_unique_columns(
+        ['ts_code', 'trade_date', 'close', *proof_control_columns]
+    )
     missing_daily_cols = [col for col in required_daily_cols if col not in daily_df.columns]
     if missing_daily_cols:
         raise ValueError(f'shared evaluation context requires daily columns: {missing_daily_cols}')
@@ -1494,18 +1499,19 @@ def build_shared_evaluation_context(
                 pd.Timestamp(pre_release_research_windows['is_end']),
             )
         ].copy()
+    daily_source_columns = ordered_unique_columns([
+        col
+        for col in [
+            'ts_code',
+            'trade_date',
+            'close',
+            'pct_chg',
+            *proof_control_columns,
+        ]
+        if col in daily_df.columns
+    ])
     daily_forward = build_forward_return_frame(
-        evaluation_daily_df[[
-            col
-            for col in [
-                'ts_code',
-                'trade_date',
-                'close',
-                'pct_chg',
-                *proof_control_columns,
-            ]
-            if col in daily_df.columns
-        ]].rename(columns={'ts_code': 'code'}),
+        evaluation_daily_df[daily_source_columns].rename(columns={'ts_code': 'code'}),
         instrument_col='code',
         date_col='trade_date',
         price_col='close',
@@ -1538,6 +1544,7 @@ def build_shared_evaluation_context(
             ]
         )
         forward_columns.extend(proof_control_columns)
+    forward_columns = ordered_unique_columns(forward_columns)
     diagnostic_columns = [
         str(item['signal_column'])
         for item in diagnostic_trials

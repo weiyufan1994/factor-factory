@@ -405,16 +405,22 @@ def _configure_host_formal_python_environment(
     env: dict[str, str],
     *,
     worktree: Path,
+    source_repo: Path,
     data_api_pythonpath: Path | None,
 ) -> None:
     try:
         worktree_root = worktree.expanduser().resolve(strict=True)
+        source_root = source_repo.expanduser().resolve(strict=True)
     except (FileNotFoundError, RuntimeError) as exc:
         raise RuntimeError(
-            f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal worktree is invalid"
+            f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: formal Python root is invalid"
         ) from exc
 
-    python_paths = [str(worktree_root)]
+    # The caller-validated execution engine owns framework imports.  A pinned
+    # research worktree remains importable for report-local, non-framework
+    # modules, but must not shadow a newer deployed ``factor_factory``.
+    python_paths = [str(source_root)]
+    seen_python_paths = set(python_paths)
     excluded_inherited_root: Path | None = None
     env.pop("FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT", None)
     if data_api_pythonpath is not None:
@@ -447,12 +453,19 @@ def _configure_host_formal_python_environment(
             raise RuntimeError(
                 f"{BLOCK_HOST_FORMAL_EXECUTION_FAILED}: Data API bridge package is missing"
             )
-        python_paths.append(str(bridge_root))
+        bridge_value = str(bridge_root)
+        if bridge_value not in seen_python_paths:
+            python_paths.append(bridge_value)
+            seen_python_paths.add(bridge_value)
         excluded_inherited_root = checkout
         env["FACTORFORGE_CONSOLE_DATA_API_PACKAGE_ROOT"] = str(package_root)
 
+    worktree_value = str(worktree_root)
+    if worktree_value not in seen_python_paths:
+        python_paths.append(worktree_value)
+        seen_python_paths.add(worktree_value)
+
     inherited_pythonpath = env.get("PYTHONPATH", "")
-    seen_python_paths = set(python_paths)
     for item in inherited_pythonpath.split(os.pathsep):
         value = item.strip()
         if not value:
@@ -475,7 +488,7 @@ def _configure_host_formal_python_environment(
             seen_python_paths.add(canonical_value)
     env["PYTHONPATH"] = os.pathsep.join(python_paths)
     env["PYTHONDONTWRITEBYTECODE"] = "1"
-    env["FACTORFORGE_REPO_ROOT"] = str(worktree_root)
+    env["FACTORFORGE_REPO_ROOT"] = str(source_root)
 
 
 def _formal_engine_script(source_repo: Path, relative: Path) -> Path:
@@ -6697,6 +6710,7 @@ class ResearchRunService:
         _configure_host_formal_python_environment(
             environment,
             worktree=worktree,
+            source_repo=worktree,
             data_api_pythonpath=self.config.data_api_pythonpath,
         )
         trust_root = self.config.state_root / "research-org-trust"
@@ -7058,6 +7072,7 @@ class ResearchRunService:
         _configure_host_formal_python_environment(
             env,
             worktree=worktree,
+            source_repo=engine_root,
             data_api_pythonpath=self.config.data_api_pythonpath,
         )
         plan_path = workspace / "identity" / "web_research_plan.json"

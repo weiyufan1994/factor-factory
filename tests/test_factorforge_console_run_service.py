@@ -6611,6 +6611,11 @@ def test_host_formal_execution_uses_deployed_engine_with_pinned_research_worktre
     )
     assert calls[1][0][1] == str(source / "scripts" / "run_factorforge_ultimate.py")
     assert not Path(calls[1][0][1]).is_relative_to(research_worktree)
+    for _argv, kwargs in calls:
+        python_paths = kwargs["env"]["PYTHONPATH"].split(os.pathsep)
+        assert python_paths[0] == str(source.resolve())
+        assert str(research_worktree.resolve()) in python_paths[1:]
+        assert kwargs["env"]["FACTORFORGE_REPO_ROOT"] == str(source.resolve())
     payload = json.loads(
         (service.config.state_root / receipt["receipt_id"]).read_text(encoding="utf-8")
     )
@@ -6774,15 +6779,57 @@ def test_formal_failure_checkpoint_is_attested_and_resumable(
     assert store.get_job(job.job_id).execution_status == "QUEUED"
 
 
-def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
+def test_host_formal_python_environment_keeps_engine_ahead_of_stale_worktree_and_data_api(
     tmp_path,
 ):
+    engine = tmp_path / "engine"
+    engine_console = engine / "factor_factory" / "console"
+    engine_console.mkdir(parents=True)
+    (engine / "factor_factory" / "__init__.py").write_text("\n", encoding="utf-8")
+    (engine_console / "__init__.py").write_text(
+        "CONTROL_MARKER = 'engine'\n",
+        encoding="utf-8",
+    )
+    (engine / "factor_factory" / "runtime_probe.py").write_text(
+        "ENGINE_ONLY_SYMBOL = 'new-engine-symbol'\n",
+        encoding="utf-8",
+    )
+    engine_script = engine / "scripts" / "formal_probe.py"
+    engine_script.parent.mkdir()
+    engine_script.write_text(
+        (
+            "from factor_factory.console import CONTROL_MARKER\n"
+            "from factor_factory.runtime_probe import ENGINE_ONLY_SYMBOL\n"
+            "from factorforge_data_api import DATA_API_MARKER\n"
+            "from job_specific_module import JOB_MARKER\n"
+            "assert CONTROL_MARKER == 'engine'\n"
+            "assert ENGINE_ONLY_SYMBOL == 'new-engine-symbol'\n"
+            "assert DATA_API_MARKER == 'external'\n"
+            "assert JOB_MARKER == 'job-worktree'\n"
+        ),
+        encoding="utf-8",
+    )
+
     worktree = tmp_path / "worktree"
-    control_console = worktree / "factor_factory" / "console"
-    control_console.mkdir(parents=True)
+    stale_console = worktree / "factor_factory" / "console"
+    stale_console.mkdir(parents=True)
     (worktree / "factor_factory" / "__init__.py").write_text("\n", encoding="utf-8")
-    (control_console / "__init__.py").write_text(
-        "CONTROL_MARKER = 'control'\n",
+    (stale_console / "__init__.py").write_text(
+        "CONTROL_MARKER = 'stale-worktree'\n",
+        encoding="utf-8",
+    )
+    (worktree / "factor_factory" / "runtime_probe.py").write_text(
+        "STALE_ONLY_SYMBOL = 'old-worktree-symbol'\n",
+        encoding="utf-8",
+    )
+    (worktree / "job_specific_module.py").write_text(
+        "JOB_MARKER = 'job-worktree'\n",
+        encoding="utf-8",
+    )
+    stale_script = worktree / "scripts" / "formal_probe.py"
+    stale_script.parent.mkdir()
+    stale_script.write_text(
+        "raise SystemExit(97)\n",
         encoding="utf-8",
     )
     bridge_source = PROJECT_ROOT / "deploy" / "factorforge-console" / "data-api-bridge"
@@ -6802,6 +6849,10 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
     )
     data_api_alias = tmp_path / "data-api-alias"
     data_api_alias.symlink_to(data_api_checkout, target_is_directory=True)
+    engine_alias = tmp_path / "engine-alias"
+    engine_alias.symlink_to(engine, target_is_directory=True)
+    worktree_alias = tmp_path / "worktree-alias"
+    worktree_alias.symlink_to(worktree, target_is_directory=True)
     unrelated_pythonpath = tmp_path / "unrelated-pythonpath"
     unrelated_pythonpath.mkdir()
 
@@ -6812,6 +6863,10 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
                 f"{data_api_checkout}{os.sep}.",
                 str(data_api_alias),
                 str(data_api_checkout / "factor_factory"),
+                str(engine_alias),
+                str(engine),
+                str(worktree_alias),
+                str(worktree),
                 str(unrelated_pythonpath),
             ]
         )
@@ -6819,11 +6874,19 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
     _configure_host_formal_python_environment(
         env,
         worktree=worktree,
+        source_repo=engine,
         data_api_pythonpath=data_api_checkout,
     )
 
     python_paths = env["PYTHONPATH"].split(os.pathsep)
-    assert python_paths[:2] == [str(worktree.resolve()), str(bridge_target.resolve())]
+    assert python_paths[:3] == [
+        str(engine.resolve()),
+        str(bridge_target.resolve()),
+        str(worktree.resolve()),
+    ]
+    assert python_paths.count(str(engine.resolve())) == 1
+    assert python_paths.count(str(bridge_target.resolve())) == 1
+    assert python_paths.count(str(worktree.resolve())) == 1
     assert not any(
         Path(item).is_relative_to(data_api_checkout.resolve()) for item in python_paths
     )
@@ -6832,24 +6895,20 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
         data_api_package.resolve()
     )
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
-    assert env["FACTORFORGE_REPO_ROOT"] == str(worktree.resolve())
+    assert env["FACTORFORGE_REPO_ROOT"] == str(engine.resolve())
     probe = subprocess.run(
         [
             sys.executable,
-            "-c",
-            (
-                "from factor_factory.console import CONTROL_MARKER; "
-                "from factorforge_data_api import DATA_API_MARKER; "
-                "assert CONTROL_MARKER == 'control'; "
-                "assert DATA_API_MARKER == 'external'"
-            ),
+            str(engine_script),
         ],
-        cwd=tmp_path,
+        cwd=worktree,
         env={**os.environ, **env},
         text=True,
         capture_output=True,
         check=False,
     )
+    assert Path(probe.args[1]).resolve().is_relative_to(engine.resolve())
+    assert Path(probe.args[1]).resolve() != stale_script.resolve()
     assert probe.returncode == 0, probe.stderr
 
 

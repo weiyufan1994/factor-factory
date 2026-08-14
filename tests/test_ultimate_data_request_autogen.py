@@ -62,6 +62,72 @@ def test_data_request_candidate_not_created_for_plain_code_failure(tmp_path):
     assert candidate is None
 
 
+def test_data_request_candidate_not_created_for_step3_sample_projection_bug(
+    tmp_path,
+):
+    ctx = DummyContext(active_root=tmp_path, objects_root=tmp_path / 'objects')
+
+    candidate = data_request_candidate_from_failure(
+        report_id='REPORT',
+        command_name='validate_step3',
+        output=(
+            'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:'
+            'projection.exact_replay clean_daily_bar'
+        ),
+        ctx=ctx,
+    )
+
+    assert candidate is None
+
+
+def test_data_request_candidate_still_created_for_real_catalog_gap(tmp_path):
+    ctx = DummyContext(active_root=tmp_path, objects_root=tmp_path / 'objects')
+    feasibility = ctx.objects_root / 'validation' / 'data_feasibility_report__REPORT.json'
+    feasibility.parent.mkdir(parents=True)
+    feasibility.write_text(
+        '{"final_result":"blocked","blocked_items":['
+        '{"missing_datasets":["clean_daily_bar"]}]}',
+        encoding='utf-8',
+    )
+
+    candidate = data_request_candidate_from_failure(
+        report_id='REPORT',
+        command_name='validate_step3',
+        output='Data API could not resolve clean_daily_bar; catalog missing',
+        ctx=ctx,
+    )
+
+    assert candidate is not None
+    assert candidate['requested_dataset_id'] == 'clean_daily_bar'
+
+
+def test_real_blocked_feasibility_survives_consumer_artifact_contract_marker(
+    tmp_path,
+):
+    ctx = DummyContext(active_root=tmp_path, objects_root=tmp_path / 'objects')
+    feasibility = ctx.objects_root / 'validation' / 'data_feasibility_report__REPORT.json'
+    feasibility.parent.mkdir(parents=True)
+    feasibility.write_text(
+        '{"final_result":"blocked","blocked_items":['
+        '{"reason":"missing_data_api_clean_daily_bar",'
+        '"missing_datasets":["clean_daily_bar"]}]}',
+        encoding='utf-8',
+    )
+
+    candidate = data_request_candidate_from_failure(
+        report_id='REPORT',
+        command_name='validate_step3',
+        output=(
+            'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING:consumer_artifact'
+        ),
+        ctx=ctx,
+    )
+
+    assert candidate is not None
+    assert candidate['requested_dataset_id'] == 'clean_daily_bar'
+    assert candidate['request_type'] == 'coverage_repair'
+
+
 def test_data_request_candidate_not_created_for_s3_timeout_with_stale_blocked_feasibility(tmp_path):
     ctx = DummyContext(active_root=tmp_path, objects_root=tmp_path / 'objects')
     feasibility = ctx.objects_root / 'validation' / 'data_feasibility_report__REPORT.json'

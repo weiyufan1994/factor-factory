@@ -23,6 +23,14 @@ DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
 }
 
 from factor_factory.formula.field_aliases import validate_standard_formula_fields_contract
+from factor_factory.data_api import default_catalog_path
+from factor_factory.evo_data_boundary import (
+    BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID,
+    BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING,
+    canonical_step3_sample_query,
+    resolve_evo_pre_release_research_windows,
+    validate_closed_pre_release_data_resolution,
+)
 
 
 def validate_sort_contract(contract: dict) -> None:
@@ -462,6 +470,56 @@ def _data_api_resolution(prep: dict, qcfg: dict) -> dict:
     return {}
 
 
+def _sample_required_daily_fields(fsm: dict | None) -> list[str]:
+    if not isinstance(fsm, dict):
+        return []
+    canonical = (
+        fsm.get('canonical_spec')
+        if isinstance(fsm.get('canonical_spec'), dict)
+        else {}
+    )
+    formula_ir = (
+        canonical.get('formula_ir')
+        if isinstance(canonical.get('formula_ir'), dict)
+        else {}
+    )
+    implementation = (
+        fsm.get('implementation_contract')
+        if isinstance(fsm.get('implementation_contract'), dict)
+        else {}
+    )
+    code_contract = (
+        implementation.get('code_contract')
+        if isinstance(implementation.get('code_contract'), dict)
+        else {}
+    )
+    candidates = (
+        list(formula_ir.get('required_fields') or [])
+        + list(canonical.get('required_inputs') or [])
+        + list(code_contract.get('required_fields') or [])
+        + list(implementation.get('required_fields') or [])
+        + list(fsm.get('required_inputs') or [])
+    )
+    return list(
+        dict.fromkeys(
+            str(field).strip().lower()
+            for field in candidates
+            if str(field).strip()
+        )
+    )
+
+
+def _canonical_step3_sample_query(
+    *,
+    fsm: dict,
+    frozen_windows: dict,
+) -> dict:
+    return canonical_step3_sample_query(
+        fsm=fsm,
+        research_windows=frozen_windows,
+    )
+
+
 def _step4_data_contract(prep: dict, qcfg: dict, handoff: dict) -> dict:
     local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
     for candidate in [
@@ -497,9 +555,12 @@ def validate_step3_readiness_contract(
     handoff: dict,
     *,
     workspace: Path | None = None,
+    factorforge_root: Path | None = None,
+    fsm: dict | None = None,
 ) -> None:
     del impl
     workspace = workspace or WORKSPACE
+    factorforge_root = factorforge_root or FF
     feasibility = prep.get('feasibility')
     expected_step3a_ready = feasibility in {'ready', 'proxy_ready'}
     if handoff.get('step3a_ready') is not None:
@@ -516,6 +577,90 @@ def validate_step3_readiness_contract(
     data_api = _data_api_resolution(prep, qcfg)
     local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
     snapshot_source = str(local_inputs.get('snapshot_source') or '')
+    if isinstance(prep.get('research_windows'), dict):
+        report_id = str(prep.get('report_id') or '')
+        try:
+            frozen_windows = resolve_evo_pre_release_research_windows(
+                workspace_root=factorforge_root,
+                report_id=report_id,
+            )
+        except ValueError as exc:
+            raise AssertionError(
+                f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:frozen_window_authority:{exc}'
+            ) from exc
+        assert frozen_windows is not None, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING}:frozen_window_authority'
+        )
+        assert prep.get('research_windows') == frozen_windows, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:frozen_is_window_mismatch'
+        )
+        required_fields = _sample_required_daily_fields(fsm)
+        assert required_fields, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING}:formula_required_fields'
+        )
+        assert snapshot_source != 'data_api_moneyflow', (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+            'primary_dataset.moneyflow_unsupported'
+        )
+        primary_dataset = 'clean_daily_bar'
+        contract = _step4_data_contract(prep, qcfg, handoff)
+        expected_sample_query = _canonical_step3_sample_query(
+            fsm=fsm or {},
+            frozen_windows=frozen_windows,
+        )
+        daily_rel = (
+            local_inputs.get('daily_df_parquet')
+            or local_inputs.get('daily_df_csv')
+        )
+        assert isinstance(daily_rel, str) and daily_rel, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING}:consumer_artifact'
+        )
+        try:
+            factorforge_relative = factorforge_root.relative_to(workspace)
+        except ValueError as exc:
+            raise AssertionError(
+                f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+                'consumer_artifact.factorforge_scope'
+            ) from exc
+        expected_base = (
+            factorforge_relative
+            / 'runs'
+            / report_id
+            / 'step3a_local_inputs'
+            / f'daily_input__{report_id}'
+        )
+        expected_artifacts = {
+            str(expected_base.with_suffix(suffix))
+            for suffix in ('.parquet', '.csv')
+        }
+        assert daily_rel in expected_artifacts, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+            'consumer_artifact.expected_path'
+        )
+        catalog_path = default_catalog_path()
+        evidence_reasons = validate_closed_pre_release_data_resolution(
+            data_api,
+            research_windows=frozen_windows,
+            workspace_root=workspace,
+            factorforge_root=factorforge_root,
+            catalog_path=catalog_path,
+            required_fields=required_fields,
+            report_id=report_id,
+            factor_id=str(prep.get('factor_id') or ''),
+            expected_sample_query=expected_sample_query,
+            step4_data_contract=contract,
+            expected_artifact_relative=daily_rel,
+            primary_dataset=primary_dataset,
+        )
+        assert not evidence_reasons, ';'.join(evidence_reasons)
+        assert qcfg.get('data_api_resolution') == data_api, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+            'qlib.data_api_resolution_binding'
+        )
+        assert qcfg.get('step4_data_contract') == contract, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+            'qlib.step4_data_contract_binding'
+        )
     clean_daily = data_api.get('clean_daily_bar') if isinstance(data_api.get('clean_daily_bar'), dict) else {}
     moneyflow = data_api.get('moneyflow') if isinstance(data_api.get('moneyflow'), dict) else {}
     if snapshot_source == 'data_api_moneyflow':
@@ -606,7 +751,15 @@ if __name__ == '__main__':
     if 'step4_contract' in impl:
         assert impl['step4_contract'].get('execution_mode') == impl_mode
 
-    validate_step3_readiness_contract(prep, qcfg, impl, handoff, workspace=WORKSPACE)
+    validate_step3_readiness_contract(
+        prep,
+        qcfg,
+        impl,
+        handoff,
+        workspace=WORKSPACE,
+        factorforge_root=FF,
+        fsm=fsm,
+    )
     canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
     formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
     standard_contract = fsm.get('standard_formula_fields_contract') or canonical.get('standard_formula_fields_contract')

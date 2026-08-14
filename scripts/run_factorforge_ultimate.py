@@ -1055,6 +1055,32 @@ def data_request_candidate_from_failure(
     feasibility_path = ctx.objects_root / 'validation' / f'data_feasibility_report__{report_id}.json'
     feasibility = load_json_if_exists(feasibility_path)
     feasibility_blocked = feasibility_has_data_blocker(feasibility)
+    # A malformed/missing Step3 sample-evidence projection is a contract bug,
+    # not evidence that canonical data coverage is absent.  Do not turn it
+    # into a coverage-repair request.  The same applies to the legacy generic
+    # resolution blocker when feasibility itself did not identify missing data.
+    sample_evidence_contract_markers = (
+        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING:projection',
+        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING:canonical_step3_sample_query',
+        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING:consumer_artifact',
+        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:projection',
+        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:consumer_artifact',
+        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:sample_artifact.unstable_read',
+        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:sample_artifact.io_',
+        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:clean_daily_bar.canonical_sample_query',
+        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:clean_daily_bar.resolved_fetch_query_mismatch',
+        'BLOCK_FACTORFORGE_EVO_PRE_RELEASE_DATA_BOUNDARY_INVALID',
+    )
+    if (
+        any(token in output for token in sample_evidence_contract_markers)
+        and not feasibility_blocked
+    ):
+        return None
+    if (
+        'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING' in output
+        and not feasibility_blocked
+    ):
+        return None
     combined = output
     if feasibility_blocked:
         combined += '\n' + json.dumps(feasibility, ensure_ascii=False)

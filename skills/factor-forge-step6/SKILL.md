@@ -61,6 +61,9 @@ needed for a routine code/documentation check.
 
 ## Decision and continuation
 
+Before writing a memo that adopts local advisory experience, read the
+[same-source binding rule](../factor-forge-ultimate/references/knowledge-maintenance.md#knowledge-reference-contract).
+
 Write a substantive memo explaining what survived, what failed, evidence limits,
 reusable conditions/counterexamples and the next discriminating question if any.
 Preserve the external researcher context, loop brief and provenance. A local

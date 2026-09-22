@@ -5,8 +5,8 @@ Read at completion/interruption or when repairing maintenance. This describes th
 ## Workspace Experience Reuse
 
 After a successful Step6 run and validation, the wrapper rebuilds the active
-workspace's derivative experience index. It also create-only exports selected
-fields from that Step6 knowledge record to the local project's
+workspace's derivative experience index. Without a configured local advisory
+root, the existing route also create-only exports selected fields to the local project's
 `knowledge/因子工厂/workspace_experience_exports/` and refreshes the default index.
 These exports are advisory candidates, not canonical memory or proven general
 laws. Same-content re-export is idempotent; conflicting content is not overwritten.
@@ -15,6 +15,16 @@ result or clear a usable old index. A rejected factor with a completed Step6
 still writes experience. Dry runs never write experience. Executed local-IS
 failures/pauses retain separate advisory `research_episode` facts and a visible
 maintenance result; they do not manufacture a Step6 decision or economic cause.
+
+For ordinary local IS with `FACTORFORGE_ADVISORY_ROOT` configured, maintenance
+keeps sources and the derivative index in the workspace and creates
+`knowledge/maintenance/pending_review/` handoffs. It does not publish into the
+reviewed advisory root. The Ultimate agent must use the existing task channel
+to send the source path, version and maintenance result to the knowledge steward;
+`PENDING_REVIEW` file creation is not dispatch or acceptance. Record completion
+only after actual steward acceptance/publication and consumer readback. Retain
+an unresolved handoff when material is insufficient, without changing the research
+conclusion. Unconfigured and hosted routes keep their existing rules.
 
 Supported ordinary local-IS early exits include code-review handoff failures,
 continuation-save failures and waiting for Council results. Planned commands
@@ -43,10 +53,12 @@ the existing source-first order and graph/experience visibility remain intact.
 
 New studies' Step1/2 helpers automatically retrieve these exported candidates
 after source-first understanding; the user need not configure RAG paths. The
-active workspace index stays separate from the default project index. The
-Step6 experience reader resolves the active index, then an explicitly exported
-shared index, then the repo index; an explicit override never silently falls
-back. Source-only/A0 retrieval still uses its phase-specific graph projection,
+active workspace index stays separate from the default project index. In the
+configured ordinary local route, Step1/2/6 choose an explicit retrieval-index
+override, then an existing workspace index, then the configured advisory root.
+A broken selected index is unavailable; it never silently falls back. Without
+that configuration, existing workspace/shared/repo selection remains unchanged.
+Source-only/A0 retrieval still uses its phase-specific graph projection,
 never raw experience records. A prior case can suggest a rival, operator or
 test; it cannot replace the new hypothesis, prove a cause, authorize a change,
 or promote a factor. Host-private role memory remains a separate system.
@@ -61,3 +73,11 @@ retrieval context for each revision. Cold-start is allowed only when explicitly
 recorded with checked index paths, query hash, hit count, and fallback reason.
 Missing provenance blocks formal acceptance even if a human-readable lesson
 string is present.
+
+When an author adopts historical experience in the configured local route,
+retain the actual retrieval's `index_paths_checked` and
+`experience_index_sha256` in that same memo/learning source's
+`knowledge_reference_contract`. Do not borrow a newer binding from another
+memo or handoff. An expired source cancels the current imported reference,
+preserving the original memo and independent reasoning. The author may decline
+the retrieved experience or record that it is unavailable with its actual reason.

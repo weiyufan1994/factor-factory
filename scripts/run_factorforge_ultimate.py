@@ -799,7 +799,7 @@ def run_post_step6_knowledge_refresh_nonblocking(
         for name in ('run_step6', 'validate_step6')
     )
     if (
-        args.dry_run or proof.get('status') != 'PASS' or not step6_passed
+        args.dry_run or proof.get('contract_smoke_only') is True or proof.get('status') != 'PASS' or not step6_passed
         or not (proof.get('formal_command_contract') or {}).get('satisfied')
         or factor_workspace is None
     ):
@@ -821,6 +821,13 @@ def run_post_step6_knowledge_refresh_nonblocking(
 
         summary = refresh_retrieval_index(workspace)
         result = {'status': 'REFRESHED', 'doc_count': summary['doc_count'], 'index_path': summary['output_path']}
+        from factor_factory.advisory_runtime import configured_advisory_root
+        if (getattr(args, 'local_is_only', False) or proof.get('execution_scope') == 'local_is_only') and configured_advisory_root() is not None:
+            from factor_factory.research_knowledge_maintenance import create_pending_review_handoff
+            result['workspace_experience_export'] = create_pending_review_handoff(
+                workspace=workspace, source=source, report_id=args.report_id, doc_type='knowledge_record',
+            )
+            return result
         try:
             export = export_workspace_knowledge_record(
                 workspace=workspace, repo_root=REPO_ROOT, report_id=args.report_id,

@@ -18,6 +18,7 @@ if str(FF) not in sys.path:
 from skills.factor_forge_step1.modules.report_ingestion.research_discipline import attach_step1_research_discipline  # type: ignore
 from factor_factory.knowledge_context import retrieve_factor_knowledge_context
 from factor_factory.knowledge_reference import build_knowledge_reference_contract, resolve_runtime_retrieval_index
+from factor_factory.advisory_runtime import configured_advisory_root
 
 OBJ = FF / 'objects'
 
@@ -86,6 +87,10 @@ def attach_factor_knowledge_context(aim: dict) -> dict:
     discipline = dict(enriched.get('research_discipline') or {})
     learning = dict(enriched.get('learning_and_innovation') or {})
     prior_lessons = discipline.get('similar_case_lessons_imported') or learning.get('similar_case_lessons_imported') or []
+    if configured_advisory_root() is not None:
+        # Repeated enrichment must not smuggle an obsolete imported lesson
+        # back around the current source-version check. Authored aims stay put.
+        prior_lessons = []
     graph_lessons = summarize_factor_knowledge_context(context)
     merged_lessons = list(dict.fromkeys([
         *[str(item) for item in prior_lessons if str(item).strip()],

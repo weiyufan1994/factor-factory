@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from factor_factory.advisory_runtime import configured_advisory_root, read_visible_experience
+
 
 KNOWLEDGE_REFERENCE_CONTRACT_VERSION = "factorforge_knowledge_reference_contract_v1"
 
@@ -84,8 +86,17 @@ def resolve_runtime_retrieval_index(
     override = env.get("FACTORFORGE_RETRIEVAL_INDEX")
     if override:
         return Path(override).expanduser()
+    workspace = env.get("FACTORFORGE_FACTOR_WORKSPACE") or env.get("FACTORFORGE_ROOT")
+    advisory = configured_advisory_root(env)
+    if advisory is not None:
+        workspace_index = (Path(workspace).expanduser() / "knowledge/retrieval/factorforge_retrieval_index.jsonl"
+                           if workspace else None)
+        if workspace_index is not None and (workspace_index.exists() or workspace_index.is_symlink()):
+            return workspace_index
+        # A configured root is an intentional choice, including when broken.
+        return advisory / "knowledge/retrieval/factorforge_retrieval_index.jsonl"
     roots = [
-        env.get("FACTORFORGE_FACTOR_WORKSPACE") or env.get("FACTORFORGE_ROOT"),
+        workspace,
         env.get("FACTORFORGE_SHARED_FACTORFORGE_ROOT"),
         str(repo_root),
     ]
@@ -248,6 +259,7 @@ def build_knowledge_reference_contract(
     indexes_available = []
     legacy_error: str | None = None
     legacy_case_ids: set[str] = set()
+    experience_digest = None
     graph_nodes, graph_relations, graph_paths, graph_error = _graph_reference_context(
         repo_root=repo_root,
         knowledge_root=knowledge_root,
@@ -258,13 +270,23 @@ def build_knowledge_reference_contract(
     if graph_available:
         indexes_available.extend(str(path) for path in graph_paths[:2])
     for path in index_paths:
+        if configured_advisory_root() is not None:
+            try:
+                visible, experience_digest = read_visible_experience(path)
+                lines = [json.dumps(doc, ensure_ascii=False) for doc in visible]
+            except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+                legacy_error = f"{BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE}: {exc}"
+                continue
+        else:
+            lines = None
         if not path.exists() and not path.is_symlink():
             continue
         if not path.is_file() or path.is_symlink():
             legacy_error = f"{BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE}: unsafe_legacy_index:{path}"
             continue
         try:
-            lines = path.read_text(encoding="utf-8").splitlines()
+            if lines is None:
+                lines = path.read_text(encoding="utf-8").splitlines()
         except (OSError, UnicodeError) as exc:
             legacy_error = f"{BLOCK_KNOWLEDGE_RETRIEVAL_UNAVAILABLE}: {type(exc).__name__}"
             continue
@@ -414,6 +436,7 @@ def build_knowledge_reference_contract(
         "query_hash": stable_hash(query_text),
         "query_terms": sorted(q_tokens)[:40],
         "index_paths_checked": [str(path) for path in index_paths],
+        **({"experience_index_sha256": experience_digest} if configured_advisory_root() is not None else {}),
         "indexes_available": indexes_available,
         "hit_count": len(case_ids),
         "retrieval_limits": {"top_k_per_lane": top_k, "maximum_merged_cases": 2 * top_k},

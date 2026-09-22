@@ -34,6 +34,8 @@ from factor_factory.provenance import (
     derive_identity as derive_provenance_identity,
 )
 from factor_factory.knowledge_context import graph_node_to_similar_case, retrieve_factor_knowledge_context
+from factor_factory.advisory_runtime import configured_advisory_root, read_visible_experience
+from factor_factory.knowledge_reference import resolve_runtime_retrieval_index
 from factor_factory.mechanism_math.formula_specific import (
     build_formula_specific_derivation,
     validate_formula_specific_derivation,
@@ -69,7 +71,14 @@ from factor_factory.primary_evaluator import (
 
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
-RETRIEVAL_INDEX = Path(os.getenv('FACTORFORGE_RETRIEVAL_INDEX') or (FF / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl'))
+
+
+def uses_local_advisory() -> bool:
+    return os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1' and configured_advisory_root() is not None
+
+
+RETRIEVAL_INDEX = (resolve_runtime_retrieval_index(REPO_ROOT) if uses_local_advisory() else
+                   Path(os.getenv('FACTORFORGE_RETRIEVAL_INDEX') or (FF / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl')))
 _RETRIEVAL_INDEX_ERROR: str | None = None
 LOOP_RESEARCH_BRIEF_VERSION = 'factorforge_loop_research_brief_v1'
 REQUIRED_LOOP_BRIEF_CHART_KEYS = [
@@ -270,6 +279,12 @@ def load_researcher_journal(report_id: str) -> dict[str, Any] | None:
 def load_retrieval_docs() -> list[dict[str, Any]]:
     global _RETRIEVAL_INDEX_ERROR
     _RETRIEVAL_INDEX_ERROR = None
+    if uses_local_advisory():
+        try:
+            return read_visible_experience(RETRIEVAL_INDEX)[0]
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            _RETRIEVAL_INDEX_ERROR = str(exc)
+            return []
     if not RETRIEVAL_INDEX.exists():
         return []
     docs: list[dict[str, Any]] = []
@@ -3094,6 +3109,7 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
     query_counter = Counter(query_tokens)
 
     retrieval_docs = load_retrieval_docs()
+    local_advisory = uses_local_advisory()
     candidates: list[dict[str, Any]] = []
     for doc in retrieval_docs:
         if str(doc.get('report_id')) == report_id:
@@ -3103,13 +3119,14 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
             score += 5.0
         if str(doc.get('decision')) == decision_hint:
             score += 1.5
-        doc_tokens = tokenize(str(doc.get('text') or ''))
+        doc_tokens = tokenize(str((doc.get('search_text') if local_advisory else None) or doc.get('text') or ''))
         overlap = set(query_tokens) & set(doc_tokens)
         score += float(len(overlap)) * 0.25
         if not overlap and str(doc.get('factor_id')) != factor_id:
             continue
         snippet = str(doc.get('text') or '')[:280]
         candidates.append({
+            **({'id': doc.get('id')} if local_advisory else {}),
             'score': round(score, 4),
             'lexical_score': round(score, 4),
             'report_id': doc.get('report_id'),
@@ -3129,7 +3146,7 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         })
 
     embedding_available = (
-        os.getenv('FACTORFORGE_DISABLE_EMBEDDING_RETRIEVAL') != '1'
+        not local_advisory and os.getenv('FACTORFORGE_DISABLE_EMBEDDING_RETRIEVAL') != '1'
         and EMBEDDING_MATRIX.exists()
         and EMBEDDING_META.exists()
     )
@@ -3171,6 +3188,42 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         except Exception:
             embedding_available = False
 
+    semantic_state = None
+    if local_advisory:
+        from factor_factory.semantic_knowledge_retrieval import retrieve_configured, unavailable
+        visible = [doc for doc in retrieval_docs if doc.get('doc_type') != 'research_episode'
+                   and str(doc.get('report_id')) != report_id]
+        semantic_state = (unavailable('experience_index_unavailable') if _RETRIEVAL_INDEX_ERROR else
+                          retrieve_configured(query_text, visible, RETRIEVAL_INDEX.parent / 'semantic_config.json',
+                                              top_k=max(top_k, 10)))
+        embedding_available = semantic_state['semantic_available']
+        if semantic_state['semantic_used']:
+            lexical_rank = {item['id']: rank for rank, item in enumerate(
+                sorted(candidates, key=lambda item: (-item['score'], str(item['id']))), 1)}
+            dense_rank = {hit['id']: rank for rank, hit in enumerate(semantic_state['hits'], 1)}
+            by_id = {item['id']: item for item in candidates}
+            for doc in visible:
+                if doc['id'] not in dense_rank or doc['id'] in by_id:
+                    continue
+                item = {
+                    'id': doc['id'], 'score': 0.0, 'lexical_score': 0.0,
+                    'report_id': doc.get('report_id'), 'factor_id': doc.get('factor_id'),
+                    'doc_type': doc.get('doc_type'), 'decision': doc.get('decision'),
+                    'knowledge_scope': doc.get('knowledge_scope'),
+                    'factor_family': doc.get('factor_family') or doc.get('mechanism_family'),
+                    'failure_signature': doc.get('failure_signature'), 'formula_hash': doc.get('formula_hash'),
+                    'artifact_identity': doc.get('artifact_identity') or doc.get('source_identity') or {},
+                    'source_identity': doc.get('source_identity') or doc.get('artifact_identity') or {},
+                    'source_path': doc.get('source_path'), 'overlap_terms': [],
+                    'snippet': str(doc.get('search_text') or doc.get('text') or '')[:280],
+                    'advisory_context': doc.get('advisory_projection') or {},
+                }
+                candidates.append(item)
+            for item in candidates:
+                key = item['id']
+                item['score'] = ((1 / (60 + lexical_rank[key]) if key in lexical_rank else 0)
+                                 + (1 / (60 + dense_rank[key]) if key in dense_rank else 0))
+
     factor_knowledge_context: dict[str, Any] = {
         'schema_version': 'factor_knowledge_context_v1',
         'node_count': 0,
@@ -3207,15 +3260,20 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         'factor_knowledge_context_node_count': factor_knowledge_context.get('node_count') or 0,
         'factor_knowledge_context': factor_knowledge_context,
         'embedding_index_available': embedding_available,
-        'embedding_endpoint': EMBEDDING_ENDPOINT,
+        'embedding_endpoint': None if local_advisory else EMBEDDING_ENDPOINT,
+        **({'semantic_retrieval': semantic_state} if local_advisory else {}),
         'query_terms': query_tokens[:40],
         'similar_cases': top,
-        'retrieval_notes': [
+        'retrieval_notes': ([
+            'Local advisory retrieval is version-bound to the selected experience index; graph remains separate.',
+            'Semantic candidates are limited to visible non-episode IDs and current source text; no network endpoint is used.',
+            'These references are advisory context, not new research findings.',
+        ] if local_advisory else [
             'retrieval currently uses lightweight lexical + metadata matching over factorforge_retrieval_index.jsonl',
             'factor knowledge graph context is appended as analogy/anti-pattern evidence when available',
             'if local embedding index + endpoint are available, similarity scores are added on top of lexical family-aware matching',
             'same-factor_id cases are boosted to prefer family-aware reflection',
-        ],
+        ]),
     }
 
 

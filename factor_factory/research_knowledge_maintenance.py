@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 from typing import Any, Mapping
 
+from factor_factory.advisory_runtime import configured_advisory_root
+
 
 EPISODE_VERSION = "factorforge_research_episode_v1"
 EPISODE_RELATIVE_ROOT = Path("knowledge/research_episodes")
@@ -68,6 +70,9 @@ def record_local_research_episode(
     if proof.get("contract_smoke_only") is True:
         return {"status": "SKIPPED", "reason": "engineering_contract_smoke"}
     commands = proof.get("commands")
+    if configured_advisory_root() is not None and isinstance(commands, list):
+        commands = [row for row in commands if isinstance(row, Mapping)
+                    and row.get('status') in {'PASS', 'FAIL'} and type(row.get('returncode')) is int]
     if (not local_is_only or dry_run or not isinstance(commands, list) or not commands
             or workspace is None):
         return {"status": "SKIPPED", "reason": "no_executed_local_is_wrapper"}
@@ -107,6 +112,15 @@ def record_local_research_episode(
     digest = hashlib.sha256(content).hexdigest()[:16]
     filename = f"episode__{report_id}__{digest}.json"
     local_status, local_path = _create_only(workspace, EPISODE_RELATIVE_ROOT / filename, content)
+    if configured_advisory_root() is not None:
+        handoff = create_pending_review_handoff(
+            workspace=workspace, source=local_path, report_id=report_id, doc_type='research_episode',
+        )
+        return {
+            'status': 'RECORDED', 'local_status': local_status, 'local_path': str(local_path),
+            'export_status': 'PENDING_REVIEW', 'handoff': handoff,
+            'sha256': hashlib.sha256(content).hexdigest(),
+        }
     export_status, export_path = _create_only(Path(repo_root), EXPORT_RELATIVE_ROOT / filename, content)
     return {
         "status": "RECORDED",
@@ -123,6 +137,9 @@ def refresh_episode_maintenance(*, workspace: Path, repo_root: Path, report_id: 
     from scripts.build_factorforge_retrieval_index import refresh_retrieval_index
     result: dict[str, Any] = {"status": "REFRESHED"}
     local = refresh_retrieval_index(Path(workspace))
+    if configured_advisory_root() is not None:
+        return {**result, 'workspace_index': local['output_path'],
+                'shared_status': 'PENDING_REVIEW', 'dispatch_status': 'NOT_DISPATCHED'}
     shared = refresh_retrieval_index(Path(repo_root), project_root=Path(repo_root))
     result["workspace_index"] = local["output_path"]
     result["default_index"] = shared["output_path"]
@@ -138,6 +155,41 @@ def refresh_episode_maintenance(*, workspace: Path, repo_root: Path, report_id: 
     except Exception as exc:
         result["semantic"] = {"status": "FAILED", "error_type": type(exc).__name__}
     return result
+
+
+def create_pending_review_handoff(
+    *, workspace: Path, source: Path, report_id: str, doc_type: str,
+) -> dict[str, Any]:
+    """Persist a source reference, not dispatch or approval of its content."""
+    workspace = Path(workspace).resolve(strict=True)
+    source = Path(source)
+    if (not REPORT_ID_RE.fullmatch(report_id) or doc_type not in {'knowledge_record', 'research_episode', 'research_note'}
+            or source.is_symlink() or not source.is_file()
+            or not source.resolve().is_relative_to(workspace)):
+        raise ValueError('pending_review_source_invalid')
+    raw = source.read_bytes()
+    record = json.loads(raw)
+    if not isinstance(record, dict) or record.get('report_id') != report_id:
+        raise ValueError('pending_review_source_identity_invalid')
+    if doc_type == 'research_note' and (
+        record.get('note_version') != 'factorforge_research_note_v1' or not record.get('note_id')
+        or record.get('formal_step6_completed') is not False or record.get('advisory_only') is not True
+        or record.get('canonical_promotion_allowed') is not False
+    ):
+        raise ValueError('pending_review_note_boundary_invalid')
+    digest = hashlib.sha256(raw).hexdigest()
+    payload = {
+        'status': 'PENDING_REVIEW', 'dispatch_status': 'NOT_DISPATCHED',
+        'acceptance_status': 'NOT_ACCEPTED', 'report_id': report_id, 'doc_type': doc_type,
+        **({'note_id': record['note_id'], 'formal_step6_completed': False} if doc_type == 'research_note' else {}),
+        'source_path': str(source.resolve()), 'source_relative_ref': str(source.relative_to(workspace)),
+        'source_sha256': digest, 'advisory_only': True, 'canonical_promotion_allowed': False,
+    }
+    state, path = _create_only(
+        workspace, Path('knowledge/maintenance/pending_review') / f'{doc_type}__{report_id}__{digest}.json',
+        _canonical_bytes(payload),
+    )
+    return {**payload, 'handoff_path': str(path), 'write_status': state}
 
 
 def write_latest_maintenance_report(*, repo_root: Path, payload: Mapping[str, Any]) -> str:

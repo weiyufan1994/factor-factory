@@ -218,6 +218,7 @@ from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
 from factor_factory.formula import parse_formula, to_qlib_expression
 from factor_factory.formula.field_aliases import build_standard_formula_fields_contract
 from factor_factory.knowledge_context import retrieve_factor_knowledge_context
+from factor_factory.advisory_runtime import configured_advisory_root, carried_reference_is_current
 from factor_factory.knowledge_reference import (
     build_knowledge_reference_contract,
     build_legacy_knowledge_reference_contract,
@@ -2364,7 +2365,7 @@ def build_step2_research_contract(
         # concatenate historical thesis prose, synthesize failure/innovation
         # variants, or query the knowledge graph again here.
         discipline = local_authored['discipline']
-        return {
+        result = {
             'target_statistic': discipline['target_statistic_hint'],
             'economic_mechanism': local_authored['economic_mechanism'],
             'formula_understanding': discipline.get('formula_understanding') or aim.get('formula_understanding') or {},
@@ -2397,6 +2398,18 @@ def build_step2_research_contract(
             ),
             'producer': 'step2_local_agent_authored_research_contract',
         }
+        if configured_advisory_root() is not None and not carried_reference_is_current(
+            result['knowledge_reference_contract'], resolve_runtime_retrieval_index(REPO_ROOT),
+        ):
+            # Keep authored economics/mathematics and the original aim intact;
+            # an obsolete imported advisory is not an active prior in Step2.
+            result['similar_case_lessons_imported'] = []
+            result['knowledge_reference_contract'].update({
+                'retrieval_status': 'unavailable', 'fallback_reason': 'carried_advisory_version_unavailable',
+                'retrieved_cases': [], 'retrieved_case_ids': [], 'hit_count': 0,
+                'similar_case_lessons_imported': [],
+            })
+        return result
     discipline = aim.get('research_discipline') or {}
     economic_hypothesis = discipline.get('economic_hypothesis') or {}
     math_hypothesis_candidates = discipline.get('math_hypothesis_candidates') or []
@@ -2421,6 +2434,11 @@ def build_step2_research_contract(
         discipline.get('knowledge_reference_contract')
         or (aim.get('learning_and_innovation') or {}).get('knowledge_reference_contract')
     )
+    if configured_advisory_root() is not None:
+        # Ordinary Step2 may re-query; do not carry stale advisory prose into
+        # the new result while doing so. Independent graph context is kept.
+        similar_case_lessons = graph_lessons
+        existing_knowledge_reference_contract = None
     if existing_knowledge_reference_contract and not validate_knowledge_reference_contract(
         existing_knowledge_reference_contract,
         retrieval_required=False,

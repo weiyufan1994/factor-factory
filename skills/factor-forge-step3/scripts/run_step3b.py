@@ -500,12 +500,12 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
     return manifest, manifest_report_id(manifest)
 
 
-def maybe_reexec_from_step3b_template_copy(report_id: str | None, manifest_path: str | None) -> None:
+def maybe_reexec_from_step3b_template_copy(report_id: str | None, manifest_path: str | None, *, debug_root: Path | None = None) -> None:
     maybe_reexec_from_template_copy(
         script_stem='run_step3b',
         report_id=report_id,
         manifest_path=manifest_path,
-        default_factorforge_root=FF,
+        default_factorforge_root=debug_root or FF,
         source_path=Path(__file__),
         copy_env=STEP3B_TEMPLATE_COPY_ENV,
         copy_version=STEP3B_TEMPLATE_COPY_VERSION,
@@ -515,7 +515,7 @@ def maybe_reexec_from_step3b_template_copy(report_id: str | None, manifest_path:
     )
 
 
-def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
+def enforce_direct_step_policy(manifest_path: str | None = None, *, apply_runtime: bool = True) -> Path | None:
     global FF, WORKSPACE, OBJ, CODEGEN, RUNS
     if os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1':
         return
@@ -537,6 +537,8 @@ def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
         manifest = load_runtime_manifest(manifest_path)
         if manifest_factorforge_root(manifest).expanduser().resolve() != debug_root:
             raise SystemExit('BLOCKED_DIRECT_STEP: direct debug manifest must point to FACTORFORGE_DEBUG_ROOT.')
+    if not apply_runtime:
+        return debug_root
     FF = debug_root
     WORKSPACE = FF.parent
     OBJ = FF / 'objects'
@@ -2498,7 +2500,10 @@ def main():
         _formula_kernel_config = resolve_formula_kernel_engine(args.formula_kernel_engine)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    maybe_reexec_from_step3b_template_copy(args.report_id, args.manifest)
+    # Validate before the template copier can write. Leave the inherited root
+    # intact until after re-exec so the child can validate the same boundary.
+    debug_root = enforce_direct_step_policy(args.manifest, apply_runtime=False)
+    maybe_reexec_from_step3b_template_copy(args.report_id, args.manifest, debug_root=debug_root)
     enforce_direct_step_policy(args.manifest)
     _manifest, manifest_rid = apply_runtime_manifest(args.manifest)
     require_formal_manifest(_manifest)

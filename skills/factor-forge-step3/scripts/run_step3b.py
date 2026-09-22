@@ -2498,8 +2498,8 @@ def main():
         _formula_kernel_config = resolve_formula_kernel_engine(args.formula_kernel_engine)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    enforce_direct_step_policy(args.manifest)
     maybe_reexec_from_step3b_template_copy(args.report_id, args.manifest)
+    enforce_direct_step_policy(args.manifest)
     _manifest, manifest_rid = apply_runtime_manifest(args.manifest)
     require_formal_manifest(_manifest)
     report_id = args.report_id or manifest_rid

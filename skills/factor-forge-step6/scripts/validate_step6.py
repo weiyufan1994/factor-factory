@@ -19,6 +19,7 @@ if str(FF) not in sys.path:
 
 from skills.factor_forge_step5.modules.io import load_json  # type: ignore
 from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.advisory_runtime import configured_advisory_root
 from factor_factory.mechanism_math.formula_specific import (
     validate_formula_specific_derivation,
     validate_mechanism_formula_consistency,
@@ -490,7 +491,15 @@ def learning_list_state_valid(learning: dict[str, Any], key: str, flexible_local
     reason = learning.get(f'{key}_absence_reason')
     if key == 'similar_case_lessons_imported' and reason is None:
         reason = learning.get('similar_case_lessons_absence_reason')
-    return flexible_local and key in learning and isinstance(value, list) and not value and nonempty_str(reason)
+    local_advisory_absence = (
+        key == 'similar_case_lessons_imported'
+        and os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+        and configured_advisory_root() is not None
+        and learning.get('advisory_import_status') in {
+            'UNVERIFIED_OR_STALE_SOURCE_NOT_CURRENT', 'AUTHOR_IMPORTED_NONE', 'AUTHOR_IMPORT_NOT_DECLARED',
+        }
+    )
+    return (flexible_local or local_advisory_absence) and key in learning and isinstance(value, list) and not value and nonempty_str(reason)
 
 
 def program_search_methods_valid(policy: dict[str, Any], decision: str, flexible_local: bool) -> bool:

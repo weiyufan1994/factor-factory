@@ -61,6 +61,15 @@ def load_step(number):
     return module
 
 
+def load_step6_validator(monkeypatch):
+    path = REPO / 'skills/factor-forge-step6/scripts/validate_step6.py'
+    monkeypatch.syspath_prepend(str(path.parent))
+    spec = importlib.util.spec_from_file_location('advisory_step6_validator', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def aim():
     return {'final_factor': {'name': 'Fresh source only', 'economic_logic': QUERY},
             'research_discipline': {'economic_hypothesis': {'claim': QUERY},
@@ -535,3 +544,28 @@ def test_actual_iteration_producer_rechecks_authored_import_source(private, tmp_
         assert actual['anti_patterns'] == learning['anti_patterns']
         assert actual['innovative_idea_seeds'] == learning['innovative_idea_seeds']
     assert memo_path.read_bytes() == memo_bytes
+    assert load_step6_validator(monkeypatch).learning_list_state_valid(
+        actual, 'similar_case_lessons_imported', flexible)
+
+
+@pytest.mark.parametrize('boundary', ['other_key', 'unconfigured', 'hosted', 'missing_reason', 'missing_status', 'unknown_status'])
+def test_optional_advisory_absence_does_not_relax_other_validation(private, monkeypatch, boundary):
+    validator = load_step6_validator(monkeypatch)
+    key = 'similar_case_lessons_imported'
+    value = {key: [], 'similar_case_lessons_absence_reason': 'Source no longer current.',
+             'advisory_import_status': 'UNVERIFIED_OR_STALE_SOURCE_NOT_CURRENT'}
+    if boundary == 'other_key':
+        key = 'transferable_patterns'
+        value.update({key: [], key + '_absence_reason': 'Cannot bypass required authorship.'})
+    elif boundary == 'unconfigured':
+        monkeypatch.delenv('FACTORFORGE_ADVISORY_ROOT')
+    elif boundary == 'hosted':
+        monkeypatch.setenv('FACTORFORGE_ULTIMATE_RUN', '1')
+        monkeypatch.delenv('FACTORFORGE_LOCAL_IS_ONLY')
+    elif boundary == 'missing_reason':
+        value.pop('similar_case_lessons_absence_reason')
+    elif boundary == 'missing_status':
+        value.pop('advisory_import_status')
+    else:
+        value['advisory_import_status'] = 'UNKNOWN_STATUS'
+    assert not validator.learning_list_state_valid(value, key, False)

@@ -384,3 +384,49 @@ def test_copied_static_index_cannot_bind_an_old_checkout(private, tmp_path):
     shutil.copyfile(index(original).with_name('factorforge_retrieval_manifest.json'),
                     index(private).with_name('factorforge_retrieval_manifest.json'))
     assert 'source_root_mismatch' in contract(private)['fallback_reason']
+
+
+def test_real_graph_and_semantic_experience_share_unchanged_total_budget(private, monkeypatch):
+    """Real packaged graph + consumer code; only the encoder is a test double."""
+    from factor_factory import semantic_knowledge_retrieval as semantic
+    for suffix in ['A', 'B', 'C']:
+        note(private, 'SYNTHETIC_' + suffix)
+    refresh(private)
+    rows, _ = read_visible_experience(index(private))
+    encoder = lambda texts: [[1.0, 0.0] for _ in texts]
+    monkeypatch.delenv('FACTORFORGE_DISABLE_EMBEDDING_RETRIEVAL')
+    monkeypatch.delenv('FACTORFORGE_DISABLE_GRAPH_KNOWLEDGE_CONTEXT')
+    monkeypatch.setattr(semantic, 'configured_encoder', lambda _: encoder)
+    write(index(private).with_name('semantic_config.json'),
+          {'enabled': True, 'model_id': semantic.MODEL_ID, 'model_path': 'unused-test-double'})
+    semantic.build_semantic_index(rows, encoder, index(private).with_name('factorforge_semantic_index.json'))
+    query = ('盘中反复出现的正向价格与成交异常累积成每日收盘状态，可能反映分批交易尚未完成的压力并与下一交易日至一周的价格变化有关。'
+             '只有匿名价量观测，无法识别交易者，且真实无事件与观测缺失同时存在。已有研究能提供哪些累积状态和时序压缩的类比、'
+             '与未完成交易解释相竞争的反例，以及区分有符号价格方向和波动、处理零事件与缺失的测量提醒？'
+             '尚无可交易账户或收益结果，只求知识提醒与可提议的区分性检验。')
+    module = load_step(6)
+    result = module.build_retrieval_context({
+        'factor_run_master': {'report_id': 'CURRENT_SYNTHETIC', 'factor_id': 'KB_CONSUMER_ONLY_PROBE'},
+        'factor_case_master': {'lessons': [query], 'next_actions': []},
+    }, {}, top_k=5)
+    selected = result['similar_cases']
+    experiences = [item for item in selected if item['doc_type'] == 'research_note']
+    graphs = [item for item in selected if item['doc_type'] == 'factor_knowledge_graph_node']
+    assert result['semantic_retrieval']['semantic_used']
+    assert len(selected) == 5 and len(experiences) == 3 and len(graphs) == 2
+    assert min(item['score'] for item in graphs) > max(item['score'] for item in experiences)
+
+
+@pytest.mark.parametrize('field,value', [
+    ('research_variant', 'original_baseline'),
+    ('paper_replication_status', 'full_paper_replication'),
+    ('reported_research_recommendation', 'promote_official'),
+])
+def test_note_prose_correction_cannot_relabel_historical_research(private, field, value):
+    source = note(private, research_variant='source_extension',
+                  paper_replication_status='not_paper_replication', reported_research_recommendation='reject')
+    refresh(private)
+    revision(source, **{field: value})
+    with pytest.raises(CorpusBuildError, match='identity or authority'):
+        refresh(private)
+    assert contract(private)['retrieval_status'] == 'unavailable'

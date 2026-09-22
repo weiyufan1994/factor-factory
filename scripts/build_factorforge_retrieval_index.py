@@ -428,7 +428,8 @@ def active_research_notes(notes: Path) -> list[tuple[Path, dict[str, Any]]]:
     return _select_revisions(
         records, revision_field='research_note_revision', id_fields=('note_id',),
         identity_fields=('note_id', 'report_id', 'factor_id', 'artifact_identity', 'evidence_identity',
-                         'source_case_identity', 'decision', 'note_version', 'evidence_class', 'advisory_only',
+                         'source_case_identity', 'decision', 'research_variant', 'paper_replication_status',
+                         'reported_research_recommendation', 'note_version', 'evidence_class', 'advisory_only',
                          'canonical_promotion_allowed', 'formal_step6_completed'),
         append_source_refs=True,
     )

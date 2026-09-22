@@ -3247,9 +3247,29 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
                 'related_edges': [],
                 'retrieval_error': str(exc),
             }
-    candidates.extend(graph_candidates)
-    candidates.sort(key=lambda item: (-item['score'], str(item.get('report_id') or ''), str(item.get('doc_type') or '')))
-    top = candidates[:top_k]
+    rank_key = lambda item: (-item['score'], str(item.get('report_id') or ''), str(item.get('doc_type') or ''))
+    if local_advisory:
+        # RRF experience scores and graph lexical scores are incomparable.
+        # Preserve each lane's ranking and alternate within the SAME total
+        # result budget. A sole nonempty lane can use the unused places.
+        experience = sorted(candidates, key=rank_key)
+        graph = sorted(graph_candidates, key=rank_key)
+        top, seen = [], set()
+        for position in range(max(len(experience), len(graph))):
+            for lane in (experience, graph):
+                if position >= len(lane) or len(top) >= top_k:
+                    continue
+                item = lane[position]
+                key = item.get('id') or item.get('graph_node_id') or (item.get('report_id'), item.get('doc_type'))
+                if key not in seen:
+                    seen.add(key)
+                    top.append(item)
+            if len(top) >= top_k:
+                break
+    else:
+        candidates.extend(graph_candidates)
+        candidates.sort(key=rank_key)
+        top = candidates[:top_k]
     return {
         'retrieval_index_path': str(RETRIEVAL_INDEX),
         'retrieval_index_available': RETRIEVAL_INDEX.exists(),
@@ -3267,6 +3287,7 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         'retrieval_notes': ([
             'Local advisory retrieval is version-bound to the selected experience index; graph remains separate.',
             'Semantic candidates are limited to visible non-episode IDs and current source text; no network endpoint is used.',
+            'Experience and graph are independently ranked and interleaved within the total top_k limit; raw scores are lane-local.',
             'These references are advisory context, not new research findings.',
         ] if local_advisory else [
             'retrieval currently uses lightweight lexical + metadata matching over factorforge_retrieval_index.jsonl',

@@ -1,0 +1,13 @@
+{
+  "report_id": "STEP5_SAMPLE_CPV",
+  "factor_id": "CPV",
+  "sample_window": {
+    "start": "20160104",
+    "end": "20160329",
+    "calendar": "A-share trading days"
+  },
+  "data_sources": [
+    {"name": "tiny_minute_csv", "kind": "fixture", "normalized_dataset": "minute_bar"},
+    {"name": "tiny_daily_csv", "kind": "fixture", "normalized_dataset": "daily_bar"}
+  ]
+}

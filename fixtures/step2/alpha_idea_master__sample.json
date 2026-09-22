@@ -1,0 +1,27 @@
+{
+  "report_id": "STEP2_SAMPLE_CPV",
+  "chief_decision_summary": "Sample alpha idea master for Step 2 reproducibility.",
+  "final_factor": {
+    "name": "CPV",
+    "assembly_steps": [
+      "计算过去20日分钟价量相关系数均值",
+      "计算过去20日分钟价量相关系数标准差",
+      "计算价量相关系数趋势项",
+      "横截面中性化与ZScore标准化",
+      "组合为CPV"
+    ],
+    "direction": "Negative"
+  },
+  "assembly_path": [
+    "1. 计算每日分钟价量相关系数。",
+    "2. 计算20日均值与标准差。",
+    "3. 计算20日趋势项。",
+    "4. 对关键部件做中性化与标准化。",
+    "5. 合成为CPV。"
+  ],
+  "unresolved_ambiguities": [
+    "分钟频率未明确（1分钟或5分钟）",
+    "相关系数类型未明确（Pearson或Spearman）"
+  ],
+  "source_uri": "fixtures/step2/sample_report_stub.pdf"
+}

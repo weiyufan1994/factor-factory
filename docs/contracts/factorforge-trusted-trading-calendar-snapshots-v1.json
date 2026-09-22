@@ -1,0 +1,16 @@
+{
+  "authority_id": "cn_a_share_tushare_open_days",
+  "normalization": "SSE is_open=1; ISO YYYY-MM-DD; sorted unique",
+  "snapshots": [
+    {
+      "date_count": 8797,
+      "date_max": "2026-12-31",
+      "date_min": "1990-12-19",
+      "open_dates_sha256": "f6c5474c46aeae51259a415a708dc71101aee47cdccee0809af451411e804b32",
+      "raw_file_sha256": "23966d0c13dc8fa13b44043e7a198889f5729c910bda50ff17813e2f266d3062",
+      "scope": "production",
+      "snapshot_id": "tushare_sse_open_days_19901219_20261231"
+    }
+  ],
+  "version": "factorforge_trusted_trading_calendar_registry_v1"
+}

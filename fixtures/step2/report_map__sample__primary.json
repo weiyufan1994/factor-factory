@@ -1,0 +1,22 @@
+{
+  "paper_id": "STEP2_SAMPLE_CPV",
+  "title": "Step 2 Sample CPV Report Map",
+  "builder_role": "sample_primary",
+  "prompt_name": "step1_report_intake.md",
+  "section_map": [
+    {"section_title": "核心观点", "summary": "20日分钟价量相关性均值、波动与趋势构成CPV。"}
+  ],
+  "variables": [
+    "分钟收盘价",
+    "分钟成交量",
+    "20日收益率（Ret20）",
+    "20日波动率（Vol20）",
+    "市值"
+  ],
+  "key_visual_elements": [],
+  "notes": [
+    "分钟频率未明确（1分钟或5分钟）",
+    "相关系数类型未明确（Pearson或Spearman）"
+  ],
+  "evidence_refs": []
+}

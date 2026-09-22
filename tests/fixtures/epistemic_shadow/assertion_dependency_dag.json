@@ -1,0 +1,47 @@
+{
+  "schema_id": "factorforge_offline_failure_diagnosis_assertion_dependency_dag_v1",
+  "edges": [
+    {
+      "edge_id": "edge-observation-to-alias",
+      "prerequisite_assertion_id": "assertion-observation-state",
+      "dependent_assertion_id": "assertion-volatility-alias",
+      "material": true,
+      "criteria_semantics": "排除别名之前必须先确认观测方程能够区分潜在状态与观测误差。"
+    },
+    {
+      "edge_id": "edge-observation-to-timescale",
+      "prerequisite_assertion_id": "assertion-observation-state",
+      "dependent_assertion_id": "assertion-kernel-timescale",
+      "material": true,
+      "criteria_semantics": "判断局部核的时标是否匹配之前必须先确认局部观测对潜在状态具有识别力。"
+    },
+    {
+      "edge_id": "edge-alias-to-timescale",
+      "prerequisite_assertion_id": "assertion-volatility-alias",
+      "dependent_assertion_id": "assertion-kernel-timescale",
+      "material": true,
+      "criteria_semantics": "核时标解释成立需要先排除公共冲击、一般波动放大与成员选择别名。"
+    },
+    {
+      "edge_id": "edge-observation-to-payer",
+      "prerequisite_assertion_id": "assertion-observation-state",
+      "dependent_assertion_id": "assertion-payer-constraint",
+      "material": true,
+      "criteria_semantics": "付款方机制判断依赖对承接深度状态的可识别观测。"
+    },
+    {
+      "edge_id": "edge-alias-to-payer",
+      "prerequisite_assertion_id": "assertion-volatility-alias",
+      "dependent_assertion_id": "assertion-payer-constraint",
+      "material": true,
+      "criteria_semantics": "付款方机制判断必须先排除公共信息冲击和选择效应造成的伪关联。"
+    },
+    {
+      "edge_id": "edge-timescale-to-payer",
+      "prerequisite_assertion_id": "assertion-kernel-timescale",
+      "dependent_assertion_id": "assertion-payer-constraint",
+      "material": true,
+      "criteria_semantics": "将局部响应归因于重复约束之前必须确认所用核与该约束的作用时标一致。"
+    }
+  ]
+}

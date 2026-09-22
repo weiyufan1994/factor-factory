@@ -1,0 +1,25 @@
+# Step 4 Output Contract
+- main: `factorforge/objects/factor_run_master/factor_run_master__{report_id}.json`
+- diagnostics: `factorforge/objects/validation/factor_run_diagnostics__{report_id}.json`
+- handoff: `factorforge/objects/handoff/handoff_to_step5__{report_id}.json`
+- optional backend payload root: `factorforge/evaluations/{report_id}/{backend}/`
+- allowed run_status values: `success|partial|failed`
+- `factor_run_master` should expose:
+  - `evaluation_plan`
+  - `evaluation_results.backend_runs`
+- Step 4 standardizes the run envelope plus a mandatory self-quant evidence pack.
+- Heavy formal compute/evaluation should expose `batch_execution_plan` and batch/cache profile when minute/tick/large-panel data would exceed memory budget.
+- Intraday signal evaluation should expose `intraday_signal_timing_contract` with signal cutoff, execution price policy, label price policy, information set, and legal label mode.
+- Reusable labels, masks, calendars, costs, and joins should be represented as `backtest_base_dataset` artifacts when identity and data-window lineage match.
+- `self_quant_analyzer` must emit:
+  - `standard_metric_contract`
+  - `ic_summary`
+  - `group_backtest_summary`
+  - `quantile_returns_10groups.csv`
+  - `quantile_nav_10groups.csv`
+  - `quantile_counts_10groups.csv`
+  - `quantile_summary_table.csv`
+  - `long_short_returns_10groups.csv`
+  - `long_short_nav_10groups.csv`
+  - rank/pearson IC plots, coverage plot, decile NAV plot, decile count plot, long-short NAV plot
+- Manual temporary plotting is not accepted as official Step4 evidence.

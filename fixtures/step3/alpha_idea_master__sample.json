@@ -1,0 +1,24 @@
+{
+  "report_id": "STEP3_SAMPLE_CPV",
+  "final_factor": {
+    "name": "CPV",
+    "assembly_steps": [
+      "计算过去20日分钟价量相关系数均值",
+      "计算过去20日分钟价量相关系数标准差",
+      "计算趋势项",
+      "做中性化与标准化",
+      "组合为CPV"
+    ],
+    "direction": "Negative"
+  },
+  "assembly_path": [
+    "1. 计算每日分钟价量相关系数。",
+    "2. 构造20日均值/标准差/趋势。",
+    "3. 做中性化与标准化。",
+    "4. 合成为CPV。"
+  ],
+  "unresolved_ambiguities": [
+    {"ambiguity": "分钟频率未明确（1分钟或5分钟）"},
+    {"ambiguity": "相关系数类型未明确（Pearson或Spearman）"}
+  ]
+}

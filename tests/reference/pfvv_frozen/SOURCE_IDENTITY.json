@@ -1,0 +1,30 @@
+{
+  "pfvv_source_baseline_v1.py": {
+    "frozen_baseline_relative_path": "examples/mszq_intraday_momentum_pulse/pfvv_source_baseline_v1.py",
+    "sha256": "3eb3f1d1c202c35d6a20ced7281f76168571f693f1617a01f8f2bcfa28c92a7e"
+  },
+  "pfvv_source_baseline_dataframe_adapter_v1.py": {
+    "frozen_baseline_relative_path": "examples/mszq_intraday_momentum_pulse/pfvv_source_baseline_dataframe_adapter_v1.py",
+    "sha256": "fd63d74dee41ffb541eccad7b549e481c1898e93227cf5b43671b0c42fc79fc1"
+  },
+  "pfvv_source_baseline_partitioned_v1.py": {
+    "frozen_baseline_relative_path": "examples/mszq_intraday_momentum_pulse/pfvv_source_baseline_partitioned_v1.py",
+    "sha256": "d31dd0174023273af1babd32d40af7adc7380a1b8af1f957f2af78136f094ba6"
+  },
+  "pfvv_monthly_evaluation_v1.py": {
+    "frozen_baseline_relative_path": "examples/mszq_intraday_momentum_pulse/pfvv_monthly_evaluation_v1.py",
+    "sha256": "cab7405aa05158a58a37fa5d19a252ca8c7f0b9e7da356d78c6f175f20513dab"
+  },
+  "mszq_step4_portfolio_evaluator_candidate_v1.py": {
+    "frozen_baseline_relative_path": "examples/mszq_intraday_momentum_pulse/local_is_execution_engine/mszq_step4_portfolio_evaluator_candidate_v1.py",
+    "sha256": "43c03e0057dd3018f57c5f5a7a0496ad6cfc085159f2e59b6b5960d67510c901"
+  },
+  "mszq_evaluation_calendar_candidate_v1.py": {
+    "frozen_baseline_relative_path": "examples/mszq_intraday_momentum_pulse/local_is_execution_engine/mszq_evaluation_calendar_candidate_v1.py",
+    "sha256": "6ed49aae31336bd1ae326147e2410a73d5574ee550f2696adcddf820abb793c9"
+  },
+  "mszq_v17_normalized_constraints_candidate_v1.py": {
+    "frozen_baseline_relative_path": "examples/mszq_intraday_momentum_pulse/local_is_execution_engine/mszq_v17_normalized_constraints_candidate_v1.py",
+    "sha256": "c79a4dd127edc7c043747c9e6126a33437557d5f09bc6295e61f5595c7618e23"
+  }
+}

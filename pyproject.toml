@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "factor-factory"
+version = "0.1.0"
+description = "Shared data access and research helpers for FactorFactory"
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [
+  { name = "Humphrey" }
+]
+dependencies = [
+  "pandas>=2.0",
+]
+
+[project.optional-dependencies]
+console = [
+  "cryptography>=46,<47",
+  "latex2mathml==3.81.0",
+  "pypdf==6.10.1",
+]
+step4 = [
+  "boto3>=1.35,<2",
+  "matplotlib>=3.10",
+  "pyarrow>=14.0",
+  "scipy>=1.15,<1.16; python_version < '3.11'",
+  "scipy>=1.16; python_version >= '3.11'",
+]
+qlib = [
+  "boto3>=1.35,<2",
+  "matplotlib>=3.10",
+  "pyarrow>=14.0",
+  "pyqlib>=0.9.7",
+  "scipy>=1.15,<1.16; python_version < '3.11'",
+  "scipy>=1.16; python_version >= '3.11'",
+]
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["factor_factory*"]
+exclude = ["archive*", "evaluations*", "generated_code*", "runs*"]

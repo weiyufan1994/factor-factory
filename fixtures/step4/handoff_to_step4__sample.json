@@ -1,0 +1,23 @@
+{
+  "report_id": "STEP4_SAMPLE_CPV",
+  "step3a_ready": true,
+  "step3b_ready": true,
+  "implementation_plan_master_ref": "implementation_plan_master__STEP4_SAMPLE_CPV.json",
+  "factor_impl_ref": "generated_code/STEP4_SAMPLE_CPV/factor_impl__STEP4_SAMPLE_CPV.py",
+  "factor_impl_stub_ref": "generated_code/STEP4_SAMPLE_CPV/factor_impl_stub__STEP4_SAMPLE_CPV.py",
+  "qlib_expression_draft_ref": "generated_code/STEP4_SAMPLE_CPV/qlib_expression_draft__STEP4_SAMPLE_CPV.json",
+  "hybrid_execution_scaffold_ref": "generated_code/STEP4_SAMPLE_CPV/hybrid_execution_scaffold__STEP4_SAMPLE_CPV.json",
+  "execution_mode": "hybrid",
+  "local_input_paths": {
+    "minute_df_csv": "factorforge/runs/STEP4_SAMPLE_CPV/step3a_local_inputs/minute_input__STEP4_SAMPLE_CPV.csv",
+    "daily_df_csv": "factorforge/runs/STEP4_SAMPLE_CPV/step3a_local_inputs/daily_input__STEP4_SAMPLE_CPV.csv",
+    "sample_window_actual": {"start": "20160104", "end": "20160105"},
+    "snapshot_note": "Tiny committed Step 4 fixture."
+  },
+  "first_run_outputs": {
+    "status": "pending",
+    "output_paths": [],
+    "run_metadata_path": null,
+    "producer": "step4_sample"
+  }
+}

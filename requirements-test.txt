@@ -1,0 +1,11 @@
+# Source-checkout offline regression dependencies. Install while online;
+# tests themselves use synthetic inputs, not market-data downloads.
+-e .
+pytest>=7.0
+numpy>=1.24
+pandas>=2.1,<3
+pyarrow>=14.0
+psutil>=5.9
+jsonschema>=4.23
+scipy>=1.15,<1.16; python_version < '3.11'
+scipy>=1.16; python_version >= '3.11'

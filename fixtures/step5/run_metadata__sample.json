@@ -1,0 +1,10 @@
+{
+  "report_id": "STEP5_SAMPLE_CPV",
+  "factor_id": "CPV",
+  "row_count": 4,
+  "date_count": 2,
+  "ticker_count": 2,
+  "actual_window": {"start": "20160104", "end": "20160105"},
+  "target_window": {"start": "20160104", "end": "20160329"},
+  "run_status_candidate": "partial"
+}

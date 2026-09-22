@@ -1,0 +1,20 @@
+{
+  "doc_count": 2,
+  "doc_types": [
+    "knowledge_record"
+  ],
+  "field_guide": {
+    "id": "stable retrieval id",
+    "doc_type": "factor_record | knowledge_record | research_iteration",
+    "report_id": "report identifier",
+    "factor_id": "factor family identifier",
+    "decision": "promote_official | iterate | reject | needs_human_review",
+    "tags": "keyword and routing tags for lexical / metadata retrieval",
+    "metadata": "structured fields for hybrid filtering",
+    "text": "embedding/full-text corpus body",
+    "source_path": "existing workspace record path"
+  },
+  "derived_only": true,
+  "output_path": "/private/var/folders/7y/32kgms4x1xzg6ym_f_fcmqxw0000gn/T/factorforge-publish-6xxgjxtf/factor-forge/knowledge/retrieval/factorforge_retrieval_index.jsonl",
+  "manifest_path": "/private/var/folders/7y/32kgms4x1xzg6ym_f_fcmqxw0000gn/T/factorforge-publish-6xxgjxtf/factor-forge/knowledge/retrieval/factorforge_retrieval_manifest.json"
+}

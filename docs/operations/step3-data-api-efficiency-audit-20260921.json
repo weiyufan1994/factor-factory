@@ -1,0 +1,317 @@
+{
+  "scope": "synthetic local probe plus read-only active-catalog metadata; no real minute rows fetched",
+  "sdk_source": "/Users/humphrey/projects/factorforge-data-api/factorforge_data_api/client.py",
+  "synthetic_probe": {
+    "stocks_in_partition": 2000,
+    "stocks_requested": 2,
+    "rows_materialized_before_symbol_filter": 480000,
+    "rows_returned": 480,
+    "selected_column_names": [
+      "ts_code",
+      "trade_date",
+      "trade_time",
+      "close",
+      "vol"
+    ],
+    "resolved_fields": {
+      "close": "close",
+      "volume": "vol"
+    },
+    "query_elapsed_seconds": 0.09972741699311882,
+    "query_dates": [
+      "20160104",
+      "20160105"
+    ],
+    "fixture_dates": [
+      "20160104"
+    ],
+    "status": "ready",
+    "reported_missing_dates": [],
+    "note": "Missing 20160105 is intentional. This checks transport coverage semantics, not a production data defect.",
+    "pyarrow_cpu_count": 10,
+    "pyarrow_io_thread_count": 8
+  },
+  "catalog_comparison": {
+    "local": {
+      "path": "/Users/humphrey/projects/factorforge/data/catalog/data_catalog.json",
+      "sha256": "9fab300591ebe5454d7bdb1beece17f4d4b7d30f0b50a733635402fb46274b5a",
+      "datasets": 11,
+      "minute_cache_enabled_by_current_code": true,
+      "minute_source_version": "raw_v1"
+    },
+    "active_s3_snapshot": {
+      "path": "/var/folders/7y/32kgms4x1xzg6ym_f_fcmqxw0000gn/T/step3-data-api-audit-20260921-6kf4b45g/active_catalog.json",
+      "sha256": "98b883004d5ecef38c77431b5986cb2fa07851b706c81c2fc6d5ef8ef4cbd018",
+      "source_uri": "s3://yufan-data-lake/factorforge/data/catalog/data_catalog.json",
+      "datasets": 34,
+      "minute_cache_enabled_by_current_code": false,
+      "minute_source_version": "raw_v1"
+    },
+    "active_names_absent_from_default_local": [
+      "daily_event_state_v1",
+      "factor_library_exposure_panel_bootstrap_v1",
+      "factor_library_exposure_panel_v1",
+      "factor_library_factor_return_panel_bootstrap_v1",
+      "factor_library_factor_return_panel_v1",
+      "factor_library_registry_bootstrap_v1",
+      "factor_library_registry_v1",
+      "fundamental_balance_sheet_pit_v1",
+      "fundamental_cash_flow_pit_v1",
+      "fundamental_disclosure_schedule_pit_v1",
+      "fundamental_express_pit_v1",
+      "fundamental_forecast_pit_v1",
+      "fundamental_income_ann_date_pit_v1",
+      "fundamental_income_pit_v1",
+      "fundamental_indicator_source_pit_v1",
+      "fundamental_main_business_pit_v1",
+      "index_weight_universe",
+      "intraday_apm_session_state_v1",
+      "intraday_daily_dollar_bar_state_v1",
+      "intraday_information_event_state_v1",
+      "intraday_price_path_occupation_state_v1",
+      "intraday_pseudo_dollar_bar_v1",
+      "intraday_value_occupation_state_v1",
+      "microcap_universe",
+      "smart_money_intraday_state_v1",
+      "standard_full_market_universe",
+      "tradability_risk_flags_daily",
+      "turnrate_vol_trend_penalty_feature_panel_v1",
+      "turnrate_vol_trend_penalty_feature_return_panel_v1"
+    ],
+    "default_local_names_absent_from_active": [
+      "dc_index",
+      "dc_member",
+      "index_basic",
+      "index_daily",
+      "limit_list_d",
+      "moneyflow"
+    ]
+  },
+  "review_date": "2026-09-21",
+  "python": "3.14.3",
+  "market_rows_fetched_this_audit": 0,
+  "runtime_code_modified_this_audit": false,
+  "deployed_worker_version_verified": false,
+  "tests": {
+    "independent_sdk": {
+      "passed": 15,
+      "files": [
+        "tests/test_data_api_package.py",
+        "tests/test_daily_minute_features.py"
+      ]
+    },
+    "factor_forge": {
+      "passed": 42,
+      "files": [
+        "tests/test_factorforge_data_api.py",
+        "tests/test_step3_data_api_window_contract.py",
+        "tests/test_step3b_prepared_sample_dispatch.py",
+        "tests/test_step4_data_api_contract.py"
+      ]
+    },
+    "total_passed": 57
+  },
+  "catalog_minute_entries": {
+    "local": {
+      "dataset_id": "minute_bar",
+      "uri": "s3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/",
+      "format": "parquet",
+      "version": "raw_v1",
+      "storage": "s3",
+      "description": "Tushare raw one-minute A-share bars partitioned by trade_date.",
+      "columns": [
+        "ts_code",
+        "trade_time",
+        "trade_date",
+        "bar_time",
+        "minute_index",
+        "open",
+        "close",
+        "high",
+        "low",
+        "vol",
+        "amount",
+        "freq",
+        "source"
+      ],
+      "partition_columns": [
+        "trade_date"
+      ],
+      "date_column": "trade_date",
+      "symbol_column": "ts_code",
+      "qlib_field_map": {
+        "$open": "open",
+        "$high": "high",
+        "$low": "low",
+        "$close": "close",
+        "$volume": "vol",
+        "$amount": "amount",
+        "$time": "trade_time"
+      },
+      "freshness": {
+        "trade_date_min": "20160104",
+        "trade_date_max": "20260604",
+        "partitions": 2528,
+        "sample_partition": "20160104",
+        "sample_rows": 606115
+      },
+      "metadata": {
+        "source": "tushare_minute_raw_s3",
+        "region": "ap-southeast-1",
+        "partition_style": "hive",
+        "partition_value_type": "string",
+        "sample_uri": "s3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/trade_date=20160104/part-000.parquet",
+        "loader_note": "Catalog partition schema must force trade_date as string to avoid pyarrow int32/string merge conflicts.",
+        "cache_partitions": "true",
+        "partition_file_name": "part-000.parquet"
+      }
+    },
+    "active_s3_snapshot": {
+      "dataset_id": "minute_bar",
+      "uri": "s3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/",
+      "format": "parquet",
+      "version": "raw_v1",
+      "storage": "s3",
+      "description": "Tushare raw one-minute A-share bars partitioned by trade_date.",
+      "columns": [
+        "ts_code",
+        "trade_time",
+        "trade_date",
+        "bar_time",
+        "minute_index",
+        "open",
+        "close",
+        "high",
+        "low",
+        "vol",
+        "amount",
+        "freq",
+        "source"
+      ],
+      "partition_columns": [
+        "trade_date"
+      ],
+      "date_column": "trade_date",
+      "symbol_column": "ts_code",
+      "qlib_field_map": {
+        "$amount": "amount",
+        "$close": "close",
+        "$high": "high",
+        "$low": "low",
+        "$open": "open",
+        "$time": "trade_time",
+        "$volume": "vol"
+      },
+      "freshness": {
+        "partitions": 1721,
+        "partitions_observed_s3_latest": "20260625",
+        "sample_partition": "20160104",
+        "sample_rows": 606115,
+        "trade_date_max": "20260625",
+        "trade_date_min": "20160104"
+      },
+      "metadata": {
+        "catalog_freshness_updated_at": "2026-06-26T00:00:00+08:00",
+        "latest_s3_partition_observed": "s3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/trade_date=20260625/part-000.parquet",
+        "loader_note": "Catalog partition schema must force trade_date as string to avoid pyarrow int32/string merge conflicts.",
+        "partition_style": "hive",
+        "partition_value_type": "string",
+        "region": "ap-southeast-1",
+        "sample_uri": "s3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/trade_date=20160104/part-000.parquet",
+        "source": "tushare_minute_raw_s3"
+      }
+    }
+  },
+  "source_files": [
+    {
+      "path": "/Users/humphrey/projects/factorforge-data-api/factorforge_data_api/client.py",
+      "sha256": "c58f0bb4bbe967d85e6c0dbe839e142b0c4e6ccd41816b050ef6855eb24ada18"
+    },
+    {
+      "path": "/Users/humphrey/projects/factorforge-data-api/factorforge_data_api/catalog.py",
+      "sha256": "fee9be0b4e6c871c7011a2c1aff9947a7e11ab039dfd9085e40ad1cc5afc9b4e"
+    },
+    {
+      "path": "/Users/humphrey/projects/factorforge-data-api/factorforge_data_api/backends/local_file.py",
+      "sha256": "880180c65b84b6696d40076a4dd57b145cc8d66de14b35930cd262c4b8e19d79"
+    },
+    {
+      "path": "/Users/humphrey/projects/factorforge-data-api/factorforge_data_api/backends/s3_file.py",
+      "sha256": "d21888406ee4c1ed2bca03c0f45f8598c28b775673c7738355928f7bf6fe7f2b"
+    },
+    {
+      "path": "/Users/humphrey/projects/factorforge-data-api/factorforge_data_api/backends/partitioning.py",
+      "sha256": "6b1e5a8a8f0c92fb65d01e83835be4a28e78759cbe3c683441612a239908e823"
+    },
+    {
+      "path": "/Users/humphrey/projects/factorforge-data-api/scripts/prewarm_data_api_cache.py",
+      "sha256": "ac4824df549aeeaf8d6acfc39db1a2017df900747a34760ee9b2a34ad8d9d2ad"
+    },
+    {
+      "path": "/Users/humphrey/projects/factor-factory-knowledge-reuse-20260907/factor_factory/data_api/client.py",
+      "sha256": "1c9ef4071e82c28422c8829daea04a739b27265c083dec92ea9243f7e73907ba"
+    },
+    {
+      "path": "/Users/humphrey/projects/factor-factory-knowledge-reuse-20260907/skills/factor-forge-step3/scripts/run_step3.py",
+      "sha256": "21beb4ff768f16e5889c4456e563c6187e59be6659b601e0941e701081524f6b"
+    },
+    {
+      "path": "/Users/humphrey/projects/factor-factory-knowledge-reuse-20260907/skills/factor-forge-step3/scripts/run_step3b.py",
+      "sha256": "82a0d9b8f0c19c0f16d0d550c8d71a53bdd01696df5657988ee1fab6fbfd12b4"
+    },
+    {
+      "path": "/Users/humphrey/projects/factor-factory-knowledge-reuse-20260907/skills/factor-forge-step4/scripts/self_quant_adapter.py",
+      "sha256": "c1ddc236d6de1e41dae5eddfb976e05c99a8e190f1f211d38c5c1be7f4acbd45"
+    },
+    {
+      "path": "/Users/humphrey/projects/factor-factory-knowledge-reuse-20260907/examples/mszq_intraday_momentum_pulse/pfvv_daily_measurements_v1.py",
+      "sha256": "a196b3e2a8bd8fccb6aa81113e23307bb746a2e30b1cd3d0c0cd1fe82712f901"
+    },
+    {
+      "path": "/Users/humphrey/projects/factor-factory-knowledge-reuse-20260907/examples/mszq_intraday_momentum_pulse/pfvv_monthly_evaluation_v1.py",
+      "sha256": "cab7405aa05158a58a37fa5d19a252ca8c7f0b9e7da356d78c6f175f20513dab"
+    },
+    {
+      "path": "/Users/humphrey/projects/factor-factory-knowledge-reuse-20260907/examples/mszq_intraday_momentum_pulse/pfvv_monthly_step4_backend_v1.py",
+      "sha256": "09147f02152e35b72e5627239995ba13f958cc652cdefa5f36fc62a0ce6bbe44"
+    }
+  ],
+  "prior_pfvv_run_evidence": {
+    "historical_preparation": {
+      "calendar_days": 2313,
+      "raw_rows": 2234784195,
+      "selected_daily_rows": 9109745,
+      "compressed_source_bytes": 31666386103,
+      "elapsed_seconds": 21091,
+      "user_cpu_seconds": 20454.34,
+      "system_cpu_seconds": 175.69,
+      "cpu_percent": 97,
+      "max_rss_kib": 2163704,
+      "swap_count": 0,
+      "exit_status": 0,
+      "source_identity_matches": {
+        "pfvv_source_baseline_v1.py": true,
+        "pfvv_source_baseline_dataframe_adapter_v1.py": true,
+        "pfvv_source_baseline_partitioned_v1.py": true,
+        "pfvv_daily_measurements_v1.py": true,
+        "pfvv_reconstruction.json": true
+      }
+    },
+    "historical_evaluation": {
+      "started_at_utc": "2026-09-08T21:13:05Z",
+      "finished_at_utc": "2026-09-08T21:56:10Z",
+      "backend_seconds": 2576.0809450838715,
+      "factor_source": "prior_step4_parquet",
+      "recomputed_factor": false,
+      "signal_sets": 3,
+      "portfolios_per_set": 11,
+      "cost_paths_per_portfolio": 2,
+      "simulations_derived_from_call_graph": 66,
+      "backend_peak_estimate_bytes": 1923358559,
+      "actual_backend_peak_rss": "not_recorded_in_reviewed_payload",
+      "phase_timings": "only_aggregate_backend_wall_seconds"
+    },
+    "source_report": "/Users/humphrey/projects/factor-factory-knowledge-reuse-20260907/docs/operations/pfvv-code-performance-review-20260921.json"
+  },
+  "synthetic_probe_script": "from __future__ import annotations\n\nimport hashlib\nimport json\nimport sys\nimport time\nfrom pathlib import Path\n\nimport numpy as np\nimport pandas as pd\nimport pyarrow as pa\n\nsys.path.insert(0, '/Users/humphrey/projects/factorforge-data-api')\nfrom factorforge_data_api import DataApiClient\nfrom factorforge_data_api.backends import local_file\nfrom factorforge_data_api.backends.s3_file import _uses_partition_cache\nfrom factorforge_data_api.catalog import DataCatalog\n\nroot = Path(sys.argv[1])\nfixture = root / 'synthetic_minute' / 'trade_date=20160104'\nfixture.mkdir(parents=True, exist_ok=True)\ntimes = pd.date_range('2016-01-04 09:31', periods=120, freq='min').append(\n    pd.date_range('2016-01-04 13:01', periods=120, freq='min'))\nsymbols = [f'{i:06d}.SZ' for i in range(1, 2001)]\nframe = pd.DataFrame({\n    'ts_code': np.repeat(symbols, len(times)),\n    'trade_date': '20160104',\n    'trade_time': np.tile(times.to_numpy(), len(symbols)),\n    'close': 10.0,\n    'vol': 100.0,\n})\nframe.to_parquet(fixture / 'part-000.parquet', index=False)\ncatalog_path = root / 'synthetic_catalog.json'\ncatalog_path.write_text(json.dumps({'datasets': {'minute_bar': {\n    'uri': str(fixture.parent), 'format': 'parquet', 'columns': list(frame.columns),\n    'partition_columns': ['trade_date'],\n}}}))\nclient = DataApiClient.from_catalog(catalog_path)\nread_rows = []\noriginal = local_file.table_to_frame_with_partition_value\n\ndef record_read(*args, **kwargs):\n    loaded = original(*args, **kwargs)\n    read_rows.append(len(loaded))\n    return loaded\n\nlocal_file.table_to_frame_with_partition_value = record_read\nstarted = time.perf_counter()\ntry:\n    result = client.get_minute_bars('20160104', '20160105',\n        universe=symbols[:2], fields=['close', 'volume'])\nfinally:\n    local_file.table_to_frame_with_partition_value = original\nelapsed = time.perf_counter() - started\nassert len(result.frame) == 480\nassert result.frame.ts_code.nunique() == 2\nassert result.resolved_fields['volume'] == 'vol'\nassert sum(read_rows) == 480000\nassert result.status == 'ready'\n\nlocal_catalog = Path('/Users/humphrey/projects/factorforge/data/catalog/data_catalog.json')\nactive_catalog = root / 'active_catalog.json'\nlocal = DataCatalog.load(local_catalog)\nactive = DataCatalog.load(active_catalog)\n\ndef identity(path):\n    return {'path': str(path), 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()}\n\nout = {\n    'scope': 'synthetic local probe plus read-only active-catalog metadata; no real minute rows fetched',\n    'sdk_source': '/Users/humphrey/projects/factorforge-data-api/factorforge_data_api/client.py',\n    'synthetic_probe': {\n        'stocks_in_partition': len(symbols), 'stocks_requested': 2,\n        'rows_materialized_before_symbol_filter': sum(read_rows),\n        'rows_returned': len(result.frame), 'selected_column_names': list(result.frame.columns),\n        'resolved_fields': result.resolved_fields, 'query_elapsed_seconds': elapsed,\n        'query_dates': ['20160104', '20160105'], 'fixture_dates': ['20160104'],\n        'status': result.status, 'reported_missing_dates': result.coverage.missing_dates,\n        'note': 'Missing 20160105 is intentional. This checks transport coverage semantics, not a production data defect.',\n        'pyarrow_cpu_count': pa.cpu_count(), 'pyarrow_io_thread_count': pa.io_thread_count(),\n    },\n    'catalog_comparison': {\n        'local': {**identity(local_catalog), 'datasets': len(local.datasets),\n            'minute_cache_enabled_by_current_code': _uses_partition_cache(local.datasets['minute_bar']),\n            'minute_source_version': local.datasets['minute_bar'].version},\n        'active_s3_snapshot': {**identity(active_catalog),\n            'source_uri': 's3://yufan-data-lake/factorforge/data/catalog/data_catalog.json',\n            'datasets': len(active.datasets),\n            'minute_cache_enabled_by_current_code': _uses_partition_cache(active.datasets['minute_bar']),\n            'minute_source_version': active.datasets['minute_bar'].version},\n        'active_names_absent_from_default_local': sorted(set(active.datasets) - set(local.datasets)),\n        'default_local_names_absent_from_active': sorted(set(local.datasets) - set(active.datasets)),\n    },\n}\n(root / 'probe_result.json').write_text(json.dumps(out, ensure_ascii=False, indent=2) + '\\n')\nprint(json.dumps(out, ensure_ascii=False, indent=2))\n"
+}

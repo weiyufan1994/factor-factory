@@ -1,0 +1,68 @@
+{
+  "report_meta": {
+    "title": "Sample Factor Report — CPV Mini Fixture",
+    "topic": "high_frequency_price_volume_factor"
+  },
+  "section_map": [
+    {"name": "摘要", "evidence": "最小样本摘要"},
+    {"name": "核心观点", "evidence": "20日价量相关性均值/波动/趋势构成因子"}
+  ],
+  "variables": [
+    "分钟收盘价",
+    "分钟成交量",
+    "20日收益率（Ret20）",
+    "20日波动率（Vol20）",
+    "总市值"
+  ],
+  "signals": [
+    "20日价量相关系数均值",
+    "20日价量相关系数标准差",
+    "价量相关系数趋势项"
+  ],
+  "subfactors": [
+    {"name": "PV_corr_avg", "role": "mean_signal"},
+    {"name": "PV_corr_std", "role": "dispersion_signal"},
+    {"name": "PV_corr_trend", "role": "trend_signal"}
+  ],
+  "final_factor": {
+    "name": "CPV",
+    "economic_logic": "价量相关性反映交易行为与价格发现强度。",
+    "economic_logic_source": "sample_fixture",
+    "behavioral_logic": "异常的价量协同变化可能包含投资者行为偏差。",
+    "behavioral_logic_source": "sample_fixture",
+    "causal_chain": [
+      "构造日度分钟价量相关系数",
+      "提取均值/波动/趋势信号",
+      "做横截面中性化与标准化",
+      "合成为 CPV"
+    ],
+    "causal_chain_source": "sample_fixture",
+    "direction": "Negative",
+    "assembly_steps": [
+      "计算过去20日分钟价量相关系数均值",
+      "计算过去20日分钟价量相关系数标准差",
+      "计算价量相关系数时间趋势项",
+      "做横截面中性化与ZScore标准化",
+      "合成为CPV"
+    ]
+  },
+  "formula_clues": [
+    {"expr": "CPV = ZScore(PV_corr_deRet20) + ZScore(PV_corr_trend)"}
+  ],
+  "code_clues": [
+    {"hint": "monthly rebalance"}
+  ],
+  "implementation_clues": [
+    {"hint": "retain ambiguity explicitly instead of overfitting detail"}
+  ],
+  "alpha_candidates": [
+    {"name": "CPV", "direction": "Negative"}
+  ],
+  "evidence_clues": [
+    {"section": "核心观点", "quote": "均值、波动与趋势构成因子"}
+  ],
+  "ambiguities": [
+    "分钟频率未明确（1分钟或5分钟）",
+    "相关系数类型未明确（Pearson或Spearman）"
+  ]
+}

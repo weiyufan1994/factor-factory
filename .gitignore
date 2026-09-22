@@ -1,0 +1,48 @@
+__pycache__/
+*.pyc
+.venv/
+.venv-knowledge/
+.env
+*.log
+*.tmp
+
+# runtime data / caches
+objects/
+runs/
+evaluations/
+generated_code/
+archive/
+factorforge/
+data/clean/
+data/raw/
+output/
+outputs/
+dist/
+.pytest_cache/
+build/
+tmp/
+.playwright-cli/
+factor_factory.egg-info/
+.obsidian/
+knowledge/retrieval/
+data/report_ingestion/raw/
+data/report_ingestion/extracted/
+data/report_ingestion/report_registry.json
+
+# Factor research workspaces are runtime/artifact space by default.
+# Do not let concurrent Factor Forge Ultimate research threads dirty the repo
+# with results, Step3 runtime copies, caches, PDFs, or large intermediate data.
+# To promote a small manifest/report/knowledge file intentionally, use
+# explicit `git add -f <path>` after review; never use `git add .`.
+factor_research/**
+!factor_research/
+!factor_research/**/
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
+
+# Host-private local runtime state. This tree can contain signing keys,
+# SQLite journals, agent messages, and incident-registry witnesses.
+/.factorforge-canary-state/

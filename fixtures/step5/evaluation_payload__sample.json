@@ -1,0 +1,15 @@
+{
+  "backend": "self_quant_analyzer",
+  "mode": "quick",
+  "report_id": "STEP5_SAMPLE_CPV",
+  "ic_summary": {
+    "rank_ic_mean": -1.0,
+    "rank_ic_std": null,
+    "rank_ic_ir": null,
+    "pearson_ic_mean": -1.0,
+    "pearson_ic_std": null,
+    "pearson_ic_ir": null
+  },
+  "artifacts": {},
+  "extensible_metrics": true
+}

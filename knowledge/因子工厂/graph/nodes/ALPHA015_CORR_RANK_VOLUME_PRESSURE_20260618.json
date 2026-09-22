@@ -1,0 +1,223 @@
+{
+  "evidence": {
+    "artifact_paths": [
+      "knowledge/因子工厂/普通因子库/ALPHA015_CANONICAL_FORMULA_20160101.md",
+      "knowledge/因子工厂/普通因子库/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md",
+      "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A060_20160101.md",
+      "knowledge/因子工厂/普通因子库/ALPHA015_QLIB_ONLY_20160101_20250711.md"
+    ],
+    "cost_assumption": "self_quant turnover cost diagnostics available; after-cost annual return remains weak for best gross variant",
+    "falsification": "If OOS or official backend evidence shows the high-amount/turnover-penalty improvement is only cost or size exposure, keep as model feature and do not promote standalone.",
+    "portfolio_policy": "long-side top group / diagnostic deciles; long-short only diagnostic",
+    "universe": "Factor Forge Alpha101 daily universe",
+    "variant_family_coverage": {
+      "covered_prefix": "ALPHA015",
+      "covered_source_path_count": 64,
+      "scope": "ALPHA015 historical ordinary/knowledge/iteration records are mapped to this mechanism-family node; individual variants still require their own artifact review before promotion."
+    },
+    "verdict": "candidate",
+    "window": "20160101 through available IS evidence in Alpha015 library records"
+  },
+  "factor_ids": [
+    "Alpha015",
+    "ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101",
+    "ALPHA015_SWEEP_TURNPEN_A060_20160101"
+  ],
+  "id": "node::alpha015_corr_rank_volume_pressure_20260618",
+  "mechanism": {
+    "complexity_penalty_reasoning": "High-amount and turnover-penalty gates are complexity that looks economically motivated because they target payer quality and trading cost, but promotion still requires OOS and after-cost proof.",
+    "dirac_style_forced_insight": "The short rolling sum forces the object to be path persistence of rank-correlation pressure, not a single-day volume spike; useful revisions should condition the pressure source, not replace the path object with a portfolio rule.",
+    "economic_hypothesis": "Repeated high-rank correlation between high-price ranks and volume ranks measures a recent volume-pressure path; high-amount and moderate turnover conditions strengthen the chance that pressure is institutional or constraint-driven rather than random noise.",
+    "factor_expression": "(-1 * sum(rank(correlation(rank(high), rank(volume), 3)), 3)); strongest variants include high-amount half-low-turn and turnover penalty A060.",
+    "information_preserved_removed": "The rank/correlation/sum stack preserves ordinal repeated pressure and removes absolute scale; high-amount and turnover-penalty revisions reintroduce capacity/tradability information but must be paid for by after-cost evidence.",
+    "key_equation_latex": "$$\\nS^{015}_{i,t}= -\\sum_{k=0}^{2}\\operatorname{rank}_{cs}\\left(\\operatorname{corr}_{3}\\left(\\operatorname{rank}_{cs}(H_{i,\\cdot}),\\operatorname{rank}_{cs}(V_{i,\\cdot})\\right)_{t-k}\\right)\\n$$",
+    "payer": "benchmark-constrained, liquidity-constrained, or execution-driven participants whose demand creates repeated high-rank volume-pressure states",
+    "random_object": "rolling correlation of ranked high price and ranked volume, accumulated over a short path window",
+    "receiver": "stat-arb or portfolio-construction capital using the ordinal pressure state as a long-side feature",
+    "target_statistic": "long-side gross return and Rank IC, then after-cost long-side capital efficiency"
+  },
+  "node_type": "feature_candidate",
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "note": "The formula sums a short path of ranked high-volume correlations.",
+      "target": "math::rank_correlation_path_state"
+    },
+    {
+      "edge_type": "belongs_to",
+      "note": "Negative sign maps repeated volume-pressure correlation into a repair/reversal interpretation.",
+      "target": "market_consensus::reversal"
+    },
+    {
+      "edge_type": "belongs_to",
+      "note": "Strong ordinal evidence and weak after-cost evidence suggest use as a model feature before standalone promotion.",
+      "target": "buyside_style::alpha_combination_feature"
+    },
+    {
+      "edge_type": "refines",
+      "note": "Alpha015 extends the price-volume pressure family from covariance to repeated rank-correlation path persistence.",
+      "target": "node::alpha013_price_volume_covariance_reversal_20260618"
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "note": "The best gross branch still has limited after-cost Sharpe.",
+      "target": "failure::turnover_cost_exceeds_gross_edge"
+    },
+    {
+      "edge_type": "reusable_as",
+      "note": "Use as a candidate feature in ML or composite models, especially with cost and universe controls.",
+      "target": "model_feature::rank_correlation_pressure"
+    }
+  ],
+  "report_ids": [
+    "ALPHA015_CANONICAL_FORMULA_20160101",
+    "ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101",
+    "ALPHA015_SWEEP_TURNPEN_A060_20160101"
+  ],
+  "reuse_guidance": [
+    "Retrieve this node for rank-correlation, high-volume pressure, or Alpha101 price-volume path ideas.",
+    "Preserve the rolling path-persistence object when revising; do not replace it with a pure one-day spike score.",
+    "Use high-amount and turnover penalties as economically motivated gates, but demand OOS and after-cost proof.",
+    "Treat current evidence as candidate-level and feature-ready, not official standalone."
+  ],
+  "schema_version": "factor_knowledge_node_v1",
+  "source_paths": [
+    "knowledge/因子工厂/普通因子库/ALPHA015_CANONICAL_FORMULA_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A060_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/知识库/ALPHA015_CANONICAL_FORMULA_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A060_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_ADAPTIVE_A_FAST7_SLOW14_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_ADAPTIVE_B_FAST7_HALFSLOW14_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_ADAPTIVE_C_FAST7_SLOW21_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_REGIME_R01_CORR7_SUM7_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_REGIME_R02_CORR7_HIGHTURN_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_REGIME_R03_CORR7_HIGHAMOUNT_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_REV_CORR3_MEAN5_RANK_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_REV_CORR5_SUM5_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_REV_CORR7_SUM7_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_REV_OUTER_SMOOTH5_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_RISK_A_HIGHAMOUNT_LOWVOL20_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_RISK_B_HIGHAMOUNT_LOWTURN_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_RISK_C_HIGHAMOUNT_LOWKURT20_MOMENT_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_RISK_D_HIGHAMOUNT_AMOUNTDELTA5_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A025_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A040_20160101.md",
+    "knowledge/因子工厂/普通因子库/ALPHA015_SWEEP_TURNPEN_A075_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_20160101_RESEARCH_ARCHIVE.md",
+    "knowledge/因子工厂/知识库/ALPHA015_ADAPTIVE_A_FAST7_SLOW14_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_ADAPTIVE_B_FAST7_HALFSLOW14_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_ADAPTIVE_C_FAST7_SLOW21_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/知识库/ALPHA015_REGIME_R01_CORR7_SUM7_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_REGIME_R02_CORR7_HIGHTURN_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_REGIME_R03_CORR7_HIGHAMOUNT_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_REV_CORR3_MEAN5_RANK_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_REV_CORR5_SUM5_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_REV_CORR7_SUM7_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_REV_OUTER_SMOOTH5_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_RISK_A_HIGHAMOUNT_LOWVOL20_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_RISK_B_HIGHAMOUNT_LOWTURN_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_RISK_C_HIGHAMOUNT_LOWKURT20_MOMENT_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_RISK_D_HIGHAMOUNT_AMOUNTDELTA5_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A025_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A040_20160101.md",
+    "knowledge/因子工厂/知识库/ALPHA015_SWEEP_TURNPEN_A075_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_ADAPTIVE_A_FAST7_SLOW14_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_ADAPTIVE_B_FAST7_HALFSLOW14_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_ADAPTIVE_C_FAST7_SLOW21_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_CANONICAL_FORMULA_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_QLIB_ONLY_20160101_20250711.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_REGIME_R01_CORR7_SUM7_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_REGIME_R02_CORR7_HIGHTURN_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_REGIME_R03_CORR7_HIGHAMOUNT_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_REV_CORR3_MEAN5_RANK_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_REV_CORR5_SUM5_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_REV_CORR7_SUM7_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_REV_OUTER_SMOOTH5_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_RISK_A_HIGHAMOUNT_LOWVOL20_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_RISK_B_HIGHAMOUNT_HALFLOWTURN_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_RISK_B_HIGHAMOUNT_LOWTURN_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_RISK_C_HIGHAMOUNT_LOWKURT20_MOMENT_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_RISK_D_HIGHAMOUNT_AMOUNTDELTA5_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A025_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A040_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A060_20160101.md",
+    "knowledge/因子工厂/研究迭代/ALPHA015_SWEEP_TURNPEN_A075_20160101.md"
+  ],
+  "summary": "Alpha015 is the strongest migrated Alpha101 daily microstructure candidate so far: high-amount and turnover-penalty variants lift Rank IC and gross long-side Sharpe materially, but drawdown, recovery, turnover cost, and qlib consistency keep it below official standalone admission.",
+  "taxonomy": {
+    "barra_style": [
+      "liquidity",
+      "momentum",
+      "volatility",
+      "size"
+    ],
+    "buyside_style": [
+      "stat_arb_signal",
+      "microstructure_alpha",
+      "alpha_combination_feature",
+      "portfolio_construction_signal"
+    ],
+    "cn_quant_practice": [
+      "index_enhancement",
+      "market_neutral",
+      "intraday_reversal",
+      "capacity_management",
+      "feature_for_ml"
+    ],
+    "data_source": [
+      "daily_ohlcv",
+      "daily_basic",
+      "qlib_provider"
+    ],
+    "economic_mechanism": [
+      "forced_flow",
+      "liquidity_provision",
+      "inventory_pressure",
+      "limits_to_arbitrage",
+      "benchmark_pressure"
+    ],
+    "failure_mode": [
+      "after_cost_failure",
+      "turnover_cost_exceeds_gross_edge",
+      "framework_block"
+    ],
+    "market_consensus": [
+      "reversal",
+      "liquidity",
+      "microstructure",
+      "multi_factor"
+    ],
+    "math_mechanism": [
+      "cross_sectional_rank",
+      "time_series_state",
+      "covariance_projection",
+      "stochastic_process",
+      "path_functional"
+    ],
+    "research_status": [
+      "candidate",
+      "feature_candidate",
+      "needs_oos"
+    ],
+    "tradability": [
+      "long_side",
+      "long_short",
+      "high_turnover_risk",
+      "capacity_sensitive",
+      "cost_sensitive",
+      "model_feature_only"
+    ],
+    "worldquant_style": [
+      "price_volume",
+      "correlation",
+      "rank_transform",
+      "ts_operator",
+      "cs_operator"
+    ]
+  },
+  "title": "Alpha015 correlation-rank volume pressure candidate"
+}

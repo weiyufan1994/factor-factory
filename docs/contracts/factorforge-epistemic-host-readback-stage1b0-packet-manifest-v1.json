@@ -1,0 +1,159 @@
+{
+  "artifact_type": "factorforge_epistemic_host_readback_stage1b0_packet_manifest_v1",
+  "schema_version": "1.0.0-candidate",
+  "packet_id": "FACTORFORGE_EPISTEMIC_HOST_READBACK_STAGE1B0_DESIGN_20260823_R2",
+  "packet_maturity": "STAGE1B0_META_DESIGN_CANDIDATE__DEPLOYMENT_REMAINS_UNBOUND_BLOCKING",
+  "generated_at_utc": "2026-08-23T03:00:54Z",
+  "local_predecessor_review_binding": {
+    "predecessor_packet_id": "FACTORFORGE_EPISTEMIC_HOST_READBACK_STAGE1B0_DESIGN_20260823_R1",
+    "predecessor_manifest_sha256": "e18c83f758c3cc15c057bc9084819ad49e073372fcfe084f40d1a342a239b01e",
+    "review_verdict": "PACKET_PROVENANCE_DAG_REVISE",
+    "p0_blocker_count": 0,
+    "p1_blocker_count": 4,
+    "closed_p1_topics": [
+      "PUBLIC_REF_CLOSED_METADATA_PROJECTION",
+      "ROOT29_COMMITMENT_PROPAGATION_MECHANICAL_RECOMPUTATION",
+      "SEMANTIC_RECEIPT_SOLE_ADJUDICATIVE_PASS_TRUTH",
+      "OWNER_EQUALITY_INDEPENDENT_OPERATING_AUTHORITY_APPROVAL_BLOCK"
+    ]
+  },
+  "baseline_bindings": {
+    "p0_packet_id": "FACTORFORGE_EPISTEMIC_GRAPH_V2_P0_BINDING_REVIEW_20260822_R2",
+    "p0_packet_manifest_sha256": "58c3585881f52c4ed60c4e7fb582e9b30acf0063433c12363915d54f0b985c4f",
+    "p0_external_review_verdict": "P0_BINDING_DESIGN_GO__DEPLOYMENT_REMAINS_UNBOUND_BLOCKING",
+    "stage1a_commit": "07850b6886380aa961e1507d8f3a8df91fe204a6",
+    "stage1a_contract_sha256": "00fa469e89b8604ce483309d2f40edd1723dbfa86f385c9aa3da6e9433e69eda",
+    "stage1a_module_sha256": "5e9e5b1cda23686dc6bb0be3e6f8826f013f39ce509f34b017f7ae337f396fa1",
+    "stage1a_builder_sha256": "91197f06f5b68743ca7f8a78edacc8b66583e517fdbb2b86dbd80f18122f2399",
+    "stage1a_validator_sha256": "4cba712c9603ff1a80bcdd5b3191345ab83926478f58ff0fce3ee0d16bf141b3",
+    "stage1a_expected_inventory_content_sha256": "594033b27960eb97da203b3d2706300b35cb69178c1adf5f41012540e8da2856",
+    "current_operating_code_baseline_commit": "dc6f55ab6ea1f9dc32518e3af02df4a9e5d423ee"
+  },
+  "authority_semantics": {
+    "creates_canonical_experience_authority": false,
+    "creates_store_ledger_principal_key_or_trust_binding": false,
+    "binds_or_reads_live_host_state": false,
+    "authorizes_deployment": false,
+    "authorizes_implementation": false,
+    "authorizes_fixture_materialization_or_execution": false,
+    "authorizes_shadow": false,
+    "authorizes_runtime": false,
+    "authorizes_rag": false,
+    "authorizes_skill_change": false,
+    "authorizes_canonical_write": false,
+    "authorizes_oos_read": false,
+    "authorizes_training": false,
+    "authorizes_next_gate": false,
+    "owner_equality_operating_authority_delta_approved": false,
+    "deployment_rows_created": false,
+    "effective_deployment_status": "UNBOUND_BLOCKING"
+  },
+  "hash_law": {
+    "algorithm": "SHA-256",
+    "byte_semantics": "HASH_EXACT_FILE_BYTES",
+    "manifest_self_hashing": false,
+    "manifest_excluded_from_artifact_list": true,
+    "logical_packet_closure": "THIS_MANIFEST_PLUS_EXACTLY_THE_FOUR_LISTED_ARTIFACTS",
+    "source_directory_is_not_a_dedicated_packet_directory": true,
+    "unlisted_source_directory_files_are_out_of_review_scope": true,
+    "path_semantics": "ARTIFACT_PATHS_ARE_REPOSITORY_ROOT_RELATIVE_AND_MUST_BE_UNIQUE",
+    "hash_dag": "PRIMARY_BUNDLE_SHA_TO_META_REGISTRY_PROJECTION_TO_THIS_OUTER_PACKET_MANIFEST",
+    "primary_bundle_backreference_to_meta_or_manifest_forbidden": true,
+    "meta_registry_self_digest_forbidden": true
+  },
+  "review_precedence": [
+    "docs/contracts/factorforge-epistemic-host-readback-stage1b0-packet-manifest-v1.json",
+    "docs/contracts/factorforge-epistemic-host-readback-stage1b0-review-checklist-v1.zh-CN.md",
+    "docs/contracts/factorforge-epistemic-host-readback-meta-registry-v1.json",
+    "docs/contracts/factorforge-epistemic-host-readback-meta-contract-v1.zh-CN.md",
+    "docs/contracts/factorforge-epistemic-host-readback-closed-schema-bundle-v1.json"
+  ],
+  "artifact_count": 4,
+  "artifact_bytes_total": 3873377,
+  "artifacts": [
+    {
+      "ordinal": 0,
+      "path": "docs/contracts/factorforge-epistemic-host-readback-closed-schema-bundle-v1.json",
+      "bytes": 3768126,
+      "sha256": "43d33b4499a82e69183cc5f0f8f3df116fb97545c892f44f098b9b81cac8e316"
+    },
+    {
+      "ordinal": 1,
+      "path": "docs/contracts/factorforge-epistemic-host-readback-meta-registry-v1.json",
+      "bytes": 38456,
+      "sha256": "124ca2b64a3100580e4025f1810fa52eaa89a977621c5ddbeb28e73336bc5a80"
+    },
+    {
+      "ordinal": 2,
+      "path": "docs/contracts/factorforge-epistemic-host-readback-meta-contract-v1.zh-CN.md",
+      "bytes": 49600,
+      "sha256": "763fb1665cb99d4fac218b14ccf9e8371bcd234b3aa31fecde5706438a8d20ba"
+    },
+    {
+      "ordinal": 3,
+      "path": "docs/contracts/factorforge-epistemic-host-readback-stage1b0-review-checklist-v1.zh-CN.md",
+      "bytes": 17195,
+      "sha256": "7b76eae7f6e8493eff41a1debdc59c537cb7313aa91a35f980c5f415a1973748"
+    }
+  ],
+  "exact_design_invariants": {
+    "closed_schema_bundle_id": "urn:factorforge:schema:epistemic-host-readback-closed-bundle:v1",
+    "closed_schema_definition_universe_count": 381,
+    "route_reference_root_count": 40,
+    "route_reference_reachable_definition_count": 258,
+    "nonroute_subroot_count": 123,
+    "compiler_root_count_including_meta_root": 41,
+    "bundled_route_count": 33,
+    "execution_role_enum_count": 14,
+    "authority_count": 5,
+    "material_subject_count": 167,
+    "projector_sod_authority_comparison_count": 193,
+    "projector_sod_validator_nonself_count": 3,
+    "private_resolver_leaf_count": 187,
+    "private_resolver_crosswalk_count": 392,
+    "mandatory_conformance_obligation_count": 170,
+    "minimum_distinct_conformance_case_count": 261,
+    "root29_required_provenance_classes": [
+      "D_RECOMPUTED",
+      "R_RESOLVED",
+      "E_EXACT_EXTERNAL",
+      "T_TRUSTED_TIME",
+      "S_STATIC_PINNED"
+    ],
+    "root29_h_hsm_derived_count": 0,
+    "root29_full_commitment_and_manifest_recomputation_required": true,
+    "public_resolver_ref_required_metadata_field_count": 25,
+    "semantic_validation_receipt_is_sole_adjudicative_pass": true,
+    "receipt_bundle_equality_projection_adds_second_truth": false,
+    "owner_equality_scope_delta_status": "DESIGN_ONLY__INDEPENDENT_OPERATING_AUTHORITY_APPROVAL_REQUIRED__UNBOUND_BLOCKING",
+    "owner_equality_independent_operating_authority_approval_receipt_ref": null,
+    "r3_normative_role_universe_modified": false,
+    "deployment_rows_created": false
+  },
+  "local_non_authoritative_checks": {
+    "strict_json_parse": "PASS_NONAUTHORITATIVE",
+    "duplicate_key_nonfinite_and_lone_surrogate_scan": "PASS_NONAUTHORITATIVE",
+    "draft_2020_12_meta_schema": "PASS_NONAUTHORITATIVE",
+    "local_ref_closure_and_exact_pointer_dag": "PASS_NONAUTHORITATIVE",
+    "definition_root_nonroute_and_manifest_reconstruction": "PASS_NONAUTHORITATIVE",
+    "resolver_owner_selector_policy_and_root29_reconstruction": "PASS_NONAUTHORITATIVE",
+    "public_ref_25_field_projection_and_pass_truth_separation": "PASS_NONAUTHORITATIVE",
+    "root29_commitment_propagation_recomputation": "PASS_NONAUTHORITATIVE",
+    "owner_equality_operating_authority_block_projection": "PASS_NONAUTHORITATIVE",
+    "mandatory_obligation_and_case_minimum_reconstruction": "PASS_NONAUTHORITATIVE",
+    "markdown_fence_balance": "PASS_NONAUTHORITATIVE",
+    "external_review_receipt_ref": null,
+    "does_not_constitute_external_reviewer_verdict": true
+  },
+  "next_legal_action": "INDEPENDENT_MANIFEST_BOUND_READ_ONLY_STAGE1B0_META_DESIGN_REVIEW_ONLY",
+  "forbidden_inferences": [
+    "DESIGN_GO_IS_NOT_DEPLOYMENT_BINDING",
+    "DESIGN_GO_IS_NOT_IMPLEMENTATION_AUTHORIZATION",
+    "DESIGN_GO_IS_NOT_FIXTURE_EXECUTION_OR_P1A_AUTHORIZATION",
+    "DESIGN_GO_IS_NOT_RAG_SHADOW_OR_RUNTIME_AUTHORIZATION",
+    "DESIGN_GO_IS_NOT_SKILL_OR_STEP1_TO_STEP6_CHANGE",
+    "DESIGN_GO_IS_NOT_CANONICAL_MEMORY_WRITE",
+    "DESIGN_GO_IS_NOT_OOS_ACCESS",
+    "STATIC_COUNTS_MANIFESTS_OR_PUBLIC_REFS_ARE_NOT_RUNTIME_PASS_EVIDENCE"
+  ]
+}

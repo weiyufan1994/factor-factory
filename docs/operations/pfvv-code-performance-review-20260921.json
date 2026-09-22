@@ -1,0 +1,354 @@
+{
+  "review_date": "2026-09-21",
+  "scope": "local_existing_code_review_and_bounded_synthetic_profiling",
+  "research_code_changed": false,
+  "new_market_execution": false,
+  "oos_accessed": false,
+  "project": "PF/VV source baseline; excludes EVENT_U, Signed-A and IPPS/IPSI",
+  "local_environment": {
+    "python": "3.14.3",
+    "machine": "arm64"
+  },
+  "research_status": {
+    "record_finished_at_utc": "2026-09-08T22:51:46.444023Z",
+    "wrapper_status": "PASS",
+    "scope": "local_is_only",
+    "decision": "iterate",
+    "formal_proof_eligible": false,
+    "oos_access_allowed": false,
+    "official_promotion_allowed": false,
+    "factor_rows": 9125946,
+    "factor_dates": 2313,
+    "factor_tickers_including_diagnostic_rows": 5140,
+    "ic": {
+      "pearson_ic_mean": 0.06671288521442073,
+      "rank_ic_mean": 0.10665542482918342,
+      "observation_count": 113,
+      "label_contract": "INDEPENDENT_20_TRADING_DAYS__NOT_MONTHLY_PORTFOLIO_NAV"
+    },
+    "long_side": {
+      "metric_period": "daily",
+      "annualization_factor": 252,
+      "long_side_annual_return": 0.044426409983478354,
+      "long_side_annual_volatility": 0.17476956333882723,
+      "long_side_sharpe": 0.3367801665394167,
+      "long_side_max_drawdown": -0.3406360640758265,
+      "long_side_recovery_days": 707.0,
+      "long_side_recovery_status": "RECOVERED",
+      "long_side_recovery_lower_bound_days": null,
+      "long_side_recovery_observation_end": "2025-07-11",
+      "long_side_turnover_mean_daily": 0.09234948000426671,
+      "trading_cogs_daily": 0.00027704844001280013,
+      "cost_adjusted_long_side_sharpe": 0.3367801665394167,
+      "gross_zero_cost_counterfactual_annual_return": 0.11188724409261241,
+      "gross_zero_cost_counterfactual_sharpe": 0.6929937783185053
+    }
+  },
+  "historical_preparation": {
+    "calendar_days": 2313,
+    "raw_rows": 2234784195,
+    "selected_daily_rows": 9109745,
+    "compressed_source_bytes": 31666386103,
+    "elapsed_seconds": 21091,
+    "user_cpu_seconds": 20454.34,
+    "system_cpu_seconds": 175.69,
+    "cpu_percent": 97,
+    "max_rss_kib": 2163704,
+    "swap_count": 0,
+    "exit_status": 0,
+    "source_identity_matches": {
+      "pfvv_source_baseline_v1.py": true,
+      "pfvv_source_baseline_dataframe_adapter_v1.py": true,
+      "pfvv_source_baseline_partitioned_v1.py": true,
+      "pfvv_daily_measurements_v1.py": true,
+      "pfvv_reconstruction.json": true
+    }
+  },
+  "historical_evaluation": {
+    "started_at_utc": "2026-09-08T21:13:05Z",
+    "finished_at_utc": "2026-09-08T21:56:10Z",
+    "backend_seconds": 2576.0809450838715,
+    "factor_source": "prior_step4_parquet",
+    "recomputed_factor": false,
+    "signal_sets": 3,
+    "portfolios_per_set": 11,
+    "cost_paths_per_portfolio": 2,
+    "simulations_derived_from_call_graph": 66,
+    "backend_peak_estimate_bytes": 1923358559,
+    "actual_backend_peak_rss": "not_recorded_in_reviewed_payload",
+    "phase_timings": "only_aggregate_backend_wall_seconds"
+  },
+  "tests": {
+    "selected_files": 12,
+    "passed_unique_tests": 110,
+    "remaining_skipped_tests": 0,
+    "initial_passed": 107,
+    "initial_skipped": 3,
+    "explicit_engine_followup_passed": 3,
+    "initial_seconds": 19.64,
+    "followup_seconds": 2.43
+  },
+  "synthetic_probe": {
+    "scope": "synthetic_only_no_market_execution",
+    "rows_per_minute_kernel": 480000,
+    "minute_kernel_repeats": 3,
+    "timings": {
+      "pf_daily": [
+        0.030672125052660704,
+        0.02589912503026426,
+        0.02645025006495416
+      ],
+      "vv_daily": [
+        0.2177538329269737,
+        0.2415982090169564,
+        0.2669609159929678
+      ],
+      "prepared_21_days_2000_stocks_seconds_instrumented": 0.7523420419311151
+    },
+    "lookup_probe": {
+      "stocks": 2,
+      "days": 8,
+      "accounts": 2,
+      "order_dates": [
+        "2016-01-05",
+        "2016-01-14"
+      ],
+      "sqlite_selects": {
+        "daily": 16,
+        "execution": 16,
+        "constraints": 16
+      },
+      "execution_selects_on_non_order_dates": 12,
+      "same_lookups_reused_across_two_accounts": true,
+      "cache_days": 4
+    },
+    "sources": {
+      "examples/mszq_intraday_momentum_pulse/pfvv_source_baseline_v1.py": "3eb3f1d1c202c35d6a20ced7281f76168571f693f1617a01f8f2bcfa28c92a7e",
+      "examples/mszq_intraday_momentum_pulse/pfvv_source_baseline_partitioned_v1.py": "d31dd0174023273af1babd32d40af7adc7380a1b8af1f957f2af78136f094ba6",
+      "examples/mszq_intraday_momentum_pulse/pfvv_daily_lookup_store_v1.py": "31d124396b6af556d224882d78de3f4501140a92d4472117d87df4ba6f122f27",
+      "examples/mszq_intraday_momentum_pulse/pfvv_monthly_step4_backend_v1.py": "09147f02152e35b72e5627239995ba13f958cc652cdefa5f36fc62a0ce6bbe44",
+      "examples/mszq_intraday_momentum_pulse/local_is_execution_engine/mszq_step4_portfolio_evaluator_candidate_v1.py": "43c03e0057dd3018f57c5f5a7a0496ad6cfc085159f2e59b6b5960d67510c901"
+    }
+  },
+  "synthetic_preparation_profile": {
+    "scope": "synthetic_one_day_no_read_decode_or_write",
+    "stocks": 2000,
+    "minutes": 240,
+    "rows": 480000,
+    "trade_time_dtype": "datetime64[ns]",
+    "profiled_seconds": 3.427100291941315,
+    "source_sha256": "a196b3e2a8bd8fccb6aa81113e23307bb746a2e30b1cd3d0c0cd1fe82712f901",
+    "functions": [
+      {
+        "file": "pfvv_daily_measurements_v1.py",
+        "line": 43,
+        "function": "compute_daily_measurements",
+        "calls": 1,
+        "self_seconds": 0.006222755000000001,
+        "cumulative_seconds": 2.206577584
+      },
+      {
+        "file": "accessor.py",
+        "line": 111,
+        "function": "f",
+        "calls": 10,
+        "self_seconds": 2.0457e-05,
+        "cumulative_seconds": 1.5817287070000001
+      },
+      {
+        "file": "accessors.py",
+        "line": 126,
+        "function": "_delegate_method",
+        "calls": 10,
+        "self_seconds": 0.001262,
+        "cumulative_seconds": 1.5817082500000001
+      },
+      {
+        "file": "datetimes.py",
+        "line": 276,
+        "function": "strftime",
+        "calls": 3,
+        "self_seconds": 1.4209e-05,
+        "cumulative_seconds": 1.5486389170000001
+      },
+      {
+        "file": "datetimelike.py",
+        "line": 1765,
+        "function": "strftime",
+        "calls": 3,
+        "self_seconds": 1.6666000000000003e-05,
+        "cumulative_seconds": 1.5484800840000001
+      },
+      {
+        "file": "datetimes.py",
+        "line": 746,
+        "function": "_format_native_types",
+        "calls": 3,
+        "self_seconds": 1.5484487500000002,
+        "cumulative_seconds": 1.5484576250000002
+      },
+      {
+        "file": "pfvv_daily_measurements_v1.py",
+        "line": 93,
+        "function": "execution_vwap",
+        "calls": 1,
+        "self_seconds": 0.0007644170000000001,
+        "cumulative_seconds": 1.215116708
+      },
+      {
+        "file": "accessor.py",
+        "line": 132,
+        "function": "wrapper",
+        "calls": 14,
+        "self_seconds": 1.5126e-05,
+        "cumulative_seconds": 1.1502643750000001
+      },
+      {
+        "file": "string_.py",
+        "line": 431,
+        "function": "_str_map",
+        "calls": 14,
+        "self_seconds": 0.15272379700000002,
+        "cumulative_seconds": 1.148505165
+      },
+      {
+        "file": "accessor.py",
+        "line": 1391,
+        "function": "fullmatch",
+        "calls": 8,
+        "self_seconds": 2.6538000000000002e-05,
+        "cumulative_seconds": 0.777221166
+      },
+      {
+        "file": "object_array.py",
+        "line": 261,
+        "function": "_str_fullmatch",
+        "calls": 8,
+        "self_seconds": 2.4917000000000002e-05,
+        "cumulative_seconds": 0.7764234590000001
+      },
+      {
+        "file": "pfvv_source_baseline_dataframe_adapter_v1.py",
+        "line": 77,
+        "function": "_as_date_series",
+        "calls": 5,
+        "self_seconds": 0.001332838,
+        "cumulative_seconds": 0.7327361240000001
+      },
+      {
+        "file": "object_array.py",
+        "line": 273,
+        "function": "<lambda>",
+        "calls": 2880002,
+        "self_seconds": 0.268232227,
+        "cumulative_seconds": 0.590028444
+      },
+      {
+        "file": "pfvv_source_baseline_dataframe_adapter_v1.py",
+        "line": 163,
+        "function": "_validate_minute_rows",
+        "calls": 1,
+        "self_seconds": 0.001278828,
+        "cumulative_seconds": 0.5521845000000001
+      },
+      {
+        "file": "pfvv_daily_measurements_v1.py",
+        "line": 32,
+        "function": "_source_timestamps",
+        "calls": 2,
+        "self_seconds": 4.1835e-05,
+        "cumulative_seconds": 0.502878334
+      },
+      {
+        "file": "accessor.py",
+        "line": 2141,
+        "function": "strip",
+        "calls": 6,
+        "self_seconds": 2.3791000000000003e-05,
+        "cumulative_seconds": 0.373028083
+      },
+      {
+        "file": "object_array.py",
+        "line": 487,
+        "function": "_str_strip",
+        "calls": 6,
+        "self_seconds": 1.5627e-05,
+        "cumulative_seconds": 0.372475084
+      },
+      {
+        "file": "pfvv_source_baseline_v1.py",
+        "line": 225,
+        "function": "vv_daily",
+        "calls": 1,
+        "self_seconds": 0.065725807,
+        "cumulative_seconds": 0.36808795800000005
+      },
+      {
+        "file": "string_.py",
+        "line": 486,
+        "function": "_str_map_str_or_object",
+        "calls": 6,
+        "self_seconds": 0.104328948,
+        "cumulative_seconds": 0.35018079100000005
+      },
+      {
+        "file": "~",
+        "line": 0,
+        "function": "<method 'fullmatch' of 're.Pattern' objects>",
+        "calls": 2880002,
+        "self_seconds": 0.321796217,
+        "cumulative_seconds": 0.321796217
+      },
+      {
+        "file": "object_array.py",
+        "line": 488,
+        "function": "<lambda>",
+        "calls": 1920002,
+        "self_seconds": 0.15549105500000002,
+        "cumulative_seconds": 0.23717289000000003
+      },
+      {
+        "file": "pfvv_source_baseline_v1.py",
+        "line": 196,
+        "function": "vv_segments",
+        "calls": 2000,
+        "self_seconds": 0.072939179,
+        "cumulative_seconds": 0.16892416500000002
+      }
+    ],
+    "prepared_state": {
+      "days": 60,
+      "stocks": 2000,
+      "profiled_seconds": 3.6572227919241413
+    }
+  },
+  "code_sha256": {
+    "examples/mszq_intraday_momentum_pulse/pfvv_daily_measurements_v1.py": "a196b3e2a8bd8fccb6aa81113e23307bb746a2e30b1cd3d0c0cd1fe82712f901",
+    "examples/mszq_intraday_momentum_pulse/pfvv_monthly_step4_backend_v1.py": "09147f02152e35b72e5627239995ba13f958cc652cdefa5f36fc62a0ce6bbe44",
+    "examples/mszq_intraday_momentum_pulse/pfvv_market_inputs_v1.py": "d38ae00832fb871d8d03972e969c370d892bfaaa6a66fb117bd51dd946c967e3",
+    "examples/mszq_intraday_momentum_pulse/pfvv_monthly_evaluation_v1.py": "cab7405aa05158a58a37fa5d19a252ca8c7f0b9e7da356d78c6f175f20513dab",
+    "examples/mszq_intraday_momentum_pulse/pfvv_source_baseline_v1.py": "3eb3f1d1c202c35d6a20ced7281f76168571f693f1617a01f8f2bcfa28c92a7e",
+    "examples/mszq_intraday_momentum_pulse/pfvv_daily_lookup_store_v1.py": "31d124396b6af556d224882d78de3f4501140a92d4472117d87df4ba6f122f27",
+    "examples/mszq_intraday_momentum_pulse/pfvv_source_baseline_dataframe_adapter_v1.py": "fd63d74dee41ffb541eccad7b549e481c1898e93227cf5b43671b0c42fc79fc1",
+    "examples/mszq_intraday_momentum_pulse/pfvv_source_baseline_partitioned_v1.py": "d31dd0174023273af1babd32d40af7adc7380a1b8af1f957f2af78136f094ba6",
+    "examples/mszq_intraday_momentum_pulse/pfvv_prepared_inputs_v1.py": "83730f3998dd989b01b2e952f4535f065e8a67dacaebec40814f026b33cac38c",
+    "examples/mszq_intraday_momentum_pulse/local_is_execution_engine/mszq_step4_portfolio_evaluator_candidate_v1.py": "43c03e0057dd3018f57c5f5a7a0496ad6cfc085159f2e59b6b5960d67510c901",
+    "examples/mszq_intraday_momentum_pulse/local_is_execution_engine/mszq_evaluation_calendar_candidate_v1.py": "6ed49aae31336bd1ae326147e2410a73d5574ee550f2696adcddf820abb793c9",
+    "examples/mszq_intraday_momentum_pulse/local_is_execution_engine/mszq_v17_normalized_constraints_candidate_v1.py": "c79a4dd127edc7c043747c9e6126a33437557d5f09bc6295e61f5595c7618e23"
+  },
+  "evidence_sha256": {
+    "factor_research/mszq_pfvv_source_baseline/mszq_pfvv_source_first_is_20260908/objects/runtime_context/ultimate_run_report__RPT_pdf_11d72_pfvv_20250508_mszq.json": "0916321b0f4834a33e6c5f285a4c3885777652ec3a1fc955462a627b12050f93",
+    "factor_research/mszq_pfvv_source_baseline/mszq_pfvv_source_first_is_20260908/runs/RPT_pdf_11d72_pfvv_20250508_mszq/run_metadata__RPT_pdf_11d72_pfvv_20250508_mszq.json": "b0177809f97c9176b55f2f1504f96bfa7cb0f4cb61650b91abe784e61b7a184c",
+    "factor_research/mszq_pfvv_source_baseline/mszq_pfvv_source_first_is_20260908/evaluations/RPT_pdf_11d72_pfvv_20250508_mszq/pfvv_monthly_cash_v1/evaluation_payload.json": "de0da6f934165ff4acb72b0cb90961e5361ca77cef2adb4cdec05bb08cea8e12",
+    "factor_research/mszq_pfvv_source_baseline/mszq_pfvv_source_first_is_20260908/objects/research_iteration_master/research_iteration_master__RPT_pdf_11d72_pfvv_20250508_mszq.json": "7c25d0c6a28ea2fc757ceac8bb393e2e9ab6fc04448876caec46ee52ef9b3ae0",
+    "factor_research/mszq_pfvv_source_baseline/mszq_pfvv_source_first_is_20260908/prepared_worker_20260908T194224Z/run/daily_measurements/daily_measurements_manifest.json": "f6cb39bd772663019c7ba2a0e729d0ee087e143a365dbe8c9803bffa26a6e58a",
+    "factor_research/mszq_pfvv_source_baseline/mszq_pfvv_source_first_is_20260908/prepared_worker_20260908T194224Z/run/progress.log": "48082056c29f7e180fda40f08b35dfe944ef79cc6d3ec5ab6f811de6491babaf",
+    "factor_research/mszq_pfvv_source_baseline/mszq_pfvv_source_first_is_20260908/diagnostics/pfvv_source_daily_20260908T132509Z/run_location.json": "eb610b1193dee8fab8016604aaaff6c7284bb9fe178da0af765304fce2bc0a30"
+  },
+  "limitations": [
+    "Historical durations are for their recorded hosts and scope, not a new full-window benchmark.",
+    "Synthetic profiling excludes network, Parquet decode/write and cProfile overhead is included.",
+    "No full investment correctness audit or source PDF re-adjudication.",
+    "Whole-run optimization gains remain unmeasured."
+  ]
+}

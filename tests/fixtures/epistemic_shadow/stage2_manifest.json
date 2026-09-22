@@ -1,0 +1,105 @@
+{
+  "artifact_count": 7,
+  "artifact_manifest_commitment_sha256": "9aab04379afb9096de307724d51e22a3365e42af34a0f1849714760e916db2a0",
+  "authority_effect": "NONE",
+  "candidate_only": true,
+  "canonical_write_or_promotion_allowed": false,
+  "compiler_profile": {
+    "artifact_commitment_formula": "SHA256(UTF8(FF_PHASE_SAFE_OFFLINE_PACKET_ARTIFACT_MANIFEST_V1)||0x00||CONCAT(ordered_artifact_raw_sha256_bytes))",
+    "bytes": 78399,
+    "canonicalization": "RFC8785_INTEGER_ONLY_ACCEPTED_JSON_PROFILE",
+    "content_digest_formula": "SHA256(UTF8(domain)||0x00||RFC8785(payload_without_content_sha256))",
+    "module": "factor_factory/epistemic_phase_safe_retrieval_offline.py",
+    "sha256": "6d913fae11379530fd2484bd74d43573770a2e4be5a12ef7429f5e56ba4bb498"
+  },
+  "content_sha256": "a5249bd8b9a4d5b170dcb1c8a7832e81e4474f6ae87a6662bfc0329d84cd252d",
+  "direct_predecessor_manifest_raw_sha256": null,
+  "factor_forge_successor": false,
+  "host_or_canonical_memory_allowed": false,
+  "lineage_mode": "STANDALONE_OFFLINE_ALGORITHM_PROTOTYPE",
+  "manifest_status": "STANDALONE_OFFLINE_RETRIEVAL_PROTOTYPE_COMPLETE__ALL_FACTOR_FORGE_AND_OPERATING_AUTHORITY_UNBOUND_BLOCKING",
+  "may_satisfy_any_factor_forge_gate": false,
+  "network_or_ambient_index_discovery_allowed": false,
+  "normative_dependency_count": 0,
+  "offline_transform_allowed": true,
+  "oos_allowed": false,
+  "opaque_handle_or_signed_zero_hit_mint_allowed": false,
+  "ordered_artifacts": [
+    {
+      "bytes": 1598,
+      "ordinal": 0,
+      "path": "00_stage1_input_binding.json",
+      "role": "DETACHED_STAGE1_INPUT_BINDING",
+      "sha256": "9906f219de126dff7594afc24c3e0ebb200ea69b6de7059c1d299989a1e4078d"
+    },
+    {
+      "bytes": 26507,
+      "ordinal": 1,
+      "path": "01_closed_corpus_bundle.json",
+      "role": "CLOSED_SYNTHETIC_QUARANTINED_CORPUS",
+      "sha256": "b6a667f8b5524dccbe506ebf5e0447e14b4f52cc461a4894db3e101df4d4fcdc"
+    },
+    {
+      "bytes": 17170,
+      "ordinal": 2,
+      "path": "02_retrieval_program.json",
+      "role": "PHASE_SAFE_RETRIEVAL_PROGRAM",
+      "sha256": "7006535f0cedec3bee802ca4ffaf713ad0cc65209e54875a54ebf7254a83e0d4"
+    },
+    {
+      "bytes": 5073,
+      "ordinal": 3,
+      "path": "03_scored_candidate_ledger.json",
+      "role": "SCORED_CANDIDATE_LEDGER",
+      "sha256": "2154f0bc489769c4bf81d49b904e44089661a4a96097de1e0fc838de6b18b6c8"
+    },
+    {
+      "bytes": 24422,
+      "ordinal": 4,
+      "path": "04_selection_ledger.json",
+      "role": "SELECTION_LEDGER",
+      "sha256": "f35afcd8c725be55b312cff9d877e197cd3468450f3edb99d7f7b541b1827b3d"
+    },
+    {
+      "bytes": 3341,
+      "ordinal": 5,
+      "path": "05_rejection_and_zero_hit_ledger.json",
+      "role": "REJECTION_ZERO_HIT_LEDGER",
+      "sha256": "9a92641abe7576e49a4970f00d735384e832897211323f66580fcf870ac15d53"
+    },
+    {
+      "bytes": 3706,
+      "ordinal": 6,
+      "path": "06_local_replay_report.json",
+      "role": "LOCAL_REPLAY_REPORT",
+      "sha256": "7a76c2bb662ad04d965d676f04069df1766999effba79332ead60ba5537db845"
+    }
+  ],
+  "packet_id": "FF_PHASE_SAFE_RETRIEVAL_STANDALONE_OFFLINE_PROTOTYPE_20260829_R3",
+  "permissions_opened_count": 0,
+  "phase_projection_content_sha256": "999b0e35514f2460d336b7244c7a17328a4ad3ff6c615902a26d5b6a5367eb85",
+  "private_full_world_sidecar": {
+    "corpus_content_sha256": "59a66debd036dd66bc4ec192b5f85a851e3106dae263c31e9e229f1bf8a47987",
+    "corpus_manifest_commitment_sha256": "ca9a7700d1512c6b9ea8a40988b4a9beb715b0d4688bed06ed2b3971371051ba",
+    "phase_response_like_artifact_dependency_allowed": false
+  },
+  "prototype_input_dependencies": [
+    {
+      "authority_effect": "NONE",
+      "ordinal": 0,
+      "role": "DETACHED_STAGE1_PROTOTYPE_INPUT__NOT_PREDECESSOR",
+      "stage1_binding_content_sha256": "a1c140740fa74cc14c13bd94f45453bf7c2374c961622539ff5a4cbbcb2a0793",
+      "stage1_manifest_content_sha256": "0a2244e352a5c01af068f42ee44055cc56639b589066cd8275acba01bdcb05e1",
+      "stage1_manifest_raw_sha256": "7d44b0df4b6fc78f72180c7cd8aa6a72534ed0384784df31fc6b6d9ebc2d5b67",
+      "stage1_packet_id": "FF_SOURCE_FIRST_BLIND_HANDOFF_STANDALONE_OFFLINE_PROTOTYPE_20260829_R1"
+    }
+  ],
+  "prototype_input_dependency_count": 1,
+  "retrieval_runtime_allowed": false,
+  "runtime_or_deployment_allowed": false,
+  "schema_id": "factorforge_phase_safe_offline_candidate_packet_v1",
+  "schema_version": "1.0.0",
+  "signed": false,
+  "skill_or_rag_runtime_allowed": false,
+  "steward_or_host_authority_present": false
+}

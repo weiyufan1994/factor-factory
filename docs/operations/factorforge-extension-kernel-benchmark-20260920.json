@@ -1,0 +1,61 @@
+{
+  "version": "factorforge_synthetic_extension_benchmark_v1",
+  "scope": "synthetic_time_series_kernel_only",
+  "formal_research_evidence": false,
+  "includes_io_sorting_or_backtest": false,
+  "description": "Minute-shaped row volume (200 securities x 5 sessions x 240 rows by default); finite synthetic values, already grouped and ordered. Does not validate minute calendars or execution.",
+  "rows": 240000,
+  "symbols": 200,
+  "rows_per_symbol": 1200,
+  "window": 60,
+  "repeats": 3,
+  "seed": 20260920,
+  "environment": {
+    "python": "3.14.3",
+    "machine": "arm64",
+    "numpy": "2.4.4",
+    "pandas": "2.3.3"
+  },
+  "sources": {
+    "scripts/benchmark_factorforge_extension_operators.py": "898ed3e6aa0f542ac65c104b11e9452a3b7b5d4017d0188c53fb409f8305653a",
+    "factor_factory/formula/extension_operators.py": "4c472cfdb4c6c2f3fabb6625d3d574df1a45cd842aacebf6ccdfcc782168daea"
+  },
+  "results": [
+    {
+      "operator": "ts_decay_linear",
+      "reference": "pandas_grouped_rolling_apply",
+      "implementation": "numpy_batched_per_security",
+      "reference_seconds": [
+        0.16996645799372345,
+        0.16958829201757908,
+        0.16960862500127405
+      ],
+      "implementation_seconds": [
+        0.007465750095434487,
+        0.007250958005897701,
+        0.007264791987836361
+      ],
+      "median_speedup": 23.34665951692139,
+      "max_absolute_difference": 0.0,
+      "nan_mask_equal": true
+    },
+    {
+      "operator": "ts_product",
+      "reference": "pandas_grouped_rolling_apply",
+      "implementation": "numpy_batched_per_security",
+      "reference_seconds": [
+        0.19914329203311354,
+        0.1981401250232011,
+        0.1989006670191884
+      ],
+      "implementation_seconds": [
+        0.008848208002746105,
+        0.008604292059317231,
+        0.008724624989554286
+      ],
+      "median_speedup": 22.797617921380667,
+      "max_absolute_difference": 0.0,
+      "nan_mask_equal": true
+    }
+  ]
+}

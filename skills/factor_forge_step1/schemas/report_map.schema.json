@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "report_map",
+  "type": "object",
+  "required": ["paper_id", "title", "section_map", "variables", "key_visual_elements"],
+  "properties": {
+    "paper_id": {"type": "string"},
+    "title": {"type": "string"},
+    "builder_role": {"type": "string"},
+    "prompt_name": {"type": "string"},
+    "section_map": {"type": "array"},
+    "variables": {"type": "array"},
+    "key_visual_elements": {"type": "array"},
+    "notes": {"type": "array"},
+    "evidence_refs": {"type": "array"},
+    "metadata": {"type": "object"}
+  }
+}

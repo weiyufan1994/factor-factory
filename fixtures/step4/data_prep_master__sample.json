@@ -1,0 +1,37 @@
+{
+  "report_id": "STEP4_SAMPLE_CPV",
+  "factor_id": "CPV",
+  "feasibility": "proxy_ready",
+  "sample_window": {
+    "start": "20160104",
+    "end": "20160329",
+    "calendar": "A-share trading days"
+  },
+  "data_sources": [
+    {"name": "tiny_minute_csv", "kind": "fixture", "normalized_dataset": "minute_bar"},
+    {"name": "tiny_daily_csv", "kind": "fixture", "normalized_dataset": "daily_bar"}
+  ],
+  "field_mapping": {
+    "instrument": "ts_code",
+    "date": "trade_date",
+    "timestamp": "trade_time",
+    "minute_close": "close",
+    "minute_volume": "vol",
+    "minute_amount": "amount",
+    "daily_return": "pct_chg"
+  },
+  "proxy_rules": [
+    {"missing_field": "market_cap", "proxy_field": "amount", "reason": "tiny fixture uses amount as scale proxy", "risk": "medium"}
+  ],
+  "coverage_checks": [
+    {"name": "tiny_sample_window", "status": "pass", "detail": "20160104-20160329 target, tiny actual window fixture"}
+  ],
+  "implementation_notes": ["Tiny Step 4 sample fixture."],
+  "blocked_items": [],
+  "local_input_paths": {
+    "minute_df_csv": "factorforge/runs/STEP4_SAMPLE_CPV/step3a_local_inputs/minute_input__STEP4_SAMPLE_CPV.csv",
+    "daily_df_csv": "factorforge/runs/STEP4_SAMPLE_CPV/step3a_local_inputs/daily_input__STEP4_SAMPLE_CPV.csv",
+    "sample_window_actual": {"start": "20160104", "end": "20160105"},
+    "snapshot_note": "Tiny committed Step 4 fixture."
+  }
+}

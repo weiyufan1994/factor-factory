@@ -1,0 +1,23 @@
+{
+  "report_id": "STEP2_SAMPLE_CPV",
+  "title": "Step 2 Sample CPV Challenger Thesis",
+  "thesis_name": "CPV",
+  "economic_logic": "挑战视角下，趋势项与控制变量剥离是关键。",
+  "behavioral_logic": "挑战视角强调趋势项和控制变量可能被主路径弱化。",
+  "causal_chain": "独立重建价量相关性均值/波动/趋势 -> 检查趋势与反转剥离 -> 合成为CPV。",
+  "direction": "Negative",
+  "key_variables": [
+    "分钟收盘价",
+    "分钟成交量",
+    "20日收益率（Ret20）",
+    "20日换手率（Turn20）",
+    "20日波动率（Vol20）",
+    "市值"
+  ],
+  "signals": [
+    "PV_corr_avg",
+    "PV_corr_std",
+    "PV_corr_trend",
+    "CPV"
+  ]
+}

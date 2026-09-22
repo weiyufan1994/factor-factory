@@ -1,0 +1,657 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import os
+import re
+from copy import deepcopy
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Dict, List
+
+from factor_factory.runtime_context import resolve_factorforge_context
+from factor_factory.mechanism_math.formula_specific import (
+    build_formula_specific_headline,
+    build_formula_understanding,
+    select_math_model_from_economic_hypothesis,
+)
+from factor_factory.measurement_program import (
+    BLOCK_MEASUREMENT_PROGRAM_INVALID,
+    validate_measurement_program,
+)
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+FACTORFORGE = resolve_factorforge_context(os.getenv('FACTORFORGE_ROOT')).factorforge_root
+OBJECTS = FACTORFORGE / 'objects'
+VALIDATION = OBJECTS / 'validation'
+REPORT_MAPS = OBJECTS / 'report_maps'
+ALPHA_IDEA_MASTER = OBJECTS / 'alpha_idea_master'
+BLOCK_ROOT = 'BLOCK_STEP12_ROOT_UNSPECIFIED'
+
+
+def write_json(path: Path, data: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    print(f'[WRITE] {path}')
+
+
+def ensure_non_repo_factorforge_root() -> None:
+    if FACTORFORGE.resolve() == REPO_ROOT.resolve():
+        raise SystemExit(f'{BLOCK_ROOT}: set FACTORFORGE_ROOT outside the repo worktree before writing Step12 intake artifacts')
+
+
+def dedupe(items: List[Any]) -> List[Any]:
+    out: List[Any] = []
+    seen = set()
+    for item in items:
+        key = json.dumps(item, ensure_ascii=False, sort_keys=True) if isinstance(item, (dict, list)) else str(item)
+        if key not in seen:
+            out.append(item)
+            seen.add(key)
+    return out
+
+
+def infer_formula_inputs(formula: str) -> List[str]:
+    aliases = {
+        'vol': 'volume',
+        'returns': 'return',
+        'ret': 'return',
+        'adv': 'volume',
+    }
+    tokens = re.findall(r'\b(?:open|high|low|close|vwap|volume|vol|amount|turnover|returns?|ret|adv\d*)\b', formula.lower())
+    normalized = []
+    for token in tokens:
+        if token.startswith('adv'):
+            normalized.append('volume')
+        else:
+            normalized.append(aliases.get(token, token))
+    return dedupe(normalized) or ['close', 'volume']
+
+
+def infer_formula_operators(formula: str) -> List[str]:
+    known = [
+        'rank', 'correlation', 'corr', 'sum', 'mean', 'std', 'delta', 'delay',
+        'ts_rank', 'argmax', 'argmin', 'decay_linear', 'signedpower', 'scale',
+        'indneutralize', 'regression', 'zscore',
+    ]
+    text = formula.lower()
+    operators = []
+    for name in known:
+        if name in text:
+            operators.append(f'{name}()')
+    return dedupe(operators) or ['formula_expression()']
+
+
+def infer_hypothesis_variables(hypothesis: str) -> List[str]:
+    text = hypothesis.lower()
+    mapping = [
+        (['合同负债', 'contract liability', 'deferred revenue'], 'contract_liabilities'),
+        (['经营现金流', 'operating cash flow', 'cfo'], 'operating_cash_flow'),
+        (['收入', '营收', 'revenue'], 'revenue'),
+        (['订单', 'backlog'], 'orders_or_backlog'),
+        (['利润', 'profit', 'earnings'], 'earnings'),
+        (['毛利', 'gross margin'], 'gross_margin'),
+        (['成交量', 'volume'], 'volume'),
+        (['换手', 'turnover'], 'turnover'),
+        (['价格', 'price', 'close'], 'close'),
+    ]
+    variables = []
+    for needles, variable in mapping:
+        if any(needle in text for needle in needles):
+            variables.append(variable)
+    return dedupe(variables) or ['close', 'return']
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def common_research_discipline(
+    source_type: str,
+    mathematical_object: str,
+    target_statistic: str,
+    return_source: str,
+    information_set: str,
+    what_must_be_true: List[str],
+    what_would_break_it: List[str],
+) -> Dict[str, Any]:
+    return {
+        'step1_mathematical_object': mathematical_object,
+        'target_statistic_hint': target_statistic,
+        'information_set_hint': information_set,
+        'initial_return_source_hypothesis': return_source,
+        'similar_case_lessons_imported': [
+            'Canonical intake preserves the source thesis before implementation optimization.',
+            'Step4/5 must test long-only risk-adjusted evidence before Step6 promotion.',
+        ],
+        'what_must_be_true': what_must_be_true,
+        'what_would_break_it': what_would_break_it,
+        'source_type': source_type,
+    }
+
+
+def build_market_process_thesis_from_hypotheses(
+    economic_hypothesis: Dict[str, Any],
+    what_must_be_true: List[str],
+    what_would_break_it: List[str],
+) -> Dict[str, Any]:
+    second = economic_hypothesis.get('second_layer') if isinstance(economic_hypothesis.get('second_layer'), dict) else {}
+    payer = second.get('expected_counterparty_or_payer') or economic_hypothesis.get('counterparty_loss_hypothesis')
+    why_pay = second.get('why_they_may_pay') or economic_hypothesis.get('risk_or_behavioral_compensation')
+    phenomenon = second.get('subtype') or economic_hypothesis.get('macro_return_source') or 'canonical_formula_conditional_return_state'
+    return {
+        'market_phenomenon': str(phenomenon),
+        'economic_hypothesis': str(why_pay or 'canonical formula state changes the conditional return distribution through its declared market state'),
+        'return_source_family': economic_hypothesis.get('macro_return_source') or 'mixed',
+        'payer_or_counterparty': str(payer or 'counterparties exposed to the formula-defined conditional market state'),
+        'why_they_pay': str(why_pay or 'their observable behavior or constraint creates a conditional payoff for the formula-defined state'),
+        'what_must_be_true': [str(x) for x in what_must_be_true if str(x).strip()],
+        'what_would_break_it': [str(x) for x in what_would_break_it if str(x).strip()],
+        'alternative_return_source_tests': [
+            {
+                'alternative_source': 'risk_premium',
+                'why_not_primary': 'canonical formula intake does not assume systematic risk compensation unless Step4/Step6 links the payoff to a risk bearer',
+                'discriminating_test': 'control for beta, volatility, size, and liquidity style exposures and verify the mechanism-state metric remains supported',
+                'expected_signature_if_alternative_true': 'payoff should be explained by broad risk/style exposure rather than formula-state ablation',
+            },
+            {
+                'alternative_source': 'information_advantage',
+                'why_not_primary': 'canonical formula observables alone do not prove private information before metric attribution',
+                'discriminating_test': 'test whether return signature survives after removing price/volume state effects and event-timing proxies',
+                'expected_signature_if_alternative_true': 'payoff should concentrate around information events rather than the formula state',
+            },
+        ],
+    }
+
+
+def build_primary_mechanism_model_candidates_from_hypotheses(math_hypotheses: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    candidates: List[Dict[str, Any]] = []
+    for idx, item in enumerate(math_hypotheses):
+        if not isinstance(item, dict):
+            continue
+        model_family = item.get('model_family') or 'canonical_formula_state_process'
+        candidates.append({
+            'candidate_id': item.get('hypothesis_id') or f'canonical_formula_model_{idx + 1}',
+            'rank': idx + 1,
+            'selected_model_family': model_family,
+            'why_this_model_fits': item.get('why_suitable') or (
+                'the canonical formula is an observable estimator of a conditional market state, so the primary model must explain the state before the formula'
+            ),
+            'why_alternatives_are_less_suitable': [
+                'Pure formula-expression explanations do not identify payer, state variables, or conditional return distribution changes.',
+                'Generic risk-premium framing is secondary unless Step4/Step6 evidence links metrics to a systematic risk bearer.',
+            ],
+            'mathematical_objects': [
+                item.get('mathematical_object')
+                or item.get('state_or_object')
+                or 'formula-defined mathematical object'
+            ],
+            'observable_proxies': [item.get('observable_estimator') or 'canonical formula observable estimator'],
+            'target_functional': item.get('target_functional') or 'E[r_i,t+1 | formula_state_i,t]',
+            'preferred': idx == 0,
+        })
+    return candidates
+
+
+def attach_agent_authored_measurement_program(
+    bundle: Dict[str, Dict[str, Any]],
+    *,
+    measurement_program: Dict[str, Any],
+    knowledge_reference_contract: Dict[str, Any],
+) -> Dict[str, Dict[str, Any]]:
+    """Bind an agent-authored program without letting intake invent research."""
+    enriched = deepcopy(bundle)
+    cited_node_ids = {
+        str(item)
+        for item in knowledge_reference_contract.get('cited_node_ids') or []
+        if str(item).strip()
+    }
+    reasons = validate_measurement_program(
+        measurement_program,
+        available_knowledge_node_ids=cited_node_ids,
+        require_web_executable=False,
+    )
+    implementation = measurement_program.get('implementation')
+    route = implementation.get('route') if isinstance(implementation, dict) else None
+    if route != 'operator':
+        reasons.append('measurement_program.implementation.route_canonical_formula_requires_operator')
+    if reasons:
+        raise ValueError(
+            f"{BLOCK_MEASUREMENT_PROGRAM_INVALID}: " + ';'.join(reasons)
+        )
+
+    aim = enriched['aim']
+    discipline = aim.get('research_discipline')
+    if not isinstance(discipline, dict):
+        discipline = {}
+    program = deepcopy(measurement_program)
+    knowledge = deepcopy(knowledge_reference_contract)
+    discipline['market_outcome_projection'] = deepcopy(
+        program['market_outcome_projection']
+    )
+    discipline['mechanism_conditioned_measurement_program'] = deepcopy(program)
+    discipline['knowledge_reference_contract'] = deepcopy(knowledge)
+    discipline['similar_case_lessons_imported'] = list(
+        knowledge.get('similar_case_lessons_imported') or []
+    )
+    aim['implementation_mode'] = 'operator'
+    aim['research_discipline'] = discipline
+    aim['mechanism_conditioned_measurement_program'] = deepcopy(program)
+    aim['knowledge_reference_contract'] = deepcopy(knowledge)
+    enriched['aim'] = aim
+    return enriched
+
+
+def canonical_formula_hypotheses(formula: str, inputs: List[str], operators: List[str]) -> Dict[str, Any]:
+    formula_spec = {
+        "canonical_spec": {
+            "formula_text": formula,
+            "required_inputs": inputs,
+            "operators": operators,
+        }
+    }
+    formula_understanding = build_formula_understanding(formula_spec)
+    interaction = formula_understanding.get("interaction_structure")
+    text = formula.lower()
+    op_text = ' '.join(operators).lower()
+    uses_price = any(item in inputs for item in ['open', 'high', 'low', 'close', 'vwap', 'return'])
+    uses_liquidity = any(item in inputs for item in ['volume', 'amount', 'turnover'])
+    uses_rank = 'rank' in op_text
+    uses_delta = 'delta' in op_text
+    uses_ts_rank = 'ts_rank' in op_text
+    uses_volume_ratio = uses_liquidity and any(tok in text for tok in ['mean(volume', 'adv', 'divide(volume'])
+
+    if interaction == "slow_state_x_short_horizon_threshold":
+        second_layer = {
+            'subtype': 'slow_winner_state_short_horizon_reversal_or_threshold_migration',
+            'expected_counterparty_or_payer': (
+                'trend extrapolators, delayed updaters, or short-horizon liquidity/dislocation traders '
+                'around winner-state pullbacks'
+            ),
+            'why_they_may_pay': (
+                'they extrapolate the slow winner state or react late to threshold crossings, creating '
+                'conditional next-period payoff when the short-horizon state reverses or migrates'
+            ),
+        }
+        economic = {
+            'macro_return_source': 'mixed',
+            'second_layer': second_layer,
+            'counterparty_loss_hypothesis': second_layer['expected_counterparty_or_payer'],
+            'risk_or_behavioral_compensation': (
+                'payoff may come from slow trend state interacting with short-horizon pullback, temporary '
+                'dislocation, and threshold migration rather than a generic formula template'
+            ),
+        }
+        model_family = 'stochastic_process'
+        state = 'slow winner state interacting with short-horizon reversal/dislocation threshold state'
+        process = (
+            'P_i,t = F_i,t + M_i,t + I_i,t + epsilon_i,t, where M_i,t is a slow trend/winner state and '
+            'I_i,t is a short-horizon temporary dislocation or pullback state; the sign transform creates '
+            'a threshold boundary for state migration.'
+        )
+        observable = 'sum(returns,250), close-delay(close,7), delta(close,7), sign threshold, and cross-sectional rank state'
+        falsification = [
+            'long-side payoff must align with the slow-state x short-state conditional sign after costs',
+            'rank IC and group ordering must not be explained by short-side losses alone',
+            'state interaction should fail if either long-window trend state or short-horizon threshold state is ablated',
+            'turnover around sign-threshold migration must not consume the expected payoff',
+        ]
+    elif uses_price and uses_liquidity:
+        second_layer = {
+            'subtype': 'price_volume_crowding_and_short_horizon_reversal',
+            'expected_counterparty_or_payer': (
+                'late trend followers, attention-driven retail flow, and mandate-constrained liquidity demand '
+                'that chase visible price and volume states'
+            ),
+            'why_they_may_pay': (
+                'their demand is triggered by observable recent price/volume strength rather than stable '
+                'fundamental information, so temporary impact can decay over the next return window'
+            ),
+        }
+        economic = {
+            'macro_return_source': 'mixed',
+            'second_layer': second_layer,
+            'counterparty_loss_hypothesis': (
+                'the payer is the marginal investor who buys crowded recent strength or supplies liquidity '
+                'at the wrong time when short-horizon impact reverts'
+            ),
+            'risk_or_behavioral_compensation': (
+                'compensation may combine transient liquidity risk, behavioral overreaction, and market-structure '
+                'harvesting of delayed or constrained flow'
+            ),
+        }
+        model_family = 'ranked_price_volume_state_process'
+        state = 'cross-sectional security-day state built from price location, price acceleration, and relative volume intensity'
+        process = (
+            'observed price follows P_i,t = F_i,t + I_i,t + epsilon_i,t, where I_i,t is a transient impact state '
+            'driven by recent price motion and abnormal volume; the hypothesis requires partial mean reversion '
+            'E[I_i,t+1 - I_i,t | formula state] < 0 for crowded states'
+        )
+        estimator_parts = []
+        if uses_ts_rank:
+            estimator_parts.append('time-series rank of recent price level')
+        if uses_delta:
+            estimator_parts.append('second-order price difference / acceleration')
+        if uses_volume_ratio:
+            estimator_parts.append('time-series rank of volume relative to rolling average volume')
+        observable = '; '.join(estimator_parts) or 'canonical ranked formula score'
+        falsification = [
+            'long-side high-score decile fails to earn positive risk-adjusted return after costs',
+            'rank IC sign is unstable across 2016-2019, 2020-2024-09-23, and post-2024-09-24 regimes',
+            'decile ordering is driven only by catastrophic short-leg losses rather than a usable high-score long side',
+            'turnover costs consume the expected one-day transient-impact payoff',
+        ]
+    elif uses_price:
+        economic = {
+            'macro_return_source': 'mixed',
+            'second_layer': {
+                'subtype': 'short_horizon_price_state_reversal_or_continuation',
+                'expected_counterparty_or_payer': 'investors extrapolating recent price states or providing liquidity under pressure',
+                'why_they_may_pay': 'recent price states may contain temporary impact, stale information adjustment, or behavioral extrapolation',
+            },
+            'counterparty_loss_hypothesis': 'the payer is the marginal trader whose recent price-impact demand mean reverts or is repriced',
+            'risk_or_behavioral_compensation': 'compensation may come from short-horizon reversal, momentum continuation, or liquidity provision risk',
+        }
+        model_family = 'ranked_price_state_process'
+        state = 'cross-sectional security-day price state'
+        process = (
+            'price contains a latent short-horizon state whose conditional drift depends on ranked recent price '
+            'movement and its time-series position'
+        )
+        observable = 'canonical ranked price-state formula score'
+        falsification = [
+            'long-side high-score decile lacks positive risk-adjusted return',
+            'rank IC sign is unstable out of sample',
+            'drawdown and recovery imply the state is regime-specific rather than persistent',
+        ]
+    else:
+        economic = {
+            'macro_return_source': 'mixed',
+            'second_layer': {
+                'subtype': 'canonical_formula_state_premium',
+                'expected_counterparty_or_payer': 'market participants exposed to the state described by the canonical formula',
+                'why_they_may_pay': 'the formula may isolate a priced state, information delay, or behavioral imbalance',
+            },
+            'counterparty_loss_hypothesis': 'the payer is the investor taking the other side of the formula-defined state',
+            'risk_or_behavioral_compensation': 'compensation source remains under-specified until Step4/Step6 evidence is reviewed',
+        }
+        model_family = 'canonical_formula_state_process'
+        state = 'formula-defined security-day state'
+        process = 'future returns have a conditional distribution that changes with the canonical formula state'
+        observable = 'canonical formula score'
+        falsification = [
+            'formula score has no stable rank IC',
+            'high-score long side fails after costs',
+            'metric signature cannot be linked to the stated economic mechanism',
+        ]
+
+    math = [
+        {
+            'hypothesis_id': 'H1_formula_state_conditional_return',
+            'linked_economic_hypothesis': economic['second_layer']['subtype'],
+            'model_family': model_family,
+            'math_tools': [
+                'cross-sectional rank transform',
+                'rolling time-series state estimator',
+                'conditional expectation of forward return',
+            ],
+            'mathematical_object': state,
+            'mechanism_equation_or_functional': process,
+            'observable_estimator': observable,
+            'target_functional': (
+                'E[r_i,t+1 | formula_state_i,t] and the monotone relation between formula_state_i,t '
+                'and next-period cross-sectional return rank'
+            ),
+            'why_suitable': (
+                'the canonical Alpha101 formula is an explicit low-lag transformation of observable market states; '
+                'ranking reduces scale dependence and makes the hypothesis a cross-sectional conditional-return test'
+            ),
+            'falsification_tests': falsification,
+        }
+    ]
+    if interaction == "slow_state_x_short_horizon_threshold":
+        math[0]['model_mutation'] = 'add threshold boundary induced by sign transform and interact slow winner state with short-horizon dislocation state'
+        math[0]['target_functional'] = 'E[r_i,t+1 | slow_state_i,t, short_state_i,t, threshold_i,t]'
+    if uses_rank:
+        math[0]['math_tools'].append('copula/rank-order robustness check')
+    if uses_delta:
+        math[0]['math_tools'].append('finite-difference acceleration estimator')
+    if uses_liquidity:
+        math[0]['math_tools'].append('relative liquidity intensity estimator')
+    return {
+        'formula_understanding': formula_understanding,
+        'economic_hypothesis': economic,
+        'math_hypothesis_candidates': math,
+        'economic_to_math_modelling': {
+            'economic_hypothesis': economic,
+            'selected_baseline_model': select_math_model_from_economic_hypothesis(economic, math, formula_understanding),
+            'model_mutations': [math[0].get('model_mutation')] if math[0].get('model_mutation') else [],
+            'expected_metric_signature': {
+                'rank_ic': 'positive after declared sign convention',
+                'long_side': 'positive if conditional state is monetizable',
+                'ablation': 'slow-state or short-state ablation should weaken the signal',
+            },
+            'metric_feedback_rules': [
+                'If metrics do not support the state interaction, mutate sign/horizon/state interaction or kill.',
+                'Do not repair via portfolio expression, short leg, or decile trading.',
+            ],
+        },
+    }
+
+
+def write_step1_artifacts(report_id: str, aim: Dict[str, Any], primary: Dict[str, Any], challenger: Dict[str, Any], report_map: Dict[str, Any]) -> None:
+    ensure_non_repo_factorforge_root()
+    write_json(ALPHA_IDEA_MASTER / f'alpha_idea_master__{report_id}.json', aim)
+    write_json(VALIDATION / f'report_map_validation__{report_id}__alpha_thesis.json', primary)
+    write_json(VALIDATION / f'report_map_validation__{report_id}__challenger_alpha_thesis.json', challenger)
+    write_json(REPORT_MAPS / f'report_map__{report_id}__primary.json', report_map)
+
+
+def build_canonical_formula_step1(
+    report_id: str,
+    factor_id: str,
+    source_name: str,
+    source_url: str,
+    formula: str,
+    window_start: str | None,
+    window_end: str | None,
+) -> Dict[str, Dict[str, Any]]:
+    inputs = infer_formula_inputs(formula)
+    operators = infer_formula_operators(formula)
+    research = common_research_discipline(
+        source_type='paper_canonical_formula',
+        mathematical_object='cross-sectional equity panel observed through price, volume, and other formula inputs',
+        target_statistic='canonical formula score used to rank future cross-sectional returns',
+        return_source='published formula may capture a formula-defined conditional return state that must be modelled from its own observable inputs',
+        information_set='uses only contemporaneous and lagged market fields required by the formula',
+        what_must_be_true=[
+            'The canonical expression is implemented with no future-looking window alignment.',
+            'The ranked formula score contains cross-sectional information after costs and risk controls.',
+        ],
+        what_would_break_it=[
+            'Operator semantics differ from the published Alpha101 convention.',
+            'Liquidity or turnover costs consume the long-only return source.',
+        ],
+    )
+    hypotheses = canonical_formula_hypotheses(formula, inputs, operators)
+    research.update(hypotheses)
+    research['market_process_thesis'] = build_market_process_thesis_from_hypotheses(
+        research.get('economic_hypothesis') or {},
+        research.get('what_must_be_true') or [],
+        research.get('what_would_break_it') or [],
+    )
+    research['primary_mechanism_model_candidates'] = build_primary_mechanism_model_candidates_from_hypotheses(
+        research.get('math_hypothesis_candidates') or []
+    )
+    formula_headline = build_formula_specific_headline(
+        research.get('economic_hypothesis') or {},
+        (research.get('economic_to_math_modelling') or {}).get('selected_baseline_model') or {},
+        research.get('formula_understanding') or {},
+    )
+    aim = {
+        'contract_version': 'factorforge.step1.alpha_idea_master.v2',
+        'producer': 'step12_canonical_formula_intake',
+        'source_type': 'paper_canonical_formula',
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'source_name': source_name,
+        'source_url': source_url,
+        'raw_formula': formula,
+        'window_start': window_start,
+        'window_end': window_end,
+        'created_at': now_iso(),
+        'factor_intuition': formula_headline,
+        'formula_understanding': research.get('formula_understanding'),
+        'economic_to_math_modelling': research.get('economic_to_math_modelling'),
+        'candidate_variables': inputs,
+        'expected_direction': 'formula_defined',
+        'return_source_hypothesis': formula_headline,
+        'economic_hypothesis': research['economic_hypothesis'],
+        'math_hypothesis_candidates': research['math_hypothesis_candidates'],
+        'information_set': research['information_set_hint'],
+        'what_must_be_true': research['what_must_be_true'],
+        'what_would_break_it': research['what_would_break_it'],
+        'ambiguities': ['Exact Alpha101 operator semantics and data-field conventions must be preserved by Step3B.'],
+        'human_review_required': False,
+        'research_discipline': research,
+        'final_factor': {
+            'name': factor_id,
+            'direction': 'formula_defined',
+            'assembly_steps': [formula],
+            'economic_logic': formula_headline,
+        },
+        'math_discipline_review': {
+            'mathematical_object': research['step1_mathematical_object'],
+            'target_statistic': research['target_statistic_hint'],
+            'information_set_legality': research['information_set_hint'],
+            'expected_failure_modes': research['what_would_break_it'],
+        },
+    }
+    primary = {
+        'contract_version': 'factorforge.step1.report_map_validation.v2',
+        'producer': 'step12_canonical_formula_intake',
+        'source_type': 'paper_canonical_formula',
+        'factor_id': factor_id,
+        'thesis_name': f'{factor_id} canonical formula thesis',
+        'key_variables': inputs,
+        'operators': operators,
+        'signals': [formula],
+        'raw_formula_text': formula,
+        'economic_logic': formula_headline,
+        'target_prediction': research['target_statistic_hint'],
+    }
+    challenger = {
+        **primary,
+        'producer': 'step12_canonical_formula_intake_challenger',
+        'thesis_name': f'{factor_id} challenger formula reconstruction',
+        'ambiguities': aim['ambiguities'],
+        'signals': [f'Challenger independently preserves formula: {formula}'],
+    }
+    report_map = {
+        'contract_version': 'factorforge.step1.report_map.v2',
+        'producer': 'step12_canonical_formula_intake',
+        'source_type': 'paper_canonical_formula',
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'source_name': source_name,
+        'source_url': source_url,
+        'variables': inputs,
+        'operators': operators,
+        'raw_formula': formula,
+    }
+    return {'aim': aim, 'primary': primary, 'challenger': challenger, 'report_map': report_map}
+
+
+def build_hypothesis_step1(
+    report_id: str,
+    title: str,
+    hypothesis: str,
+    window_start: str | None,
+    window_end: str | None,
+) -> Dict[str, Dict[str, Any]]:
+    variables = infer_hypothesis_variables(hypothesis)
+    vague = len(hypothesis.strip()) < 24 or variables == ['close', 'return']
+    return_source = 'user-proposed information signal may forecast future returns if its economic state change precedes market repricing'
+    research = common_research_discipline(
+        source_type='natural_language_hypothesis',
+        mathematical_object='security-level panel combining the named observable fields in the user hypothesis',
+        target_statistic='cross-sectional score derived from the stated hypothesis and tested against future returns',
+        return_source=return_source,
+        information_set='must be limited to data known at each rebalance date; disclosure lag must be enforced for fundamental fields',
+        what_must_be_true=[
+            'The named variables are observable before the target return window.',
+            'The hypothesized improvement or deterioration has incremental information after standard risk controls.',
+        ],
+        what_would_break_it=[
+            'Disclosure timing makes the feature unavailable at rebalance time.',
+            'The hypothesis proxies only broad style exposure rather than a distinct return source.',
+        ],
+    )
+    aim = {
+        'contract_version': 'factorforge.step1.alpha_idea_master.v2',
+        'producer': 'step12_hypothesis_intake',
+        'source_type': 'natural_language_hypothesis',
+        'report_id': report_id,
+        'title': title,
+        'raw_user_hypothesis': hypothesis,
+        'window_start': window_start,
+        'window_end': window_end,
+        'created_at': now_iso(),
+        'factor_intuition': hypothesis,
+        'candidate_variables': variables,
+        'expected_direction': 'positive_if_hypothesis_strengthens',
+        'return_source_hypothesis': return_source,
+        'information_set': research['information_set_hint'],
+        'what_must_be_true': research['what_must_be_true'],
+        'what_would_break_it': research['what_would_break_it'],
+        'ambiguities': [
+            'Exact formula, disclosure lag, and normalization choices require human confirmation.'
+        ] if vague else [
+            'Step2 must preserve uncertainty around exact formula and lag assumptions rather than inventing precision.'
+        ],
+        'human_review_required': True,
+        'research_discipline': research,
+        'final_factor': {
+            'name': title,
+            'direction': 'positive_if_hypothesis_strengthens',
+            'assembly_steps': [f'hypothesis_score({", ".join(variables)})'],
+            'economic_logic': hypothesis,
+        },
+        'math_discipline_review': {
+            'mathematical_object': research['step1_mathematical_object'],
+            'target_statistic': research['target_statistic_hint'],
+            'information_set_legality': research['information_set_hint'],
+            'expected_failure_modes': research['what_would_break_it'],
+        },
+    }
+    primary = {
+        'contract_version': 'factorforge.step1.report_map_validation.v2',
+        'producer': 'step12_hypothesis_intake',
+        'source_type': 'natural_language_hypothesis',
+        'factor_id': title,
+        'thesis_name': title,
+        'key_variables': variables,
+        'operators': ['change()', 'rank()', 'zscore()', 'lag_guard()'],
+        'signals': [hypothesis],
+        'raw_formula_text': f'hypothesis_score({", ".join(variables)})',
+        'economic_logic': hypothesis,
+        'target_prediction': research['target_statistic_hint'],
+    }
+    challenger = {
+        **primary,
+        'producer': 'step12_hypothesis_intake_challenger',
+        'thesis_name': f'{title} challenger uncertainty audit',
+        'signals': [f'Challenger tests whether the hypothesis is tradable without forward-looking data: {hypothesis}'],
+        'ambiguities': aim['ambiguities'],
+    }
+    report_map = {
+        'contract_version': 'factorforge.step1.report_map.v2',
+        'producer': 'step12_hypothesis_intake',
+        'source_type': 'natural_language_hypothesis',
+        'report_id': report_id,
+        'title': title,
+        'variables': variables,
+        'operators': primary['operators'],
+        'raw_user_hypothesis': hypothesis,
+    }
+    return {'aim': aim, 'primary': primary, 'challenger': challenger, 'report_map': report_map}

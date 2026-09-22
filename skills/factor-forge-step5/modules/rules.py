@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
+from factor_factory.primary_evaluator import primary_evaluator_plan, recovery_evidence_complete
+
 VALID_FINAL_STATUS = {"validated", "partial", "failed"}
 
 
@@ -109,9 +111,23 @@ def determine_final_status(bundle: Dict[str, Any], evaluation: Dict[str, Any]) -
 
     run_status = frm.get("run_status")
     backend_summary = evaluation.get("backend_summary") or []
+    try:
+        primary_plan = primary_evaluator_plan(frm.get("evaluation_plan"))
+    except ValueError:
+        # The quality gate records an invalid declared plan as a BLOCK.  Do not
+        # silently turn that malformed plan into legacy self-quant evidence.
+        primary_plan = None
+    primary_backend = primary_plan.get("backend") if primary_plan else None
+    primary_backends = [
+        item for item in backend_summary
+        if isinstance(item, dict) and item.get("backend") == primary_backend
+    ] if primary_backend else []
     successful_backend_count = sum(1 for item in backend_summary if item.get("status") == "success")
     metric_bundle: Dict[str, Any] = {}
-    for item in backend_summary:
+    # A declared custom primary is the only source that may satisfy its own
+    # evidence requirement.  Legacy plans retain the aggregate self-quant path.
+    metric_sources = primary_backends if primary_plan else backend_summary
+    for item in metric_sources:
         if isinstance(item.get("key_metrics"), dict):
             metric_bundle.update(item["key_metrics"])
     required_long_side = [
@@ -126,7 +142,14 @@ def determine_final_status(bundle: Dict[str, Any], evaluation: Dict[str, Any]) -
         "cost_adjusted_annual_return",
         "cost_adjusted_long_side_sharpe",
     ]
-    long_side_evidence_complete = all(metric_bundle.get(key) is not None for key in required_long_side)
+    long_side_evidence_complete = (
+        all(metric_bundle.get(key) is not None for key in required_long_side if key != "long_side_recovery_days")
+        and recovery_evidence_complete(metric_bundle)
+    )
+    primary_backend_complete = (
+        any(item.get("status") == "success" for item in primary_backends)
+        if primary_plan else True
+    )
     revenue = metric_bundle.get("long_side_annual_return")
     volatility = metric_bundle.get("long_side_annual_volatility")
     drawdown = metric_bundle.get("long_side_max_drawdown")
@@ -157,7 +180,7 @@ def determine_final_status(bundle: Dict[str, Any], evaluation: Dict[str, Any]) -
         return "partial"
 
     if run_status == "success":
-        if artifact_ready and existing_outputs and successful_backend_count >= 1 and long_side_evidence_complete and factor_business_quality_complete:
+        if artifact_ready and existing_outputs and successful_backend_count >= 1 and primary_backend_complete and long_side_evidence_complete and factor_business_quality_complete:
             return "validated"
         return "partial"
 

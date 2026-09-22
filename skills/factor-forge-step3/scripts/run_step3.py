@@ -18,7 +18,7 @@ import pandas as pd
 # - otherwise keep legacy EC2 compatibility
 # - fallback to current repository root for local runs
 # COMMENT_POLICY: runtime_path
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 LEGACY_REPO_ROOT = LEGACY_WORKSPACE / 'repos' / 'factor-factory'
 
 
@@ -56,6 +56,7 @@ from factor_factory.data_access import (
 )
 from factor_factory.data_api import default_catalog_path, fetch_data_api_dataset, resolve_data_api_dataset
 from factor_factory.formula.field_aliases import aliases_for
+from factor_factory.formula.extension_registry import EXTENSION_OPERATORS, extension_output_unit
 from factor_factory.formula.semantics import (
     max_formula_ir_lookback as shared_max_formula_ir_lookback,
     operator_lookback as shared_operator_lookback,
@@ -64,14 +65,26 @@ from factor_factory.formula.semantics import (
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 from factor_factory.measurement_program import (
     BLOCK_MEASUREMENT_PROGRAM_INVALID,
+    research_compatibility_profile_from_spec,
     validate_measurement_program,
+)
+from factor_factory.knowledge_reference import (
+    measurement_program_available_knowledge_node_ids_from_step2_summary,
 )
 from factor_factory.state_reuse import (
     build_state_dependency_contract_from_data_prep,
     resolve_state_dependencies,
     write_resolution_outputs,
 )
+from factor_factory.evo_data_boundary import (
+    build_closed_pre_release_data_resolution,
+    canonical_clean_daily_query_fields,
+    canonical_step3_sample_query,
+    project_pre_release_data_access,
+    resolve_evo_pre_release_research_windows,
+)
 from factor_factory.step3.template_runtime import maybe_reexec_from_template_copy
+from factor_factory.primary_evaluator import validate_primary_evaluator_plan
 
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (_legacy_runtime_root_if_accessible() or REPO_ROOT))
 WORKSPACE = FF.parent
@@ -138,31 +151,7 @@ def select_clean_daily_fields_for_formula(
     formula_ir: dict | None,
 ) -> list[str]:
     """Bind Step3/Step4 Data API queries to the validated Formula IR schema."""
-    fields = ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
-    resolved = (
-        formula_ir.get('resolved_fields')
-        if isinstance(formula_ir, dict) and isinstance(formula_ir.get('resolved_fields'), dict)
-        else {}
-    )
-    candidates = [
-        str(resolved.get(str(field)) or field).strip().lower()
-        for field in (required_fields or [])
-        if str(field).strip()
-    ]
-    derived = {'volume', 'returns', 'return', 'ret', 'vwap'}
-    daily_basic = set(DAILY_BASIC_DATASET_FIELDS)
-    for field in candidates:
-        if (
-            field in derived
-            or _adv_window(field) is not None
-            or field in daily_basic
-            or field in MONEYFLOW_SIGNAL_FIELDS
-            or field in {'ts_code', 'trade_date'}
-        ):
-            continue
-        if field not in fields:
-            fields.append(field)
-    return fields
+    return canonical_clean_daily_query_fields(required_fields, formula_ir)
 
 DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
     'source_code_preserved_from_formal_step2_raw_direct_code_contract',
@@ -560,6 +549,51 @@ def infer_sample_window(factor_id: str, required_text: str):
     return {'start': '20100104', 'end': 'current', 'calendar': 'A-share trading days'}
 
 
+PREPARED_DERIVED_STATE_INPUT_MODE = 'derived_state_with_daily'
+
+
+def validate_prepared_local_inputs(payload: dict) -> dict:
+    """Validate the narrow, local-only prepared-state declaration."""
+    if not isinstance(payload, dict) or payload.get('input_mode') != PREPARED_DERIVED_STATE_INPUT_MODE:
+        raise SystemExit('BLOCK_STEP3_PREPARED_LOCAL_INPUTS_INVALID: input_mode must be derived_state_with_daily')
+    for key in ('daily_df_parquet', 'derived_state_root', 'step3b_daily_df_parquet', 'step3b_derived_state_root'):
+        if not isinstance(payload.get(key), str) or not payload[key].strip():
+            raise SystemExit(f'BLOCK_STEP3_PREPARED_LOCAL_INPUTS_INVALID: missing {key}')
+    for key in ('sample_window_actual', 'step3b_sample_window'):
+        window = payload.get(key)
+        if not isinstance(window, dict) or not _normalize_window_date(window.get('start')) or not _normalize_window_date(window.get('end')):
+            raise SystemExit(f'BLOCK_STEP3_PREPARED_LOCAL_INPUTS_INVALID: missing {key}.start/end')
+    for prefix in ('', 'step3b_'):
+        calendar_key, config_key = f'{prefix}calendar_dates', f'{prefix}run_config_path'
+        calendar, config = payload.get(calendar_key), payload.get(config_key)
+        if (calendar is None) == (config is None):
+            raise SystemExit(f'BLOCK_STEP3_PREPARED_LOCAL_INPUTS_INVALID: exactly one of {calendar_key} or {config_key} is required')
+        if calendar is not None and (not isinstance(calendar, list) or not calendar or any(not _normalize_window_date(value) for value in calendar)):
+            raise SystemExit(f'BLOCK_STEP3_PREPARED_LOCAL_INPUTS_INVALID: {calendar_key} must be a non-empty YYYYMMDD list')
+        if config is not None and (not isinstance(config, str) or not config.strip()):
+            raise SystemExit(f'BLOCK_STEP3_PREPARED_LOCAL_INPUTS_INVALID: {config_key} must be a non-empty path string')
+    if payload.get('minute_df_parquet') or payload.get('minute_df_csv'):
+        raise SystemExit('BLOCK_STEP3_PREPARED_LOCAL_INPUTS_RAW_MINUTE_FORBIDDEN: prepared derived-state inputs must not declare a raw minute snapshot')
+    plan = payload.get('evaluation_plan')
+    if plan is not None:
+        if not isinstance(plan, dict):
+            raise SystemExit('BLOCK_STEP3_PREPARED_LOCAL_INPUTS_EVALUATION_PLAN_INVALID: expected object')
+        errors = validate_primary_evaluator_plan(plan)
+        if errors:
+            raise SystemExit('BLOCK_STEP3_PREPARED_LOCAL_INPUTS_EVALUATION_PLAN_INVALID: ' + '; '.join(errors))
+    return json.loads(json.dumps(payload))
+
+
+def load_prepared_local_inputs(path_value: str | None) -> dict | None:
+    if not path_value:
+        return None
+    try:
+        payload = json.loads(Path(path_value).expanduser().read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f'BLOCK_STEP3_PREPARED_LOCAL_INPUTS_UNREADABLE: {path_value}: {exc}') from exc
+    return validate_prepared_local_inputs(payload)
+
+
 def _normalize_window_date(value):
     if value is None:
         return None
@@ -820,25 +854,13 @@ def validated_measurement_program_for_step3(
     master_program = fsm.get('mechanism_conditioned_measurement_program')
     canonical_program = canonical.get('mechanism_conditioned_measurement_program')
     handoff_program = handoff.get('mechanism_conditioned_measurement_program') if isinstance(handoff, dict) else None
-    knowledge_node_ids = {
-        str(item)
-        for container in (
-            fsm.get('knowledge_reference_contract'),
-            (fsm.get('learning_and_innovation') or {}).get('knowledge_reference_contract')
-            if isinstance(fsm.get('learning_and_innovation'), dict)
-            else None,
-            (fsm.get('research_contract') or {}).get('knowledge_reference_contract')
-            if isinstance(fsm.get('research_contract'), dict)
-            else None,
-        )
-        if isinstance(container, dict)
-        for item in container.get('cited_node_ids') or []
-        if str(item).strip()
-    }
+    knowledge_node_ids = measurement_program_available_knowledge_node_ids_from_step2_summary(fsm)
     reasons = validate_measurement_program(
         master_program,
         available_knowledge_node_ids=knowledge_node_ids,
         require_web_executable=False,
+        compatibility_profile=research_compatibility_profile_from_spec(fsm),
+        scope='local_is_only' if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1' else 'hosted_formal',
     )
     if not isinstance(canonical_program, dict) or canonical_program != master_program:
         reasons.append('measurement_program.master_canonical_mismatch')
@@ -1045,6 +1067,43 @@ def data_api_query_payload(
     }
 
 
+def resolution_with_successful_sample_read(
+    resolution: dict | None,
+    result,
+) -> dict | None:
+    """Bind catalog resolution to the actual successful Data API sample read."""
+
+    if not isinstance(resolution, dict):
+        return resolution
+    projected = json.loads(json.dumps(resolution))
+    sample_read = result.to_metadata()
+    if not isinstance(sample_read, dict):
+        raise ValueError(
+            'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:sample_read_metadata'
+        )
+    projected['sample_read'] = sample_read
+    return projected
+
+
+def projected_data_contracts_for_qlib(
+    data_prep_master: dict,
+    *,
+    sample_window: dict,
+) -> dict:
+    """Bind Qlib to the canonical Step3 projection, not pre-projection locals."""
+
+    step4_contract = data_prep_master.get('step4_data_contract') or {}
+    return {
+        'data_api_resolution': data_prep_master.get('data_api_resolution') or {},
+        'step4_data_contract': step4_contract,
+        'research_window_contract': (
+            data_prep_master.get('research_window_contract')
+            or step4_contract.get('research_window_contract')
+            or research_window_contract(sample_window)
+        ),
+    }
+
+
 def build_step4_data_contract(
     *,
     sample_window: dict,
@@ -1108,6 +1167,12 @@ def build_step4_data_contract(
         'data_api_package': 'factorforge_data_api',
         'catalog_path': catalog_path,
         'full_queries': full_queries,
+        'catalog_bindings': {
+            key: resolution.get('catalog_binding', {})
+            for key, resolution in [('clean_daily_bar', daily_resolution), ('minute_bar', minute_resolution),
+                                    ('moneyflow', moneyflow_resolution), ('daily_basic', daily_basic_resolution)]
+            if isinstance(resolution, dict)
+        },
         'sample_queries': sample_queries,
         'minute_derived_state_requirements': minute_derived_state_requirements or [],
         'research_window_contract': research_window_contract(sample_window),
@@ -1295,6 +1360,8 @@ def _field_unit(field: str) -> str:
 
 def _operator_output_unit(operator: str, child_units: list[str]) -> str:
     operator = str(operator or '').lower()
+    if operator in EXTENSION_OPERATORS:
+        return extension_output_unit(operator, child_units)
     if operator in {'rank', 'ts_rank'}:
         return 'rank_score'
     if operator in {'correlation', 'corr'}:
@@ -1510,7 +1577,9 @@ def materialize_shared_daily_slice(
     local_dir.mkdir(parents=True, exist_ok=True)
     needs_cross_sectional_sample = requires_cross_sectional_sample(formula_ir)
     step3_sample_universe: str | list[str] = 'a_share_all' if needs_cross_sectional_sample else ['000001.SZ', '000002.SZ']
-    daily_fields = select_clean_daily_fields_for_formula(required_fields, formula_ir)
+    daily_fields = select_clean_daily_fields_for_formula(
+        [*(required_fields or []), *(proof_control_fields or [])], formula_ir
+    )
     daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(
         [*(required_fields or []), *(proof_control_fields or [])]
     )
@@ -1525,6 +1594,16 @@ def materialize_shared_daily_slice(
         fields=daily_fields,
         universe=step3_sample_universe,
     )
+    clean_columns = {
+        str(field)
+        for field in ((daily_resolution.get('schema') or {}).get('columns') or [])
+    }
+    daily_basic_fields = [
+        field
+        for field in daily_basic_fields
+        if field in {'ts_code', 'trade_date'} or field not in clean_columns
+    ]
+    daily_basic_required = len(daily_basic_fields) > 2
     daily_basic_resolution = None
     if daily_basic_required:
         daily_basic_resolution = resolve_data_api_dataset(
@@ -1565,6 +1644,8 @@ def materialize_shared_daily_slice(
         universe=step3_sample_universe,
         frequency='daily',
         catalog_path=daily_resolution.get('catalog_path'),
+        **({'catalog_sha256': daily_resolution['catalog_binding']['catalog_sha256']}
+           if daily_resolution.get('catalog_binding', {}).get('catalog_sha256') else {}),
     )
     daily_basic_result = None
     if daily_basic_required and daily_basic_resolution:
@@ -1575,6 +1656,8 @@ def materialize_shared_daily_slice(
             fields=daily_basic_fields,
             universe=step3_sample_universe,
             catalog_path=daily_basic_resolution.get('catalog_path'),
+        **({'catalog_sha256': daily_basic_resolution['catalog_binding']['catalog_sha256']}
+           if daily_basic_resolution.get('catalog_binding', {}).get('catalog_sha256') else {}),
         )
     daily_basic_fetch_ready = (not daily_basic_required) or (
         daily_basic_result is not None and daily_basic_result.status in {'ready', 'proxy_ready'}
@@ -1657,7 +1740,14 @@ def materialize_shared_daily_slice(
         'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
         'preferred_daily_format': 'parquet',
         **audit_payload,
-        'data_api_resolution': {'clean_daily_bar': daily_resolution, 'daily_basic': daily_basic_resolution},
+        'data_api_resolution': {
+            'clean_daily_bar': resolution_with_successful_sample_read(
+                daily_resolution, daily_result
+            ),
+            'daily_basic': resolution_with_successful_sample_read(
+                daily_basic_resolution, daily_basic_result
+            ) if daily_basic_result is not None else daily_basic_resolution,
+        },
         'step4_data_contract': step4_data_contract,
         'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
         'daily_filter_summary': daily_resolution.get('coverage') or {},
@@ -1714,6 +1804,8 @@ def materialize_moneyflow_slice(
         universe='a_share_all',
         frequency='daily',
         catalog_path=moneyflow_resolution.get('catalog_path'),
+        **({'catalog_sha256': moneyflow_resolution['catalog_binding']['catalog_sha256']}
+           if moneyflow_resolution.get('catalog_binding', {}).get('catalog_sha256') else {}),
     )
     if moneyflow_result.status not in {'ready', 'proxy_ready'}:
         return {
@@ -1748,7 +1840,11 @@ def materialize_moneyflow_slice(
         'daily_df_parquet': str(moneyflow_parquet.relative_to(WORKSPACE)),
         'preferred_daily_format': 'parquet',
         **audit_payload,
-        'data_api_resolution': {'moneyflow': moneyflow_resolution},
+        'data_api_resolution': {
+            'moneyflow': resolution_with_successful_sample_read(
+                moneyflow_resolution, moneyflow_result
+            )
+        },
         'step4_data_contract': step4_data_contract,
         'derived_field_contract': {
             'version': 'factorforge_derived_field_contract_v1',
@@ -1846,6 +1942,8 @@ def build_local_price_volume_snapshots(
         fields=daily_fields,
         universe=step3_sample_universe,
         catalog_path=daily_resolution.get('catalog_path'),
+        **({'catalog_sha256': daily_resolution['catalog_binding']['catalog_sha256']}
+           if daily_resolution.get('catalog_binding', {}).get('catalog_sha256') else {}),
     )
     minute_result = fetch_data_api_dataset(
         'minute_bar',
@@ -1855,6 +1953,8 @@ def build_local_price_volume_snapshots(
         universe=step3_sample_universe,
         frequency='1min',
         catalog_path=minute_resolution.get('catalog_path'),
+        **({'catalog_sha256': minute_resolution['catalog_binding']['catalog_sha256']}
+           if minute_resolution.get('catalog_binding', {}).get('catalog_sha256') else {}),
     )
     daily_basic_result = None
     if daily_basic_required and daily_basic_resolution:
@@ -1865,6 +1965,8 @@ def build_local_price_volume_snapshots(
             fields=daily_basic_fields,
             universe=step3_sample_universe,
             catalog_path=daily_basic_resolution.get('catalog_path'),
+        **({'catalog_sha256': daily_basic_resolution['catalog_binding']['catalog_sha256']}
+           if daily_basic_resolution.get('catalog_binding', {}).get('catalog_sha256') else {}),
         )
     daily_basic_fetch_ready = (not daily_basic_required) or (
         daily_basic_result is not None and daily_basic_result.status in {'ready', 'proxy_ready'}
@@ -1930,9 +2032,13 @@ def build_local_price_volume_snapshots(
         **daily_audit,
         'minute_io_contract': minute_csv_profile.get('daily_io_contract'),
         'data_api_resolution': {
-            'clean_daily_bar': daily_resolution,
+            'clean_daily_bar': resolution_with_successful_sample_read(
+                daily_resolution, daily_result
+            ),
             'minute_bar': minute_resolution,
-            'daily_basic': daily_basic_resolution,
+            'daily_basic': resolution_with_successful_sample_read(
+                daily_basic_resolution, daily_basic_result
+            ) if daily_basic_result is not None else daily_basic_resolution,
         },
         'step4_data_contract': step4_data_contract,
         'step4_full_window': full_query_window,
@@ -2342,7 +2448,7 @@ def materialize_retained_chip_state_slice(
     }
 
 
-def build_step3a(report_id: str, csv_output_policy: str | None = None):
+def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_local_inputs: dict | None = None):
     fsm = load_json(OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json')
     _aim = load_json(OBJ / 'alpha_idea_master' / f'alpha_idea_master__{report_id}.json')
     handoff_to_step3 = read_existing_json(OBJ / 'handoff' / f'handoff_to_step3__{report_id}.json')
@@ -2401,6 +2507,29 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         need_daily_basic = False
 
     sample_window = declared_sample_window(fsm, handoff_to_step3, infer_sample_window(factor_id, required_text))
+    if prepared_local_inputs is not None:
+        prepared_local_inputs = validate_prepared_local_inputs(prepared_local_inputs)
+        sample_window = dict(prepared_local_inputs['sample_window_actual'])
+        sample_window.setdefault('calendar', 'A-share trading days')
+        need_minute = need_daily = need_moneyflow = need_daily_basic = False
+    try:
+        evo_research_windows = resolve_evo_pre_release_research_windows(
+            workspace_root=FF,
+            report_id=report_id,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if evo_research_windows is not None:
+        sample_window = {
+            'start': evo_research_windows['is_start'],
+            'end': evo_research_windows['is_end'],
+        }
+        # Fail closed on forbidden proof-control/query fields before any Data
+        # API resolution or fetch is attempted.
+        canonical_step3_sample_query(
+            fsm=fsm,
+            research_windows=evo_research_windows,
+        )
     data_sources = []
     coverage = []
     proxy_rules = []
@@ -2472,7 +2601,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         data_sources.append({
             'name': 'tushare_minute_bars',
             'kind': 's3',
-            'path': 's3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/',
+            'path': 's3://factorforge-example-data/tushares/分钟数据/raw/stk_mins_1min/',
             'fields': ['ts_code', 'trade_time', 'trade_date', 'bar_time', 'minute_index', 'open', 'close', 'high', 'low', 'vol', 'amount'],
             'normalized_dataset': 'minute_bar'
         })
@@ -2494,7 +2623,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         data_sources.append({
             'name': 'tushare_daily_bars',
             'kind': 's3',
-            'path': 's3://yufan-data-lake/tushares/行情数据/daily.csv',
+            'path': 's3://factorforge-example-data/tushares/行情数据/daily.csv',
             'fields': ['ts_code', 'trade_date', 'open', 'high', 'low', 'close', 'pre_close', 'change', 'pct_chg', 'vol', 'amount'],
             'normalized_dataset': 'daily_bar'
         })
@@ -2513,7 +2642,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         data_sources.append({
             'name': 'tushare_moneyflow',
             'kind': 's3_partitioned',
-            'path': 's3://yufan-data-lake/tushares/资金流向数据/个股资金流向/',
+            'path': 's3://factorforge-example-data/tushares/资金流向数据/个股资金流向/',
             'fields': moneyflow_fields,
             'normalized_dataset': 'moneyflow',
         })
@@ -2537,7 +2666,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         data_sources.append({
             'name': 'tushare_daily_basic_incremental',
             'kind': 's3_partitioned',
-            'path': 's3://yufan-data-lake/tushares/行情数据/daily_basic_incremental/',
+            'path': 's3://factorforge-example-data/tushares/行情数据/daily_basic_incremental/',
             'fields': ['ts_code', 'trade_date', 'turnover_rate', 'turnover_rate_f', 'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv'],
             'normalized_dataset': 'daily_basic'
         })
@@ -2570,7 +2699,15 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         })
 
     local_input_paths = {}
-    if intraday_proxy_blocked_local_input_paths is not None:
+    if prepared_local_inputs is not None:
+        local_input_paths = prepared_local_inputs
+        data_sources.extend([
+            {'name': 'prepared_daily_control_input', 'kind': 'study_local_prepared_input', 'path': local_input_paths['daily_df_parquet'], 'fields': [], 'normalized_dataset': 'prepared_daily_raw_or_control'},
+            {'name': 'prepared_minute_derived_state', 'kind': 'study_local_prepared_state_partitions', 'path': local_input_paths['derived_state_root'], 'fields': [], 'normalized_dataset': 'minute_derived_state'},
+        ])
+        coverage.append({'name': 'prepared_derived_state_inputs', 'status': 'pass', 'detail': 'Explicit study-local derived-state inputs; Step3B is bounded and Step4 owns formal factor_values.'})
+        notes.append('Prepared derived-state route: Step3/Step3B must not read full raw minute data; Step4 controller consumes only derived_state_root.')
+    elif intraday_proxy_blocked_local_input_paths is not None:
         local_input_paths = intraday_proxy_blocked_local_input_paths
         notes.append(str(local_input_paths.get('snapshot_note') or ''))
     elif retained_chip_state:
@@ -2584,7 +2721,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         data_sources.append({
             'name': INTRADAY_RETAINED_CHIP_STATE_DATASET,
             'kind': 'data_api_catalog_dataset',
-            'path': 's3://yufan-data-lake/factorforge/datamart/intraday_retained_chip_state/v1/',
+            'path': 's3://factorforge-example-data/factorforge/datamart/intraday_retained_chip_state/v1/',
             'fields': RETAINED_CHIP_STATE_FIELDS,
             'normalized_dataset': INTRADAY_RETAINED_CHIP_STATE_DATASET,
         })
@@ -2721,6 +2858,65 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         'minute_derived_state_requirements': (local_input_paths.get('step4_data_contract') or {}).get('minute_derived_state_requirements') or [],
         'research_window_contract': (local_input_paths.get('step4_data_contract') or {}).get('research_window_contract') or research_window_contract(sample_window),
     }
+    if evo_research_windows is not None:
+        try:
+            if data_prep_master['feasibility'] in {'ready', 'proxy_ready'}:
+                primary_dataset = 'clean_daily_bar'
+                if str(local_input_paths.get('snapshot_source') or '') == 'data_api_moneyflow':
+                    raise ValueError(
+                        'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:'
+                        'primary_dataset.moneyflow_unsupported'
+                    )
+                local_input_paths['primary_dataset'] = primary_dataset
+                expected_sample_query = canonical_step3_sample_query(
+                    fsm=fsm,
+                    research_windows=evo_research_windows,
+                )
+                proof_source_resolution = (
+                    data_prep_master.get('data_api_resolution') or {}
+                )
+                # Canonicalize the Step4 contract with the same shared
+                # projection before hashing it into the sample proof.
+                projection_seed = {
+                    'local_input_paths': {},
+                    'data_api_resolution': {},
+                    'step4_data_contract': json.loads(
+                        json.dumps(
+                            data_prep_master.get('step4_data_contract') or {}
+                        )
+                    ),
+                }
+                project_pre_release_data_access(
+                    projection_seed, evo_research_windows
+                )
+                canonical_step4_contract = (
+                    projection_seed.get('step4_data_contract') or {}
+                )
+                data_prep_master['step4_data_contract'] = (
+                    canonical_step4_contract
+                )
+                data_prep_master['data_api_resolution'] = (
+                    build_closed_pre_release_data_resolution(
+                        source_resolution=proof_source_resolution,
+                        local_inputs=local_input_paths,
+                        research_windows=evo_research_windows,
+                        workspace_root=WORKSPACE,
+                        factorforge_root=FF,
+                        required_fields=required_fields,
+                        report_id=report_id,
+                        factor_id=factor_id,
+                        expected_sample_query=expected_sample_query,
+                        step4_data_contract=canonical_step4_contract,
+                        primary_dataset=primary_dataset,
+                    )
+                )
+            project_pre_release_data_access(
+                data_prep_master, evo_research_windows
+            )
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
+        sample_window = dict(data_prep_master['sample_window'])
+        local_input_paths = data_prep_master['local_input_paths']
 
     qlib_adapter_config = {
         'report_id': report_id,
@@ -2762,9 +2958,10 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None):
         },
         'proxy_rules': proxy_rules,
         'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
-        'data_api_resolution': local_input_paths.get('data_api_resolution') or {},
-        'step4_data_contract': local_input_paths.get('step4_data_contract') or {},
-        'research_window_contract': (local_input_paths.get('step4_data_contract') or {}).get('research_window_contract') or research_window_contract(sample_window),
+        **projected_data_contracts_for_qlib(
+            data_prep_master,
+            sample_window=sample_window,
+        ),
         'sample_window': sample_window,
         'local_input_paths': local_input_paths,
         'step4_access_rule': 'Step 4 must consume Step3 data contract and fetch full formal data through factorforge_data_api, not raw S3/local path guessing.'
@@ -2815,6 +3012,7 @@ def main():
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
     ap.add_argument('--csv-output-policy', help='Step3A daily CSV audit output policy. Defaults to full_csv.')
+    ap.add_argument('--prepared-local-inputs', help='Study-local JSON declaring prepared daily and derived-state inputs.')
     args = ap.parse_args()
     csv_policy = resolve_csv_policy(args.csv_output_policy)
     maybe_reexec_from_step3_template_copy(args.report_id, args.manifest)
@@ -2824,7 +3022,8 @@ def main():
     if not report_id:
         raise SystemExit('run_step3.py requires --report-id or --manifest')
 
-    data_prep_master, qlib_adapter_config, implementation_plan_stub = build_step3a(report_id, csv_output_policy=csv_policy)
+    prepared_local_inputs = load_prepared_local_inputs(args.prepared_local_inputs)
+    data_prep_master, qlib_adapter_config, implementation_plan_stub = build_step3a(report_id, csv_output_policy=csv_policy, prepared_local_inputs=prepared_local_inputs)
     state_reuse_contract = write_step3_state_reuse_contracts(
         manifest=_manifest,
         report_id=report_id,
@@ -2873,6 +3072,7 @@ def main():
         'implementation_plan_master_ref': impl_path.name,
         'factor_spec_master_ref': f'factor_spec_master__{report_id}.json',
         'local_input_paths': data_prep_master['local_input_paths'],
+        'evaluation_plan': prepared_local_inputs.get('evaluation_plan') if prepared_local_inputs is not None else None,
         'step4_data_contract': data_prep_master.get('step4_data_contract') or {},
         'state_reuse_contract': state_reuse_contract,
     })

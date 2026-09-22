@@ -54,9 +54,11 @@ whose `execution_stage_contract.stage` is `pre_formal_research_design`, a
 registered `base_market_dataset` such as `clean_daily_bar` may be admitted for
 research-plan construction when all of the following are true:
 
-- `active_catalog_admission.verdict=PASS`, its scope is catalog identity,
-  freshness and transport, and it explicitly does not imply dataset QA;
-- the entry is an `active_catalog_member` with an exact materialized URI,
+- either `active_catalog_admission.verdict=PASS` for catalog identity,
+  freshness and transport, or the sole workspace-local catalog entry carries a
+  hash-bound `factorforge_host_catalog_qa_attestation_v1` with verdict ACCEPT;
+- the entry is an `active_catalog_member` or, for that Host QA route only, an
+  `approved_catalog_snapshot_member`, with an exact materialized URI,
   producer provenance, required fields and sufficient freshness coverage;
 - the entry carries `host_information_policy_attestation.verdict=PASS`; free
   text or an Agent assertion cannot substitute for that deterministic Host
@@ -81,7 +83,7 @@ The PASS `catalog_resolution` is a closed Host-validated contract:
   "design_time_reuse_hits": [{
     "dataset_id": "clean_daily_bar",
     "dataset_class": "base_market_dataset",
-    "catalog_membership": "active_catalog_member",
+    "catalog_membership": "active_catalog_member|approved_catalog_snapshot_member",
     "materialized_uri": "<exact catalog S3 URI>",
     "required_fields": ["<non-empty subset of catalog columns>"],
     "required_coverage": {"start": "YYYY-MM-DD", "end": "YYYY-MM-DD"},

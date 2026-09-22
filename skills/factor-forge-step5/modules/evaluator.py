@@ -7,6 +7,13 @@ from pathlib import Path
 import pandas as pd
 from typing import Any, Dict, List
 
+from factor_factory.primary_evaluator import (
+    PRIMARY_REQUIRED_ARTIFACTS,
+    normalize_primary_evaluator_payload,
+    primary_evaluator_plan,
+    validate_primary_evaluator_payload,
+)
+
 
 def _resolve_factorforge_root(root: Path) -> Path:
     if (root / "objects").exists():
@@ -68,6 +75,9 @@ def _extract_key_metrics(payload: Dict[str, Any], run_item: Dict[str, Any]) -> D
         "long_side_sharpe",
         "long_side_max_drawdown",
         "long_side_recovery_days",
+        "long_side_recovery_status",
+        "long_side_recovery_lower_bound_days",
+        "long_side_recovery_observation_end",
         "long_side_turnover_mean_daily",
         "trading_cogs_daily",
         "trading_cogs_annual",
@@ -169,6 +179,35 @@ def _issue(severity: str, code: str, message: str, evidence: Dict[str, Any] | No
     }
 
 
+
+def _payload_shape_errors(payload: Any) -> list[str]:
+    """Validate only the structure consumed below, before accessing fields."""
+    if not isinstance(payload, dict):
+        return ["backend payload must be a JSON object"]
+    errors = []
+    for key in (
+        "standard_metric_contract", "ic_summary", "group_backtest_summary",
+        "long_side_performance", "native_backtest_metrics",
+        "stub_backtest_metrics", "summary", "metrics", "artifacts",
+    ):
+        if payload.get(key) is not None and not isinstance(payload[key], dict):
+            errors.append(f"{key} must be a JSON object")
+    for key in ("backend", "status", "report_id"):
+        if payload.get(key) is not None and not isinstance(payload[key], str):
+            errors.append(f"{key} must be a string")
+    contract = payload.get("standard_metric_contract")
+    if isinstance(contract, dict) and contract.get("checks") is not None:
+        checks = contract["checks"]
+        if not isinstance(checks, list) or any(not isinstance(check, dict) for check in checks):
+            errors.append("standard_metric_contract.checks must be a list of objects")
+    artifacts = payload.get("artifacts")
+    if isinstance(artifacts, dict):
+        for key, path in artifacts.items():
+            if path is not None and not isinstance(path, str):
+                errors.append(f"artifacts.{key} must be a path string")
+    return errors
+
+
 def build_step4_quality_gate(payloads: List[Dict[str, Any]], frm: Dict[str, Any]) -> Dict[str, Any]:
     """Detect obvious Step4 artifact/metric bugs before Step5 archives a case.
 
@@ -177,6 +216,12 @@ def build_step4_quality_gate(payloads: List[Dict[str, Any]], frm: Dict[str, Any]
     """
     issues: List[Dict[str, Any]] = []
     self_quant_seen = False
+    try:
+        primary_plan = primary_evaluator_plan(frm.get("evaluation_plan"))
+    except ValueError as exc:
+        primary_plan = None
+        issues.append(_issue("BLOCK", "PRIMARY_EVALUATOR_PLAN_INVALID", str(exc)))
+    primary_seen = False
 
     if frm.get("run_status") in {"success", "partial"} and not payloads:
         issues.append(_issue("BLOCK", "NO_BACKEND_PAYLOADS", "Step4 has no backend payloads despite material run outputs."))
@@ -187,8 +232,13 @@ def build_step4_quality_gate(payloads: List[Dict[str, Any]], frm: Dict[str, Any]
         payload = item.get("payload") or {}
         payload_path = item.get("payload_path")
 
+        shape_errors = _payload_shape_errors(payload)
+        if shape_errors:
+            issues.append(_issue("BLOCK", "BACKEND_PAYLOAD_STRUCTURE_INVALID", "Backend payload has malformed fields.", {"backend": backend, "payload_path": payload_path, "errors": shape_errors}))
+            continue
+
         if status in {"success", "partial"} and not payload:
-            issues.append(_issue("BLOCK", "SUCCESS_BACKEND_PAYLOAD_UNREADABLE", "Backend claims success/partial but payload is missing or unreadable.", {"backend": backend, "payload_path": payload_path}))
+            issues.append(_issue("BLOCK", "SUCCESS_BACKEND_PAYLOAD_UNREADABLE", "Backend claims success/partial but payload is missing or unreadable.", {"backend": backend, "payload_path": payload_path, "payload_error": item.get("payload_error")}))
             continue
 
         if backend == "self_quant_analyzer":
@@ -291,6 +341,16 @@ def build_step4_quality_gate(payloads: List[Dict[str, Any]], frm: Dict[str, Any]
             if group_min is not None and group_min <= 0:
                 issues.append(_issue("BLOCK", "DECILE_EMPTY_GROUP", "At least one decile group is empty; quantile backtest is malformed.", {"group_member_count_min": group_min}))
 
+        if primary_plan is not None and backend == primary_plan["backend"]:
+            primary_seen = True
+            for validation_issue in validate_primary_evaluator_payload(payload, frm.get("evaluation_plan")):
+                issues.append(_issue("BLOCK", validation_issue["code"], validation_issue["message"], {"backend": backend, "payload_path": payload_path}))
+            artifacts = payload.get("artifacts") or {}
+            for key in PRIMARY_REQUIRED_ARTIFACTS:
+                path = artifacts.get(key)
+                if not path or not Path(path).is_file() or Path(path).stat().st_size <= 0:
+                    issues.append(_issue("BLOCK", "PRIMARY_EVALUATOR_ARTIFACT_UNREADABLE", f"primary evaluator missing a readable {key} artifact.", {"path": path}))
+
         if backend == "qlib_backtest" and status == "success":
             artifacts = payload.get("artifacts") or {}
             for key in ["portfolio_value_timeseries_png", "benchmark_vs_strategy_png", "turnover_timeseries_png"]:
@@ -298,7 +358,9 @@ def build_step4_quality_gate(payloads: List[Dict[str, Any]], frm: Dict[str, Any]
                 if not path or not Path(path).exists() or Path(path).stat().st_size <= 0:
                     issues.append(_issue("BLOCK", "QLIB_REQUIRED_ARTIFACT_MISSING", f"qlib_backtest missing required artifact {key}.", {"path": path}))
 
-    if not self_quant_seen and frm.get("run_status") in {"success", "partial"}:
+    if primary_plan is not None and not primary_seen and frm.get("run_status") in {"success", "partial"}:
+        issues.append(_issue("BLOCK", "PRIMARY_EVALUATOR_BACKEND_MISSING", "Step4 did not provide the declared primary evaluator payload."))
+    if primary_plan is None and not self_quant_seen and frm.get("run_status") in {"success", "partial"}:
         issues.append(_issue("BLOCK", "SELF_QUANT_BACKEND_MISSING", "Step4 must run self_quant_analyzer before Step5 can close a case."))
 
     blocking = [item for item in issues if item["severity"] == "BLOCK"]
@@ -316,49 +378,59 @@ def build_step4_quality_gate(payloads: List[Dict[str, Any]], frm: Dict[str, Any]
     }
 
 
-def read_backend_payloads(backend_runs: List[Dict[str, Any]], report_id: str, workspace_root: str | Path) -> List[Dict[str, Any]]:
-    root = Path(workspace_root)
-    ff_root = _resolve_factorforge_root(root)
+def read_backend_payloads(
+    backend_runs: List[Dict[str, Any]],
+    report_id: str,
+    workspace_root: str | Path,
+    evaluation_plan: Dict[str, Any] | None = None,
+) -> List[Dict[str, Any]]:
+    """Read only the payload paths declared by this Step4 run.
+
+    Old files in a report directory are not evidence for the current run.
+    Unreadable declared payloads remain visible to the Step5 quality gate.
+    """
+    ff_root = _resolve_factorforge_root(Path(workspace_root))
     payloads: List[Dict[str, Any]] = []
-    seen = set()
+    try:
+        primary = primary_evaluator_plan(evaluation_plan)
+    except ValueError:
+        # The quality gate records an invalid plan as a BLOCK.
+        primary = None
 
     for item in backend_runs:
         payload_path = item.get("payload_path")
         payload = None
-        if payload_path and Path(payload_path).exists():
-            payload = json.loads(Path(payload_path).read_text(encoding="utf-8"))
-            seen.add(str(Path(payload_path).resolve()))
-        payloads.append(
-            {
-                "backend": item.get("backend") or item.get("name"),
-                "status": item.get("status"),
-                "payload_path": payload_path,
-                "payload": payload,
-                "key_metrics": _extract_key_metrics(payload or {}, item),
-                "artifact_paths": item.get("artifact_paths") or [],
-                "warnings": (payload or {}).get("warnings") or [],
-            }
-        )
-
-    eval_dir = ff_root / "evaluations" / report_id
-    if eval_dir.exists():
-        for payload_file in eval_dir.glob("**/evaluation_payload.json"):
-            resolved = str(payload_file.resolve())
-            if resolved in seen:
-                continue
-            payload = json.loads(payload_file.read_text(encoding="utf-8"))
-            payloads.append(
-                {
-                    "backend": payload_file.parent.name,
-                    "status": payload.get("status") or "unknown",
-                    "payload_path": str(payload_file),
-                    "payload": payload,
-                    "key_metrics": _extract_key_metrics(payload, {}),
-                    "artifact_paths": payload.get("artifact_paths") or [],
-                    "warnings": payload.get("warnings") or [],
-                }
-            )
-
+        payload_error = None
+        if payload_path:
+            try:
+                selected = Path(payload_path)
+                if not selected.is_absolute():
+                    selected = ff_root / selected
+                decoded = json.loads(selected.read_text(encoding="utf-8"))
+                shape_errors = _payload_shape_errors(decoded)
+                if shape_errors:
+                    raise ValueError("; ".join(shape_errors))
+                payload = decoded
+                payload_path = str(selected)
+            except (OSError, UnicodeError, ValueError, TypeError) as exc:
+                payload_error = f"{type(exc).__name__}: {exc}"
+        else:
+            payload_error = "declared backend has no payload_path"
+        backend = item.get("backend") or item.get("name")
+        metrics = _extract_key_metrics(payload or {}, item)
+        if payload is not None and primary is not None and backend == primary["backend"]:
+            normalized = normalize_primary_evaluator_payload(payload, evaluation_plan)
+            metrics.update((normalized or {}).get("metrics") or {})
+        payloads.append({
+            "backend": backend,
+            "status": item.get("status"),
+            "payload_path": payload_path,
+            "payload": payload,
+            "payload_error": payload_error,
+            "key_metrics": metrics,
+            "artifact_paths": item.get("artifact_paths") or [],
+            "warnings": (payload or {}).get("warnings") or [],
+        })
     return payloads
 
 
@@ -367,7 +439,12 @@ def build_factor_evaluation(bundle: Dict[str, Any]) -> Dict[str, Any]:
     report_id = bundle["report_id"]
     factor_id = frm.get("factor_id")
     backend_runs = collect_backend_runs(frm)
-    payloads = read_backend_payloads(backend_runs, report_id=report_id, workspace_root=bundle["workspace_root"])
+    payloads = read_backend_payloads(
+        backend_runs,
+        report_id=report_id,
+        workspace_root=bundle["workspace_root"],
+        evaluation_plan=frm.get("evaluation_plan"),
+    )
     diag = _get_diagnostic_summary(frm)
     quality_gate = build_step4_quality_gate(payloads, frm)
 

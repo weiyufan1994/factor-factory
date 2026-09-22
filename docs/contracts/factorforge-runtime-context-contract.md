@@ -91,7 +91,7 @@ python3 skills/factor-forge-step6/scripts/run_step6.py --manifest factorforge/ob
 ## Resolution Rules
 
 1. Prefer explicit `FACTORFORGE_ROOT`.
-2. On EC2, use `/home/ubuntu/.openclaw/workspace/factorforge` when it exists.
+2. On EC2, use `/opt/factorforge/workspace/factorforge` when it exists.
 3. Otherwise use the repo root as local runtime root.
 4. Handoffs may contain relative paths, but consumers must resolve them via `ctx.remap_legacy_path()`.
 5. Legacy EC2 absolute paths may be remapped to the active `factorforge_root`.

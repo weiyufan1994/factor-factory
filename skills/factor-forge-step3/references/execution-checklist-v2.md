@@ -1,5 +1,8 @@
 # Step 3 Execution Checklist (v2)
 
+Use the active Ultimate wrapper; the Step script names below identify internal
+work, not direct formal entrypoints.
+
 ## Before run
 - [ ] `factor_spec_master__{report_id}.json` exists
 - [ ] `alpha_idea_master__{report_id}.json` exists
@@ -21,7 +24,7 @@
 - [ ] factor code artifact written under `factorforge/generated_code/{report_id}/`
 - [ ] qlib_expression_draft written
 - [ ] hybrid_execution_scaffold written
-- [ ] if Step 3A local snapshots exist, first-run `factor_values` artifacts are written under `factorforge/runs/{report_id}/`
+- [ ] when a Data API sample contract and executable code exist, only bounded non-formal `step3b_sample_factor_values` and sample metadata are written; formal values remain Step4-owned
 - [ ] no accidental full-minute + sample-daily mixed package
 - [ ] direct_code/hybrid child revisions preserve implementation mode and include executable mutation contracts
 - [ ] minute/tick/large-panel direct_code includes `batch_execution_plan.version=factorforge_batch_execution_plan_v1`
@@ -33,7 +36,8 @@
 - [ ] execution mode is explicit
 - [ ] artifact paths in handoff are real
 - [ ] no placeholder residue remains
-- [ ] handoff references real implementation / factor-value artifacts when available
+- [ ] handoff references exact implementation and non-formal sample artifacts when available
+- [ ] before Step4 release: Step2 reviewed actual code/helpers, Step3 fixed and Step2 re-reviewed, then deterministic/parity tests passed on the reviewed version
 
 ## Release gate for ClawHub
 - [ ] SKILL.md matches actual script behavior

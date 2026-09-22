@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+from pathlib import Path
 from typing import Any
 
 from factor_factory.measurement_program import (
@@ -9,6 +10,7 @@ from factor_factory.measurement_program import (
 )
 
 from .guards import FORBIDDEN_TEXT_TOKEN, scan_forbidden_text
+from .evo_v2 import validate_revision_council_evo_v2
 from .schema import (
     CONFIDENCE_VALUES,
     COUNCIL_AGENT_ROLES,
@@ -463,6 +465,8 @@ def validate_revision_council_proposal(
     proposal: dict[str, Any],
     *,
     measurement_program: dict[str, Any] | None = None,
+    evo_v2_required: bool = False,
+    workspace_root: Path | str | None = None,
 ) -> list[str]:
     """Return block reasons. Empty means valid."""
     reasons: list[str] = []
@@ -513,6 +517,13 @@ def validate_revision_council_proposal(
     reasons.extend(_validate_research_equation_revision(proposal))
     reasons.extend(
         _validate_measurement_program_binding(proposal, measurement_program)
+    )
+    reasons.extend(
+        validate_revision_council_evo_v2(
+            proposal,
+            workspace_root=workspace_root,
+            required=evo_v2_required,
+        )
     )
 
     guards = proposal.get("forbidden_changes_ack") or []

@@ -143,7 +143,7 @@ def _active_catalog_summary(*, admission: bool = True) -> dict:
                         "catalog_membership": "active_catalog_member",
                         "columns": ["trade_date", "ts_code", "close", "amount"],
                         "materialized_uri": (
-                            "s3://yufan-data-lake/factorforge/datamart/"
+                            "s3://factorforge-example-data/factorforge/datamart/"
                             "clean_daily_bar/v1/daily_clean.parquet"
                         ),
                         "freshness": {
@@ -191,7 +191,7 @@ def _valid_v2_liaison_result(workspace: Path, task: dict) -> dict:
                 "dataset_class": "base_market_dataset",
                 "catalog_membership": "active_catalog_member",
                 "materialized_uri": (
-                    "s3://yufan-data-lake/factorforge/datamart/"
+                    "s3://factorforge-example-data/factorforge/datamart/"
                     "clean_daily_bar/v1/daily_clean.parquet"
                 ),
                 "required_fields": ["close", "amount"],

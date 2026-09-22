@@ -1,0 +1,174 @@
+{
+  "evidence": {
+    "boundary": "Standard definitions, algebraic properties and counterexamples only; no market data, empirical factor result, causal identification, fixed-regime assertion, profitability claim or canonical experience admission.",
+    "classification": "reference_only_standard_math_and_existing_case_boundaries",
+    "contract_version": "factorforge_conditional_operator_reference_v1",
+    "supporting_existing_cases": [
+      "node::method_mechanism_conditioned_measurement_search_20260807",
+      "node::method_sparse_event_projection_failure_20260907",
+      "node::method_transient_signal_models_20260907"
+    ]
+  },
+  "factor_ids": [],
+  "id": "node::method_conditional_operator_reference_20260908",
+  "mechanism": {
+    "applicability_boundary": "Choose an operator only when its input domain, time scale, missingness policy, tie rule, controls and information time match the declared observation object. Cross-sectional and time-series normalizations, causal and centered filters, and separate versus combined component scales are not interchangeable.",
+    "authority_chain": "economic estimand and legal information time -> conditional mathematical object -> operator choice -> retained/lost-information audit -> counterexample and empirical falsification",
+    "failure_localization": "When a result changes, first distinguish an input-domain, timing, missingness, normalization, aggregation, gating or control-set change from an economic claim. A measurement mismatch does not by itself falsify the economic premise.",
+    "knowledge_boundary": "This is a standard-mathematics reference map. It cannot choose an economic hypothesis, fixed regime, factor sign, payer, control set, threshold, or investment action from historical outcomes.",
+    "operator_groups": [
+      {
+        "applicability_and_failure": "Fails under unmatched adjustment, asynchronous timestamps, nonpositive prices, or an unstated holding horizon.",
+        "conditional_economic_hypothesis": "Only a declared reaction-rate or repricing object can motivate this mapping; it does not identify who caused a move.",
+        "counterexample": "The same delta at price 10 and 100 is not the same relative shock.",
+        "id": "return_log_delta",
+        "inputs_and_time_scale": "Aligned price levels P_t and P_(t-1), with declared adjustment and availability time.",
+        "mathematical_object": "Positive-price relative return, log increment, or price difference on an adjacent predeclared bar/day/multiperiod window.",
+        "retained_or_lost": "Log increments add across a positive-price path; deltas retain price units and direction but lose cross-price comparability. Missing endpoints remain missing."
+      },
+      {
+        "applicability_and_failure": "Fails when the reference set is unstated, non-PIT, or treated as interchangeable across CS and TS.",
+        "conditional_economic_hypothesis": "Use CS only for relative contemporaneous exposure and TS only for own-history abnormality, if that comparison is predeclared.",
+        "counterexample": "A common market shift can leave CS deviation near zero while every TS deviation is large.",
+        "id": "same_direction_mean_deviation_cs_vs_ts",
+        "inputs_and_time_scale": "A stated daily/minute cross section or trailing-only per-instrument sample.",
+        "mathematical_object": "Mean level and signed deviation relative to either a same-date cross section or a single instrument's legal historical window.",
+        "retained_or_lost": "Means retain first-order location; deviations retain relative position but lose absolute level. CS and TS reference populations differ; missingness changes each population."
+      },
+      {
+        "applicability_and_failure": "MAD=0 with nonconstant finite inputs requires a frozen non-collapse policy; no baseline is not a no-event zero.",
+        "conditional_economic_hypothesis": "Appropriate only when rank or standardized abnormality is the declared observable, not as an automatic alpha transform.",
+        "counterexample": "[0,0,0,1,2] has MAD zero but unequal values, so mapping it all to zero destroys order.",
+        "id": "rank_z_mad_zero",
+        "inputs_and_time_scale": "One declared cross section or trailing historical sample, including a minimum valid count.",
+        "mathematical_object": "Ordinal rank, mean/standard-deviation z-score, or median/MAD robust scale within a frozen domain.",
+        "retained_or_lost": "Rank preserves order but not distance; z preserves linear scale under its assumptions; MAD is robust. Ties stay tied and missing/warmup stays missing."
+      },
+      {
+        "applicability_and_failure": "Centered kernels, future padding or full-sample fitted weights are invalid for an online feature; incomplete history is not silently complete.",
+        "conditional_economic_hypothesis": "Use only when accumulation, averaging or predeclared decay is part of the observation model.",
+        "counterexample": "One spike and a persistent sequence can share a mean while representing different paths.",
+        "id": "mean_sum_causal_convolution",
+        "inputs_and_time_scale": "A fixed backward-only bar/day window, weights and valid-count policy.",
+        "mathematical_object": "Finite-window sum, mean, or causal convolution z_t=sum(k=0..K) h_k x_(t-k).",
+        "retained_or_lost": "Sum retains accumulated amount, mean normalizes window length, and causal convolution retains stated finite history while losing information outside its receptive field."
+      },
+      {
+        "applicability_and_failure": "Invalid when insufficient observations, infinities or unreported outlier treatment are converted to benign low dispersion.",
+        "conditional_economic_hypothesis": "Use as a conditional risk, jump or crowding descriptor only if that object is separately specified.",
+        "counterexample": "High kurtosis can arise from an upside jump, a crash, or one bad print, none of which fixes next-period direction.",
+        "id": "std_skew_kurt_direction",
+        "inputs_and_time_scale": "A declared trailing sample with finite inputs and a minimum effective count.",
+        "mathematical_object": "Rolling dispersion, standardized third moment and fourth-moment tail/peakedness statistic.",
+        "retained_or_lost": "Standard deviation and kurtosis are unchanged under sign reflection; skewness changes sign. None implies a future-return sign. Higher moments are sensitive to extremes and sample size."
+      },
+      {
+        "applicability_and_failure": "Incomplete windows, tie rules, endpoint eligibility, peak-to-left/right assignment and recursion depth change the measured segment returns and must be explicit.",
+        "conditional_economic_hypothesis": "Applicable when a stated hypothesis links volume-defined segment boundaries to within-segment trading conditions. This link is a hypothesis, not evidence of participant sentiment or overreaction.",
+        "counterexample": "Two windows can have the same argmax while one has a near-equal second peak and the other does not.",
+        "id": "argmax_volume_peak_recursion",
+        "inputs_and_time_scale": "Complete ordered minute/day volume bars, fixed lookback and predeclared first/last tie rule.",
+        "mathematical_object": "Argmax volume location and recursive partition of subwindows at their local volume maxima; not peak magnitude or event-arrival recurrence intervals.",
+        "retained_or_lost": "Argmax retains a peak location but loses amplitude, second peaks and the rest of the path; recursive partition retains local peak-based boundaries, not trading intent. Missing bars stay unresolved."
+      },
+      {
+        "applicability_and_failure": "Fails when thresholds/regimes are selected after outcomes or when the gate removes the proposed payer proxy itself.",
+        "conditional_economic_hypothesis": "A gate is admissible only for a predeclared data-quality, execution or mechanism condition, not because it improves a discovered result.",
+        "counterexample": "A low-liquidity gate can delete precisely the constrained-flow observations that a liquidity hypothesis intended to measure.",
+        "id": "winsor_conditional_gating_selection",
+        "inputs_and_time_scale": "Frozen thresholds, conditioning fields and their legal availability time for each bar/day/security.",
+        "mathematical_object": "Clipped value clip(x,a,b) or a boolean condition indicator 1{c_t} over a declared measurement domain.",
+        "retained_or_lost": "Winsorization limits tail magnitude; gating changes the observed/selected domain. An unknown condition is unknown, not a pass."
+      },
+      {
+        "applicability_and_failure": "Fails with future controls, mediator controls, unstable fits or implicit complete-case selection. Separately standardizing PF up/down legs rather than first defining their combined daily object is a different implementation observable, not a source-algorithm conclusion.",
+        "conditional_economic_hypothesis": "Use only if Z represents a predeclared confounder or risk exposure rather than an outcome-selected control set.",
+        "counterexample": "Zero correlation does not establish independence, causal separation or a positive conditional return.",
+        "id": "correlation_residualize_neutralize",
+        "inputs_and_time_scale": "PIT-aligned target and controls, a fixed fitting window, weights, missing-data rule and minimum sample size.",
+        "mathematical_object": "Correlation/co-movement, or residual e from x=Z beta+e after a declared control/neutralization model.",
+        "retained_or_lost": "Correlation retains association only; residualization retains variation relative to Z while discarding common components and depending on the chosen model."
+      }
+    ]
+  },
+  "node_type": "methodology",
+  "relations": [
+    {
+      "edge_type": "uses_math",
+      "note": "Operator choice follows the declared observation object and falsifier, not historical performance.",
+      "target": "node::method_mechanism_conditioned_measurement_search_20260807"
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "note": "MAD zero, ties and missing-history policies can change information before any economic interpretation.",
+      "target": "node::method_sparse_event_projection_failure_20260907"
+    },
+    {
+      "edge_type": "inspires",
+      "note": "Causal convolution is one conditional finite-history observation mapping, not a behavioural or return conclusion.",
+      "target": "node::method_transient_signal_models_20260907"
+    }
+  ],
+  "report_ids": [
+    "METHOD_CONDITIONAL_OPERATOR_REFERENCE_20260908"
+  ],
+  "reuse_guidance": [
+    "Retrieve for return log delta, cross-sectional versus time-series deviation, rank z MAD zero, causal convolution, skew kurtosis, argmax volume peak, conditional gate/winsor, correlation residualize or neutralize questions.",
+    "For each selected group, freeze the mathematical object, inputs, time scale, legal availability, missing/tie policy, retained/lost information and named counterexample before inspecting outcomes.",
+    "Treat the eight groups as conditional competing measurements. None authorizes a fixed regime, factor sign, causal payer, market recommendation or profitability claim."
+  ],
+  "schema_version": "factor_knowledge_node_v1",
+  "source_paths": [
+    "docs/research/conditional-operator-reference-20260908.zh-CN.md",
+    "knowledge/因子工厂/graph/nodes/METHOD_MECHANISM_CONDITIONED_MEASUREMENT_SEARCH_20260807.json",
+    "knowledge/因子工厂/graph/nodes/METHOD_SPARSE_EVENT_PROJECTION_FAILURE_20260907.json",
+    "knowledge/因子工厂/graph/nodes/METHOD_TRANSIENT_SIGNAL_MODELS_20260907.json"
+  ],
+  "summary": "Eight common operator groups are conditional observation mappings: return/log/delta; CS versus TS means and deviations; rank/z/MAD; mean/sum/causal convolution; dispersion moments; argmax volume peaks; winsor/gates; and correlation/residualization. They preserve and discard different information, cannot infer a fixed regime, causal payer, or profitable factor.",
+  "taxonomy": {
+    "buyside_style": [
+      "alpha_combination_feature",
+      "regime_conditioner"
+    ],
+    "cn_quant_practice": [
+      "feature_for_ml"
+    ],
+    "data_source": [
+      "daily_ohlcv",
+      "minute_bar"
+    ],
+    "economic_mechanism": [
+      "information_advantage",
+      "limits_to_arbitrage"
+    ],
+    "failure_mode": [
+      "lookahead_risk",
+      "wrong_math_object",
+      "overfit_gate",
+      "data_coverage_gap"
+    ],
+    "market_consensus": [
+      "multi_factor"
+    ],
+    "math_mechanism": [
+      "stochastic_process",
+      "path_functional",
+      "signal_processing",
+      "distribution_moment",
+      "residualization"
+    ],
+    "research_status": [
+      "mechanism_candidate"
+    ],
+    "tradability": [
+      "model_feature_only"
+    ],
+    "worldquant_style": [
+      "ts_operator",
+      "cs_operator",
+      "rank_transform",
+      "neutralized_expression"
+    ]
+  },
+  "title": "Conditional operator reference: eight observation mappings and counterexamples"
+}

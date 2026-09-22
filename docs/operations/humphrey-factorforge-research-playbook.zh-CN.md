@@ -66,7 +66,7 @@
 
 路径：
 
-- `/home/ubuntu/.openclaw/workspace/repos/factor-factory`
+- `/opt/factorforge/workspace/repos/factor-factory`
 
 这里维护：
 
@@ -80,10 +80,10 @@
 
 路径：
 
-- `/home/ubuntu/.openclaw/workspace/skills/factor-forge-step3`
-- `/home/ubuntu/.openclaw/workspace/skills/factor-forge-step4`
-- `/home/ubuntu/.openclaw/workspace/skills/factor-forge-step5`
-- `/home/ubuntu/.openclaw/workspace/skills/factor-forge-step6`
+- `/opt/factorforge/workspace/skills/factor-forge-step3`
+- `/opt/factorforge/workspace/skills/factor-forge-step4`
+- `/opt/factorforge/workspace/skills/factor-forge-step5`
+- `/opt/factorforge/workspace/skills/factor-forge-step6`
 
 这些脚本现在的正确理解是：
 
@@ -94,7 +94,7 @@
 
 路径：
 
-- `/home/ubuntu/.openclaw/workspace/factorforge`
+- `/opt/factorforge/workspace/factorforge`
 
 这里存放：
 
@@ -117,14 +117,14 @@
 1. 共享清洗层
 - 一次性构建 + 按需更新
 - 位置：
-  - `/home/ubuntu/.openclaw/workspace/factorforge/data/clean/daily_clean.parquet`
-  - `/home/ubuntu/.openclaw/workspace/factorforge/data/clean/daily_clean.meta.json`
+  - `/opt/factorforge/workspace/factorforge/data/clean/daily_clean.parquet`
+  - `/opt/factorforge/workspace/factorforge/data/clean/daily_clean.meta.json`
 
 2. report 级切片
 - 从共享清洗层切出本次 case 需要的 slice
 - 位置：
-  - `/home/ubuntu/.openclaw/workspace/factorforge/runs/<report_id>/step3a_local_inputs/daily_input__<report_id>.csv`
-  - `/home/ubuntu/.openclaw/workspace/factorforge/runs/<report_id>/step3a_local_inputs/daily_input_meta__<report_id>.json`
+  - `/opt/factorforge/workspace/factorforge/runs/<report_id>/step3a_local_inputs/daily_input__<report_id>.csv`
+  - `/opt/factorforge/workspace/factorforge/runs/<report_id>/step3a_local_inputs/daily_input_meta__<report_id>.json`
 
 ### 这意味着什么
 
@@ -144,9 +144,9 @@
 #### 仅在缺失、覆盖不足，或明确要求时建或更新共享清洗层
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
+cd /opt/factorforge/workspace/repos/factor-factory
 
-/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python scripts/build_clean_daily_layer.py \
+/opt/factorforge/workspace/.venvs/quant-research/bin/python scripts/build_clean_daily_layer.py \
   --start 20100104 \
   --end current
 ```
@@ -162,7 +162,7 @@ cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
 只有缺失、过期或窗口变化时才执行：
 
 ```bash
-/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python scripts/preprocess_daily_data.py \
+/opt/factorforge/workspace/.venvs/quant-research/bin/python scripts/preprocess_daily_data.py \
   --report-id "<report_id>" \
   --start 20100104 \
   --end current
@@ -171,7 +171,7 @@ cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
 如果需要 qlib provider：
 
 ```bash
-/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python scripts/preprocess_daily_data.py \
+/opt/factorforge/workspace/.venvs/quant-research/bin/python scripts/preprocess_daily_data.py \
   --report-id "<report_id>" \
   --start 20100104 \
   --end current \
@@ -404,7 +404,7 @@ Step1 当前不是“一条统一 shell 命令包打天下”，而是一个 `pd
 
 阅读入口：
 
-- `/home/ubuntu/.openclaw/workspace/repos/factor-factory/skills/factor-forge-step1/SKILL.md`
+- `/opt/factorforge/workspace/repos/factor-factory/skills/factor-forge-step1/SKILL.md`
 
 你至少要确认最终落盘：
 
@@ -415,7 +415,7 @@ Step1 当前不是“一条统一 shell 命令包打天下”，而是一个 `pd
 正式 Step2+ 必须通过 ultimate wrapper：
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
+cd /opt/factorforge/workspace/repos/factor-factory
 python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-step 2 --end-step 6
 ```
 
@@ -429,13 +429,13 @@ Step2 跑完后至少要检查：
 ### A. 预处理
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
+cd /opt/factorforge/workspace/repos/factor-factory
 
-/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python scripts/build_clean_daily_layer.py \
+/opt/factorforge/workspace/.venvs/quant-research/bin/python scripts/build_clean_daily_layer.py \
   --start 20100104 \
   --end current
 
-/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python scripts/preprocess_daily_data.py \
+/opt/factorforge/workspace/.venvs/quant-research/bin/python scripts/preprocess_daily_data.py \
   --report-id "<report_id>" \
   --start 20100104 \
   --end current
@@ -444,28 +444,28 @@ cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
 ### B. Step3 / Step3B
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
+cd /opt/factorforge/workspace/repos/factor-factory
 python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-step 3 --end-step 6
 ```
 
 ### C. Step4
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
+cd /opt/factorforge/workspace/repos/factor-factory
 python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-step 4 --end-step 6
 ```
 
 ### D. Step5
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
+cd /opt/factorforge/workspace/repos/factor-factory
 python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-step 5 --end-step 6
 ```
 
 ### E. Step6 收口
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace/repos/factor-factory
+cd /opt/factorforge/workspace/repos/factor-factory
 python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-step 6 --end-step 6
 ```
 
@@ -475,9 +475,9 @@ python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-st
 
 ```bash
 FACTORFORGE_ALLOW_DIRECT_STEP=1 FACTORFORGE_DEBUG_ROOT=/tmp/factorforge-debug \
-python3 /home/ubuntu/.openclaw/workspace/skills/factor-forge-step3/scripts/run_step3.py --report-id "<report_id>"
+python3 /opt/factorforge/workspace/skills/factor-forge-step3/scripts/run_step3.py --report-id "<report_id>"
 
-python3 /home/ubuntu/.openclaw/workspace/skills/factor-forge-step6/scripts/run_step6_autoloop.py --report-id "<report_id>" --max-iterations 1
+python3 /opt/factorforge/workspace/skills/factor-forge-step6/scripts/run_step6_autoloop.py --report-id "<report_id>" --max-iterations 1
 ```
 
 如果生成 proposal，先停，不要直接改代码。
@@ -485,7 +485,7 @@ python3 /home/ubuntu/.openclaw/workspace/skills/factor-forge-step6/scripts/run_s
 批准后再继续：
 
 ```bash
-python3 /home/ubuntu/.openclaw/workspace/skills/factor-forge-step6/scripts/approve_step6_revision.py \
+python3 /opt/factorforge/workspace/skills/factor-forge-step6/scripts/approve_step6_revision.py \
   --report-id "<report_id>" \
   --decision approve \
   --notes "中堂的修改意见"
@@ -590,26 +590,26 @@ Mac 是知识库的人类可读源头；S3 是 durable bundle；EC2 是执行缓
 
 Mac canonical 路径：
 
-- 结构化对象 / 因子库：`/Users/humphrey/projects/factor-factory/objects/`
-- 人类可读知识库：`/Users/humphrey/projects/factor-factory/knowledge/因子工厂/`
-- 检索索引：`/Users/humphrey/projects/factor-factory/knowledge/retrieval/`
+- 结构化对象 / 因子库：`/Users/researcher/projects/factor-factory/objects/`
+- 人类可读知识库：`/Users/researcher/projects/factor-factory/knowledge/因子工厂/`
+- 检索索引：`/Users/researcher/projects/factor-factory/knowledge/retrieval/`
 
 EC2 runtime 路径：
 
-- 结构化对象 / 因子库：`/home/ubuntu/.openclaw/workspace/factorforge/objects/`
-- 人类可读知识库：`/home/ubuntu/.openclaw/workspace/factorforge/knowledge/因子工厂/`
-- 检索索引：`/home/ubuntu/.openclaw/workspace/factorforge/knowledge/retrieval/`
+- 结构化对象 / 因子库：`/opt/factorforge/workspace/factorforge/objects/`
+- 人类可读知识库：`/opt/factorforge/workspace/factorforge/knowledge/因子工厂/`
+- 检索索引：`/opt/factorforge/workspace/factorforge/knowledge/retrieval/`
 
 不要再把下面这些当作新知识入口：
 
-- `/Users/humphrey/projects/factor-factory/knowledge/obsidian_vault/`
-- `/Users/humphrey/projects/factor-factory/factorforge/objects/`
+- `/Users/researcher/projects/factor-factory/knowledge/obsidian_vault/`
+- `/Users/researcher/projects/factor-factory/factorforge/objects/`
 
 ### 全部因子库
 
 路径：
 
-- `/home/ubuntu/.openclaw/workspace/factorforge/objects/factor_library_all`
+- `/opt/factorforge/workspace/factorforge/objects/factor_library_all`
 
 记录所有尝试，包括成功和失败。
 
@@ -617,7 +617,7 @@ EC2 runtime 路径：
 
 路径：
 
-- `/home/ubuntu/.openclaw/workspace/factorforge/objects/factor_library_official`
+- `/opt/factorforge/workspace/factorforge/objects/factor_library_official`
 
 只放 `promote_official` 的因子。
 
@@ -625,7 +625,7 @@ EC2 runtime 路径：
 
 路径：
 
-- `/home/ubuntu/.openclaw/workspace/factorforge/objects/research_knowledge_base`
+- `/opt/factorforge/workspace/factorforge/objects/research_knowledge_base`
 
 记录：
 
@@ -637,7 +637,7 @@ EC2 runtime 路径：
 
 路径：
 
-- `/home/ubuntu/.openclaw/workspace/factorforge/objects/research_iteration_master`
+- `/opt/factorforge/workspace/factorforge/objects/research_iteration_master`
 
 记录每轮：
 
@@ -649,7 +649,7 @@ EC2 runtime 路径：
 
 本地工作台路径：
 
-- `/Users/humphrey/projects/factor-factory/knowledge/因子工厂`
+- `/Users/researcher/projects/factor-factory/knowledge/因子工厂`
 
 它适合人看、做研究笔记、形成基金经理式知识沉淀。
 
@@ -664,11 +664,11 @@ EC2 runtime 路径：
 
 已经有同步工具：
 
-- `/home/ubuntu/.openclaw/workspace/repos/factor-factory/scripts/sync_factorforge_knowledge_bundle.py`
+- `/opt/factorforge/workspace/repos/factor-factory/scripts/sync_factorforge_knowledge_bundle.py`
 
 本地同名脚本：
 
-- `/Users/humphrey/projects/factor-factory/scripts/sync_factorforge_knowledge_bundle.py`
+- `/Users/researcher/projects/factor-factory/scripts/sync_factorforge_knowledge_bundle.py`
 
 推荐模式：
 

@@ -11,7 +11,7 @@ import pandas as pd
 from .paths import path_exists_accessibly
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FACTORFORGE = Path(
     os.getenv('FACTORFORGE_ROOT')
     or (

@@ -11,9 +11,9 @@ from datetime import datetime
 from pathlib import Path
 
 
-DEFAULT_INSTANCE_ID = "i-01c0ceb9c04ae270e"
-DEFAULT_REMOTE_ROOT = "/home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取"
-DEFAULT_REMOTE_PYTHON = "/home/ubuntu/miniconda3/envs/rdagent/bin/python"
+DEFAULT_INSTANCE_ID = "i-00000000000000001"
+DEFAULT_REMOTE_ROOT = "/opt/factorforge/workspace/repos/quant_self/tushare数据获取"
+DEFAULT_REMOTE_PYTHON = "/home/researcher/miniconda3/envs/rdagent/bin/python"
 DEFAULT_REMOTE_SCRIPT = "22_tushare_nonminute_to_s3.py"
 DEFAULT_LOCAL_SCRIPT = Path(__file__).resolve().parent / "tushare_nonminute_to_s3.py"
 

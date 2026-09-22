@@ -13,12 +13,12 @@ import pandas as pd
 
 warnings.filterwarnings('ignore')
 
-RUN_DIR  = "/Users/humphrey/projects/factor-factory/factorforge/runs/ALPHA014_SOURCE_101"
-OBJ_DIR  = "/Users/humphrey/projects/factor-factory/factorforge/objects"
+RUN_DIR  = "/Users/researcher/projects/factor-factory/factorforge/runs/ALPHA014_SOURCE_101"
+OBJ_DIR  = "/Users/researcher/projects/factor-factory/factorforge/objects"
 os.makedirs(RUN_DIR, exist_ok=True)
 
-DATA_PATH = "/Users/humphrey/projects/factor-factory/data/clean/daily_clean.parquet"
-FWD_PATH  = "/Users/humphrey/projects/factor-factory/data/clean/daily_forward_returns.parquet"
+DATA_PATH = "/Users/researcher/projects/factor-factory/data/clean/daily_clean.parquet"
+FWD_PATH  = "/Users/researcher/projects/factor-factory/data/clean/daily_forward_returns.parquet"
 
 T_START  = "2016-01-01"
 T_END    = "2025-07-11"

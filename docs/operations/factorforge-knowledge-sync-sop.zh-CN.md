@@ -16,18 +16,18 @@
 
 ```bash
 python3 scripts/sync_factorforge_knowledge_bundle.py bundle \
-  --runtime-root /Users/humphrey/projects/factor-factory \
+  --runtime-root /Users/researcher/projects/factor-factory \
   --upload \
   --update-latest \
-  --bucket yufan-data-lake \
+  --bucket factorforge-example-data \
   --prefix factorforge-knowledge/mac-authoritative \
   --source-role mac_authoritative
 ```
 
 结果：
 
-- 上传 immutable `.tgz` 到 `s3://yufan-data-lake/factorforge-knowledge/mac-authoritative/`
-- 更新 `s3://yufan-data-lake/factorforge-knowledge/mac-authoritative/latest.json`
+- 上传 immutable `.tgz` 到 `s3://factorforge-example-data/factorforge-knowledge/mac-authoritative/`
+- 更新 `s3://factorforge-example-data/factorforge-knowledge/mac-authoritative/latest.json`
 - `latest.json` 包含 bundle URI、sha256、文件数、来源角色、git commit。
 
 ## Canonical Layout
@@ -88,10 +88,10 @@ python3 scripts/validate_factor_knowledge_commit_scope.py \
 在 EC2 repo 根目录执行：
 
 ```bash
-/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python \
+/opt/factorforge/workspace/.venvs/quant-research/bin/python \
   scripts/sync_factorforge_knowledge_bundle.py apply \
-  --runtime-root /home/ubuntu/.openclaw/workspace/factorforge \
-  --source s3://yufan-data-lake/factorforge-knowledge/mac-authoritative/latest.json \
+  --runtime-root /opt/factorforge/workspace/factorforge \
+  --source s3://factorforge-example-data/factorforge-knowledge/mac-authoritative/latest.json \
   --apply \
   --overwrite-unprotected \
   --rebuild-index
@@ -111,12 +111,12 @@ python3 scripts/validate_factor_knowledge_commit_scope.py \
 EC2 如果完成了需要回流的研究对象，上传到独立前缀，不能覆盖 Mac authoritative latest：
 
 ```bash
-/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python \
+/opt/factorforge/workspace/.venvs/quant-research/bin/python \
   scripts/sync_factorforge_knowledge_bundle.py bundle \
-  --runtime-root /home/ubuntu/.openclaw/workspace/factorforge \
+  --runtime-root /opt/factorforge/workspace/factorforge \
   --upload \
   --update-latest \
-  --bucket yufan-data-lake \
+  --bucket factorforge-example-data \
   --prefix factorforge-knowledge/ec2-results \
   --source-role ec2_results
 ```
@@ -127,8 +127,8 @@ Mac 端人工吸收 EC2 结果：
 
 ```bash
 python3 scripts/sync_factorforge_knowledge_bundle.py apply \
-  --runtime-root /Users/humphrey/projects/factor-factory \
-  --source s3://yufan-data-lake/factorforge-knowledge/ec2-results/latest.json \
+  --runtime-root /Users/researcher/projects/factor-factory \
+  --source s3://factorforge-example-data/factorforge-knowledge/ec2-results/latest.json \
   --apply \
   --rebuild-index \
   --export-obsidian

@@ -40,7 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--factor-id", required=True)
     parser.add_argument("--formula", required=True)
     parser.add_argument("--workspace", type=Path, required=True)
-    parser.add_argument("--daily-clean", type=Path, default=Path("/Users/humphrey/projects/factor-factory-data-api/data/clean/daily_clean.parquet"))
+    parser.add_argument("--daily-clean", type=Path, default=Path("/Users/researcher/projects/factor-factory-data-api/data/clean/daily_clean.parquet"))
     parser.add_argument("--full-is-start", default="2016-01-01")
     parser.add_argument("--full-is-end", default="2025-07-11")
     parser.add_argument("--oos-start", default="2025-07-11")

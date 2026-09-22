@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import hashlib
 import importlib.util
 import json
@@ -14,12 +15,13 @@ import threading
 import time
 import types
 import uuid
+from collections.abc import Callable, Mapping
 from contextlib import ExitStack, contextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 from urllib.parse import urlsplit
 
 from factor_factory.console.agent_adapter import (
@@ -27,18 +29,19 @@ from factor_factory.console.agent_adapter import (
     BLOCK_AGENT_RUNTIME_FAILED,
     BLOCK_AGENT_RUNTIME_TIMEOUT,
     BLOCK_AGENT_RUNTIME_UNAVAILABLE,
-    AgentRunResult,
-    AgentResumeTask,
     RESUME_MEMO_AGENT_COMPONENT_FIELDS,
     RESUME_MEMO_AGENT_DIRECT_FIELDS,
     RESUME_MEMO_AGENT_EVIDENCE_FIELDS,
     RESUME_MEMO_AGENT_OPERATOR_FIELDS,
     RESUME_MEMO_AGENT_PATCH_FIELDS,
+    RESUME_MEMO_AGENT_PATCH_MAX_BYTES,
     RESUME_MEMO_LEGACY_AGENT_DIRECT_FIELDS,
     RESUME_MEMO_LEGACY_AGENT_PATCH_FIELDS,
-    RESUME_MEMO_AGENT_PATCH_MAX_BYTES,
     RESUME_MEMO_MAX_BYTES,
     RESUME_PROMPT_INPUT_MAX_BYTES,
+    AgentResumeTask,
+    AgentRunResult,
+    PreOosRootSynthesisTask,
     build_agent_prompt,
     build_agent_session_key,
     copy_auth_database,
@@ -51,7 +54,6 @@ from factor_factory.console.council_ingress import (
     CouncilIngressTask,
     build_council_task_prompt,
 )
-from factor_factory.console.models import ResearchJob
 from factor_factory.console.model_broker import (
     ACTIVE_SECRET_REGISTRY_NAME,
     CONSOLE_MODEL_MAX_OUTPUT_TOKENS,
@@ -63,22 +65,30 @@ from factor_factory.console.model_broker import (
     normalize_deepseek_openclaw_model,
     read_private_token_file,
 )
+from factor_factory.console.models import ResearchJob
 from factor_factory.console.store import utc_now
 from factor_factory.console.web_research_plan import write_text_atomic
 from factor_factory.console.workspace_transaction import (
     workspace_transaction_lock,
     workspace_transaction_lock_held,
 )
+from factor_factory.research_org.contracts import sha256_file, stable_json_hash
 from factor_factory.research_org.runtime import (
+    RESEARCH_ORG_CONTAINER_CONTEXT_ROOT,
+    RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH,
+    RESEARCH_ORG_CONTAINER_TASK_PATH,
+    RESEARCH_ORG_CONTAINER_WORKSPACE,
     ResearchOrgSessionInvocation,
     ResearchOrgSessionOutcome,
     build_research_org_session_prompt,
 )
-from factor_factory.research_org.contracts import sha256_file, stable_json_hash
 from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
-
+from factor_factory.revision_council.pre_oos_outcome import (
+    PRE_OOS_ROOT_SYNTHESIS_VERSION,
+)
 
 REQUIRED_CONTAINER_TOOLS = ["read", "edit", "write", "apply_patch", "exec", "process"]
+REQUIRED_COLD_SEARCH_CONTAINER_TOOLS = ["read", "write"]
 RESEARCH_ORG_HIDDEN_WORKTREE_ROOTS = (
     "archive",
     "data",
@@ -89,6 +99,7 @@ RESEARCH_ORG_HIDDEN_WORKTREE_ROOTS = (
     "runs",
 )
 REQUIRED_RESUME_CONTAINER_TOOLS = ["read"]
+REQUIRED_ROOT_SYNTHESIS_CONTAINER_TOOLS = ["read", "write"]
 RESUME_TERMINAL_DELIVERY_KEYS = {"status", "memo", "ledger"}
 RESUME_LEDGER_MAX_CHARACTERS = 1_600
 RESUME_TERMINAL_MAX_BYTES = 32_000
@@ -116,6 +127,191 @@ DATA_API_BRIDGE_RELATIVE = Path("deploy/factorforge-console/data-api-bridge")
 DATA_API_GIT_OBJECT_MAX_ENTRIES = 250_000
 DATA_API_GIT_OBJECT_MAX_BYTES = 2 * 1024 * 1024 * 1024
 DATA_API_GIT_VIEW_RETENTION = 2
+PRE_OOS_ROOT_SYNTHESIS_TASK_VERSION = (
+    "factorforge_console_pre_oos_root_synthesis_task_v1"
+)
+
+
+def _research_org_host_job_id(
+    invocation: ResearchOrgSessionInvocation,
+) -> str:
+    """Resolve the Host routing key without changing semantic identity.
+
+    EVO memory invocations deliberately carry an artifact identity without a
+    Console ``job_id``.  Ordinary organization invocations retain the legacy
+    identity field.  If both sources are present they must agree exactly.
+    """
+
+    operational = str(invocation.host_job_id or "")
+    identity_value = invocation.identity.get("job_id")
+    embedded = str(identity_value or "")
+    if operational and embedded and operational != embedded:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: research organization host job identity mismatch"
+        )
+    job_id = operational or embedded
+    if re.fullmatch(r"job_[a-f0-9]{10}", job_id) is None:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: research organization host job identity is invalid"
+        )
+    return job_id
+
+
+def _validate_pre_oos_root_synthesis_task(
+    job: ResearchJob,
+    workspace: Path,
+    task: PreOosRootSynthesisTask,
+) -> dict[str, Any]:
+    expected_output = (
+        Path("objects")
+        / "research_iteration_master"
+        / "revision_council"
+        / job.report_id
+        / f"pre_oos_council_root_synthesis__{job.report_id}.json"
+    ).as_posix()
+    expected_packet = (
+        "identity/"
+        f"web_pre_oos_root_synthesis_task__{job.report_id}.json"
+    )
+    expected_identity = (
+        task.job_id == job.job_id
+        and task.factor_id == job.factor_id
+        and task.research_id == job.research_id
+        and task.report_id == job.report_id
+    )
+    inputs = list(task.read_only_input_sha256)
+    if (
+        task.version != PRE_OOS_ROOT_SYNTHESIS_TASK_VERSION
+        or not expected_identity
+        or re.fullmatch(r"resume_[0-9a-f]{32}", task.attempt_id) is None
+        or re.fullmatch(r"[0-9a-f]{64}", task.trusted_proof_sha256) is None
+        or task.task_packet_relative != expected_packet
+        or re.fullmatch(r"[0-9a-f]{64}", task.task_packet_sha256) is None
+        or task.expected_output_relative != expected_output
+        or not inputs
+        or len(inputs) > 128
+        or inputs != sorted(inputs)
+        or len({relative for relative, _digest in inputs}) != len(inputs)
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: pre-OOS root synthesis task is invalid"
+        )
+    for relative, digest in inputs:
+        relative_path = Path(relative)
+        if (
+            not relative
+            or relative_path.is_absolute()
+            or relative_path == Path(".")
+            or ".." in relative_path.parts
+            or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+        ):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: pre-OOS root synthesis input binding is invalid"
+            )
+        source = _safe_workspace_relative_file(
+            workspace,
+            relative,
+            must_exist=True,
+        )
+        if sha256_file(source) != digest:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: pre-OOS root synthesis input changed"
+            )
+    packet_path = _safe_workspace_relative_file(
+        workspace,
+        task.task_packet_relative,
+        must_exist=True,
+    )
+    if sha256_file(packet_path) != task.task_packet_sha256:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: pre-OOS root synthesis prompt changed"
+        )
+    try:
+        packet = json.loads(packet_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: pre-OOS root synthesis prompt is invalid"
+        ) from exc
+    unsigned = dict(packet) if isinstance(packet, dict) else {}
+    content_sha256 = unsigned.pop("content_sha256", None)
+    if (
+        not isinstance(packet, dict)
+        or packet.get("version") != PRE_OOS_ROOT_SYNTHESIS_TASK_VERSION
+        or packet.get("attempt_id") != task.attempt_id
+        or packet.get("identity")
+        != {
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+        }
+        or content_sha256 != stable_json_hash(unsigned)
+        or packet.get("read_only_inputs")
+        != [
+            {"path": relative, "sha256": digest}
+            for relative, digest in inputs
+        ]
+        or (packet.get("required_output") or {}).get("path")
+        != expected_output
+        or (packet.get("required_output") or {}).get("contract_version")
+        != PRE_OOS_ROOT_SYNTHESIS_VERSION
+        or (packet.get("permissions") or {}).get("agent_workspace_write_paths")
+        != [expected_output]
+        or any(
+            (packet.get("permissions") or {}).get(field) is not False
+            for field in (
+                "host_transition_allowed",
+                "human_approval_allowed",
+                "child_creation_allowed",
+                "oos_access_allowed",
+                "canonical_knowledge_write_allowed",
+            )
+        )
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: pre-OOS root synthesis prompt binding is invalid"
+        )
+    output = workspace / expected_output
+    if output.exists() or output.is_symlink():
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: pre-OOS root synthesis output already exists"
+        )
+    return packet
+
+
+def _build_pre_oos_root_synthesis_prompt(
+    *,
+    workspace: Path,
+    task: PreOosRootSynthesisTask,
+    private_output_path: Path,
+) -> str:
+    return f"""You are the Factor Forge pre-OOS revision-Council root synthesizer.
+
+Read this exact Host-authored task packet first:
+{workspace / task.task_packet_relative}
+
+Then read only the immutable PURGED_IS_ONLY evidence files enumerated by that
+packet. Do not inspect source code, another workspace, OOS evidence, credentials,
+environment variables, network resources, or unlisted files.
+
+Write exactly one JSON object to this private output path and no other output file:
+{private_output_path}
+
+The JSON must use the packet's exact closed root-synthesis schema and fixed
+authority object. Compare every independent route, select exactly one complete
+raw result without majority voting, scoring, ranking, or aggregation, and resolve
+or explicitly preserve every dissent with discriminating evidence and open proof
+obligations. Copy every evidence reference and selected-outcome identity from the
+immutable inputs exactly. A NO_DERIVED_LAW result is a legitimate selectable
+outcome. Do not claim a Host transition, human approval, factor verdict, child
+authorization, canonical-knowledge write, or OOS access.
+
+Compute content_sha256 only after the object is complete: remove that field,
+serialize the remaining object as compact UTF-8 JSON with sorted keys, and hash
+those bytes with SHA-256. Return no Markdown fence or commentary. The Host will
+formally validate and atomically import the private JSON to the packet-bound
+canonical path; never write the workspace directly.
+"""
 
 
 def _docker_container_not_found(
@@ -133,6 +329,31 @@ def _docker_container_not_found(
         f"error response from daemon: no such container: {normalized_name}",
         f"no such container: {normalized_name}",
     }
+
+
+def _research_org_termination_confirmed(
+    proof: Any,
+    *,
+    runtime_instance_id: str,
+) -> bool:
+    """Accept only an exact signed-proof projection for this runtime handle."""
+
+    if not isinstance(proof, Mapping):
+        return False
+    identity = proof.get("identity")
+    termination = proof.get("termination")
+    return bool(
+        proof.get("receipt_type")
+        == "RESEARCH_ORG_CONTAINER_TERMINATION"
+        and isinstance(identity, Mapping)
+        and identity.get("runtime_instance_id") == runtime_instance_id
+        and identity.get("runtime_handle_sha256")
+        == hashlib.sha256(runtime_instance_id.encode("utf-8")).hexdigest()
+        and isinstance(termination, Mapping)
+        and termination.get("inspect_not_found") is True
+        and termination.get("termination_confirmed") is True
+        and termination.get("final_state") == "ABSENT"
+    )
 
 
 def _research_org_authoring_protected_relatives(
@@ -819,6 +1040,432 @@ class ContainerizedOpenClawResearchAgentAdapter:
             model=model,
         )
 
+    def run_pre_oos_root_synthesis(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        task: PreOosRootSynthesisTask,
+    ) -> AgentRunResult:
+        worktree = worktree.resolve(strict=True)
+        workspace = workspace.resolve(strict=True)
+        workspace.relative_to(worktree)
+        if not workspace_transaction_lock_held(self.config.state_root, workspace):
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: pre-OOS root synthesis lacks an outer workspace transaction"
+            )
+        _validate_pre_oos_root_synthesis_task(job, workspace, task)
+
+        self._initialize_credential_material_state(job.job_id, resume=True)
+        first_issuance = self.credential_material_state(job.job_id) == "not_issued"
+        runtime_root, _home, _primary_agent_dir, _profile_config = (
+            self._prepare_runtime(job.job_id)
+        )
+        synthesis_run_root = (
+            runtime_root / "pre-oos-root-synthesis" / f"run_{uuid.uuid4().hex}"
+        )
+        synthesis_run_root.mkdir(parents=True, exist_ok=False, mode=0o700)
+        synthesis_run_root.chmod(0o700)
+        engine_source, engine_commit = self._engine_identity(
+            job=job,
+            worktree=worktree,
+            resume=True,
+        )
+        engine_worktree = worktree
+        git_dir: Path | None = None
+        if self.trusted_engine_commit:
+            git_dir = self._prepare_git_view(
+                runtime_root=synthesis_run_root,
+                worktree=engine_source,
+                base_commit=engine_commit,
+            )
+            engine_worktree = self._prepare_engine_worktree_view(
+                runtime_root=synthesis_run_root,
+                git_dir=git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=workspace.relative_to(worktree),
+            )
+            self._validate_engine_worktree_view(
+                engine_root=engine_worktree,
+                git_dir=git_dir,
+                engine_commit=engine_commit,
+                workspace_relative=workspace.relative_to(worktree),
+            )
+
+        home = synthesis_run_root / "home"
+        agent_dir = synthesis_run_root / "agent"
+        profile_dir = home / f".openclaw-{self.config.openclaw_profile}"
+        agent_workspace = synthesis_run_root / "agent-workspace"
+        evidence_root = agent_workspace / "evidence"
+        output_root = agent_workspace / "output"
+        workspace_view = synthesis_run_root / "workspace-view"
+        for path in (
+            home,
+            agent_dir,
+            profile_dir,
+            agent_workspace,
+            evidence_root,
+            output_root,
+            workspace_view,
+        ):
+            path.mkdir(parents=True, exist_ok=False, mode=0o700)
+            path.chmod(0o700)
+        for relative, digest in (
+            (task.task_packet_relative, task.task_packet_sha256),
+            *task.read_only_input_sha256,
+        ):
+            source = _safe_workspace_relative_file(
+                workspace,
+                relative,
+                must_exist=True,
+            )
+            if sha256_file(source) != digest:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: pre-OOS root synthesis evidence changed"
+                )
+            destination = evidence_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            if destination.exists():
+                if sha256_file(destination) != digest:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: pre-OOS root synthesis staged evidence conflicts"
+                    )
+                continue
+            shutil.copy2(source, destination)
+            destination.chmod(0o400)
+        for directory in sorted(
+            (path for path in evidence_root.rglob("*") if path.is_dir()),
+            reverse=True,
+        ):
+            directory.chmod(0o500)
+        evidence_root.chmod(0o500)
+
+        assert self.config.openclaw_profile_template is not None
+        profile_config = profile_dir / "openclaw.json"
+        shutil.copy2(self.config.openclaw_profile_template, profile_config)
+        profile_config.chmod(0o600)
+        profile_payload = json.loads(profile_config.read_text(encoding="utf-8"))
+        profile_payload["tools"]["allow"] = REQUIRED_ROOT_SYNTHESIS_CONTAINER_TOOLS
+        profile_config.write_text(
+            json.dumps(profile_payload, ensure_ascii=False, indent=2, sort_keys=True)
+            + "\n",
+            encoding="utf-8",
+        )
+        profile_config.chmod(0o600)
+        _validate_profile_policy(
+            profile_payload,
+            expected_model_broker_url=self.config.container_model_broker_url,
+            expected_tools=REQUIRED_ROOT_SYNTHESIS_CONTAINER_TOOLS,
+        )
+        auth_store = agent_dir / "openclaw-agent.sqlite"
+        assert self.config.openclaw_auth_seed_db is not None
+        copy_auth_database(self.config.openclaw_auth_seed_db, auth_store)
+        auth_store.chmod(0o600)
+        validate_auth_database(
+            auth_store,
+            provider=self.config.openclaw_auth_provider,
+            label="pre-OOS root synthesis credential store",
+            expected_key=self._broker_client_token(),
+        )
+        model = _pinned_container_model(job.request.model or self.config.openclaw_model)
+        agent_id = (
+            f"ff-root-{job.job_id.removeprefix('job_')[:10]}-"
+            f"{task.attempt_id[-8:]}"
+        )
+        session_key = f"agent:{agent_id}:{job.job_id}:{task.attempt_id}"
+        container_name = (
+            f"ff-root-{self.config.installation_id[:8]}-"
+            f"{job.job_id.removeprefix('job_')[:10]}"
+        )
+        workspace_mountpoint = engine_worktree / workspace.relative_to(worktree)
+        common = self._container_prefix(
+            container_name=container_name,
+            job_id=job.job_id,
+            worktree=engine_worktree,
+            workspace=workspace_mountpoint,
+            runtime_root=synthesis_run_root,
+            home=home,
+            git_dir=None,
+            aws_env_file=None,
+            profile_config_readonly=None,
+            auth_store_path=None,
+            worktree_mount_source=engine_worktree,
+            workspace_readonly=True,
+            workspace_mount_source=workspace_view,
+        )
+        add_command = [
+            *common,
+            self.config.openclaw_binary,
+            "--profile",
+            self.config.openclaw_profile,
+            "agents",
+            "add",
+            agent_id,
+            "--workspace",
+            str(agent_workspace),
+            "--agent-dir",
+            str(agent_dir),
+            "--model",
+            model,
+            "--non-interactive",
+            "--json",
+        ]
+        self._run_runtime(
+            add_command,
+            timeout=120,
+            label="pre-OOS root synthesis agent initialization",
+            allow_exists=True,
+        )
+        self._validate_agent_binding(
+            profile_config,
+            agent_id,
+            agent_workspace,
+            agent_dir,
+            model,
+            expected_tools=REQUIRED_ROOT_SYNTHESIS_CONTAINER_TOOLS,
+        )
+        private_output_path = output_root / "root_synthesis.json"
+        expected_private_entries = {
+            path.relative_to(agent_workspace).as_posix()
+            for path in agent_workspace.rglob("*")
+        }
+        expected_private_entries.add(
+            private_output_path.relative_to(agent_workspace).as_posix()
+        )
+        prompt_path = synthesis_run_root / "root_synthesis_task.md"
+        prompt_path.write_text(
+            _build_pre_oos_root_synthesis_prompt(
+                workspace=evidence_root,
+                task=task,
+                private_output_path=private_output_path,
+            ),
+            encoding="utf-8",
+        )
+        prompt_path.chmod(0o400)
+        aws_env_file, credential_values, _denied_secret_file = (
+            self._prepare_aws_environment(
+                job.job_id,
+                allow_missing_history=first_issuance,
+                include_aws_credentials=False,
+            )
+        )
+        research_common = self._container_prefix(
+            container_name=container_name,
+            job_id=job.job_id,
+            worktree=engine_worktree,
+            workspace=workspace_mountpoint,
+            runtime_root=synthesis_run_root,
+            home=home,
+            git_dir=None,
+            aws_env_file=aws_env_file,
+            profile_config_readonly=profile_config,
+            auth_store_path=auth_store,
+            worktree_mount_source=engine_worktree,
+            workspace_readonly=True,
+            workspace_mount_source=workspace_view,
+        )
+        command = [
+            *research_common,
+            self.config.openclaw_binary,
+            "--profile",
+            self.config.openclaw_profile,
+            "agent",
+            "--local",
+            "--agent",
+            agent_id,
+            "--session-key",
+            session_key,
+            "--message-file",
+            str(prompt_path),
+            "--thinking",
+            self.config.openclaw_thinking,
+            "--timeout",
+            str(self.config.agent_timeout_seconds),
+            "--json",
+        ]
+        started = utc_now()
+        returncode = 0
+        stdout = ""
+        stderr = ""
+        try:
+            with self._lock:
+                self._active.add(container_name)
+            try:
+                proc = subprocess.run(
+                    command,
+                    cwd=engine_worktree,
+                    text=True,
+                    capture_output=True,
+                    timeout=self.config.agent_timeout_seconds + 90,
+                )
+                returncode = proc.returncode
+                stdout = redact_secrets(
+                    proc.stdout,
+                    extra_values=credential_values,
+                )
+                stderr = redact_secrets(
+                    proc.stderr,
+                    extra_values=credential_values,
+                )
+            except FileNotFoundError as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {self.config.container_runtime}"
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                if not self._stop_container(container_name):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_ORPHANED_WRITER}: timed-out root synthesis container could not be removed"
+                    ) from exc
+                returncode = 124
+                stdout = redact_secrets(
+                    _as_text(exc.stdout),
+                    extra_values=credential_values,
+                )
+                stderr = redact_secrets(
+                    _as_text(exc.stderr),
+                    extra_values=credential_values,
+                )
+            finally:
+                with self._lock:
+                    self._active.discard(container_name)
+        finally:
+            self._cleanup_aws_environment(aws_env_file, None)
+
+        if returncode == 0:
+            actual_private_entries: set[str] = set()
+            for path in agent_workspace.rglob("*"):
+                relative = path.relative_to(agent_workspace).as_posix()
+                if path.is_symlink() or not (path.is_file() or path.is_dir()):
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: pre-OOS root synthesis created an unsafe private entry"
+                    )
+                actual_private_entries.add(relative)
+            if actual_private_entries != expected_private_entries:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: pre-OOS root synthesis created extra private paths"
+                )
+            for relative, digest in (
+                (task.task_packet_relative, task.task_packet_sha256),
+                *task.read_only_input_sha256,
+            ):
+                staged = evidence_root / relative
+                if staged.is_symlink() or not staged.is_file() or sha256_file(staged) != digest:
+                    raise RuntimeError(
+                        f"{BLOCK_AGENT_RUNTIME_FAILED}: pre-OOS root synthesis changed staged evidence"
+                    )
+            if (
+                private_output_path.is_symlink()
+                or not private_output_path.is_file()
+                or not 0 < private_output_path.stat().st_size <= 2 * 1024 * 1024
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: pre-OOS root synthesis is missing or unsafe"
+                )
+            raw_output = private_output_path.read_text(encoding="utf-8")
+            if redact_secrets(raw_output, extra_values=credential_values) != raw_output:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: pre-OOS root synthesis contains secret material"
+                )
+            try:
+                synthesis = json.loads(raw_output)
+            except json.JSONDecodeError as exc:
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: pre-OOS root synthesis is invalid JSON"
+                ) from exc
+            if (
+                not isinstance(synthesis, dict)
+                or synthesis.get("contract_version")
+                != PRE_OOS_ROOT_SYNTHESIS_VERSION
+                or synthesis.get("report_id") != job.report_id
+                or synthesis.get("evidence_view") != "PURGED_IS_ONLY"
+            ):
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: pre-OOS root synthesis identity is invalid"
+                )
+            _validate_pre_oos_root_synthesis_task(job, workspace, task)
+            if self.trusted_engine_commit and git_dir is not None:
+                self._validate_engine_worktree_view(
+                    engine_root=engine_worktree,
+                    git_dir=git_dir,
+                    engine_commit=engine_commit,
+                    workspace_relative=workspace.relative_to(worktree),
+                )
+            destination = workspace / task.expected_output_relative
+            _ensure_workspace_parent(destination, root=workspace)
+            if destination.exists() or destination.is_symlink():
+                raise RuntimeError(
+                    f"{BLOCK_AGENT_RUNTIME_FAILED}: pre-OOS root synthesis output already exists"
+                )
+            _write_text_atomic_new(
+                destination,
+                json.dumps(
+                    synthesis,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n",
+                root=workspace,
+            )
+
+        finished = utc_now()
+        result_path = (
+            self.config.state_root
+            / "jobs"
+            / job.job_id
+            / f"pre_oos_root_synthesis_{_stamp(finished)}.json"
+        )
+        read_only_inputs = [
+            {"path": relative, "sha256": digest}
+            for relative, digest in task.read_only_input_sha256
+        ]
+        payload: dict[str, Any] = {
+            "version": "factorforge_console_pre_oos_root_synthesis_run_v1",
+            "execution_mode": "container",
+            "job_id": job.job_id,
+            "factor_id": job.factor_id,
+            "research_id": job.research_id,
+            "report_id": job.report_id,
+            "agent_id": agent_id,
+            "session_key_sha256": hashlib.sha256(session_key.encode("utf-8")).hexdigest(),
+            "resume": True,
+            "attempt_id": task.attempt_id,
+            "research_base_commit": job.base_commit,
+            "engine_commit": engine_commit,
+            "trusted_proof_sha256": task.trusted_proof_sha256,
+            "task_packet_path": task.task_packet_relative,
+            "task_packet_sha256": task.task_packet_sha256,
+            "read_only_inputs": read_only_inputs,
+            "expected_output_path": task.expected_output_relative,
+            "imported_output_sha256": (
+                sha256_file(workspace / task.expected_output_relative)
+                if returncode == 0
+                else ""
+            ),
+            "started_at_utc": started,
+            "finished_at_utc": finished,
+            "returncode": returncode,
+            "provider": self.config.openclaw_auth_provider,
+            "model": model,
+            "error_code": "" if returncode == 0 else BLOCK_AGENT_RUNTIME_FAILED,
+            "stdout_tail": stdout[-4_000:],
+            "stderr_tail": stderr[-4_000:],
+        }
+        _write_private_json(result_path, payload)
+        return AgentRunResult(
+            returncode=returncode,
+            agent_id=agent_id,
+            session_key=session_key,
+            started_at_utc=started,
+            finished_at_utc=finished,
+            stdout_tail=str(payload["stdout_tail"]),
+            stderr_tail=str(payload["stderr_tail"]),
+            result_path=str(result_path),
+            provider=self.config.openclaw_auth_provider,
+            model=model,
+        )
+
     def run_council_ingress(
         self,
         job: ResearchJob,
@@ -1269,14 +1916,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
     ) -> ResearchOrgSessionOutcome:
         """Run one signed research-organization session or sign its failure."""
 
+        host_job_id = _research_org_host_job_id(invocation)
         started = utc_now()
         try:
-            return self._run_research_org_session_owned(invocation)
+            return self._run_research_org_session_owned(
+                invocation,
+                host_job_id=host_job_id,
+            )
         except Exception as exc:  # noqa: BLE001 - adapter is the trust boundary.
             return self._failed_research_org_session_outcome(
                 invocation,
                 started_at_utc=started,
                 error=exc,
+                host_job_id=host_job_id,
             )
 
     def run_researcher_memory_review_session(
@@ -1289,7 +1941,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: memory reviewer role is invalid"
             )
-        job_id = str(invocation.identity.get("job_id") or "")
+        job_id = _research_org_host_job_id(invocation)
         try:
             outcome = self.run_research_org_session(invocation)
             from factor_factory.researcher_memory_review import (
@@ -1308,6 +1960,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
     def _run_research_org_session_owned(
         self,
         invocation: ResearchOrgSessionInvocation,
+        *,
+        host_job_id: str,
     ) -> ResearchOrgSessionOutcome:
         """Run one research-organization role in one owned staged-context container."""
 
@@ -1334,6 +1988,11 @@ class ContainerizedOpenClawResearchAgentAdapter:
                     f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: required role skill is missing"
                 )
 
+        cold_search_session = (
+            invocation.role_id == "knowledge_librarian"
+            and invocation.task_id.startswith("evo_v2_memory_search_")
+        )
+
         home = private_root / "home"
         agent_dir = private_root / "agent"
         profile_dir = home / f".openclaw-{self.config.openclaw_profile}"
@@ -1344,9 +2003,34 @@ class ContainerizedOpenClawResearchAgentAdapter:
         profile_config = profile_dir / "openclaw.json"
         shutil.copy2(self.config.openclaw_profile_template, profile_config)
         profile_config.chmod(0o600)
+        if cold_search_session:
+            profile_payload = json.loads(
+                profile_config.read_text(encoding="utf-8")
+            )
+            profile_payload["agents"]["defaults"]["repoRoot"] = str(
+                RESEARCH_ORG_CONTAINER_WORKSPACE
+            )
+            profile_payload["tools"]["allow"] = (
+                REQUIRED_COLD_SEARCH_CONTAINER_TOOLS
+            )
+            profile_config.write_text(
+                json.dumps(profile_payload, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            profile_config.chmod(0o600)
         _validate_profile_policy(
             json.loads(profile_config.read_text(encoding="utf-8")),
             expected_model_broker_url=self.config.container_model_broker_url,
+            expected_tools=(
+                REQUIRED_COLD_SEARCH_CONTAINER_TOOLS
+                if cold_search_session
+                else REQUIRED_CONTAINER_TOOLS
+            ),
+            expected_repo_root=(
+                str(RESEARCH_ORG_CONTAINER_WORKSPACE)
+                if cold_search_session
+                else None
+            ),
         )
         auth_store = agent_dir / "openclaw-agent.sqlite"
         assert self.config.openclaw_auth_seed_db is not None
@@ -1359,7 +2043,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             expected_key=self._broker_client_token(),
         )
 
-        job_id = invocation.identity["job_id"]
+        job_id = host_job_id
         with self._research_org_credential_lock:
             self._initialize_credential_material_state(job_id, resume=False)
             first_issuance = self.credential_material_state(job_id) == "not_issued"
@@ -1376,12 +2060,34 @@ class ContainerizedOpenClawResearchAgentAdapter:
         )
         session_key = f"agent:{agent_id}:{job_id}:{invocation.session_id}"
         container_name = invocation.runtime_instance_id
+        container_view_root: Path | None = None
+        agent_workspace = worktree
         prompt_path = private_root / "research_org_task.md"
+        container_prompt_path = prompt_path
+        if cold_search_session:
+            container_view_root = private_root / "container_view"
+            container_view_root.mkdir(mode=0o700)
+            for mountpoint in ("context", "output"):
+                (container_view_root / mountpoint).mkdir(mode=0o700)
+            prompt_path = container_view_root / "task.md"
+            container_prompt_path = RESEARCH_ORG_CONTAINER_TASK_PATH
+            agent_workspace = RESEARCH_ORG_CONTAINER_WORKSPACE
+        prompt = (
+            build_research_org_session_prompt(
+                invocation,
+                container_context_root=RESEARCH_ORG_CONTAINER_CONTEXT_ROOT,
+                container_private_output_path=(
+                    RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH
+                ),
+            )
+            if cold_search_session
+            else build_research_org_session_prompt(invocation)
+        )
         prompt_path.write_text(
-            build_research_org_session_prompt(invocation),
+            prompt,
             encoding="utf-8",
         )
-        prompt_path.chmod(0o600)
+        prompt_path.chmod(0o400 if cold_search_session else 0o600)
 
         def container_prefix(
             *,
@@ -1418,6 +2124,34 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 "--label",
                 f"factorforge.research-org.role={invocation.role_id}",
             ]
+            if cold_search_session:
+                assert container_view_root is not None
+                command[-1:-1] = [
+                    "--mount",
+                    _mount(
+                        container_view_root,
+                        readonly=True,
+                        target=RESEARCH_ORG_CONTAINER_WORKSPACE,
+                    ),
+                    "--mount",
+                    _mount(
+                        context_root,
+                        readonly=True,
+                        target=RESEARCH_ORG_CONTAINER_CONTEXT_ROOT,
+                    ),
+                    "--mount",
+                    _mount(
+                        invocation.private_output_path.parent,
+                        readonly=False,
+                        target=(
+                            RESEARCH_ORG_CONTAINER_PRIVATE_OUTPUT_PATH.parent
+                        ),
+                    ),
+                ]
+                workdir_index = command.index("--workdir")
+                command[workdir_index + 1] = str(
+                    RESEARCH_ORG_CONTAINER_WORKSPACE
+                )
             return command
 
         add_command = [
@@ -1429,7 +2163,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "add",
             agent_id,
             "--workspace",
-            str(worktree),
+            str(agent_workspace),
             "--agent-dir",
             str(agent_dir),
             "--model",
@@ -1446,9 +2180,19 @@ class ContainerizedOpenClawResearchAgentAdapter:
         self._validate_agent_binding(
             profile_config,
             agent_id,
-            worktree,
+            agent_workspace,
             agent_dir,
             model,
+            expected_tools=(
+                REQUIRED_COLD_SEARCH_CONTAINER_TOOLS
+                if cold_search_session
+                else REQUIRED_CONTAINER_TOOLS
+            ),
+            expected_repo_root=(
+                str(RESEARCH_ORG_CONTAINER_WORKSPACE)
+                if cold_search_session
+                else None
+            ),
         )
         command = [
             *container_prefix(
@@ -1465,7 +2209,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             "--session-key",
             session_key,
             "--message-file",
-            str(prompt_path),
+            str(container_prompt_path),
             "--thinking",
             self.config.openclaw_thinking,
             "--timeout",
@@ -1480,7 +2224,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         timed_out = False
         private_output_safe = False
         process: subprocess.Popen[str] | None = None
-        run_completed = False
+        termination_proof: dict[str, Any] | None = None
         try:
             process = subprocess.Popen(
                 command,
@@ -1495,25 +2239,46 @@ class ContainerizedOpenClawResearchAgentAdapter:
             while process.poll() is None:
                 if invocation.cancel_request_path.is_file():
                     cancelled = True
-                    if not self.cancel_research_org_session(container_name):
+                    termination_proof = self.reconcile_research_org_session(
+                        container_name
+                    )
+                    if not _research_org_termination_confirmed(
+                        termination_proof,
+                        runtime_instance_id=container_name,
+                    ):
                         raise RuntimeError(
-                            f"{BLOCK_AGENT_ORPHANED_WRITER}: cancelled research organization container remained active"
+                            f"{BLOCK_AGENT_ORPHANED_WRITER}: cancelled "
+                            "research organization container remained active"
                         )
                     break
                 if time.monotonic() >= deadline:
                     timed_out = True
-                    if not self.cancel_research_org_session(container_name):
+                    termination_proof = self.reconcile_research_org_session(
+                        container_name
+                    )
+                    if not _research_org_termination_confirmed(
+                        termination_proof,
+                        runtime_instance_id=container_name,
+                    ):
                         raise RuntimeError(
-                            f"{BLOCK_AGENT_ORPHANED_WRITER}: timed-out research organization container remained active"
+                            f"{BLOCK_AGENT_ORPHANED_WRITER}: timed-out "
+                            "research organization container remained active"
                         )
                     break
                 time.sleep(0.25)
             try:
                 stdout, stderr = process.communicate(timeout=30)
             except subprocess.TimeoutExpired as exc:
-                if not self.cancel_research_org_session(container_name):
+                termination_proof = self.reconcile_research_org_session(
+                    container_name
+                )
+                if not _research_org_termination_confirmed(
+                    termination_proof,
+                    runtime_instance_id=container_name,
+                ):
                     raise RuntimeError(
-                        f"{BLOCK_AGENT_ORPHANED_WRITER}: research organization container could not be reaped"
+                        f"{BLOCK_AGENT_ORPHANED_WRITER}: research "
+                        "organization container could not be reaped"
                     ) from exc
                 stdout, stderr = process.communicate(timeout=30)
             returncode = 130 if cancelled else 124 if timed_out else process.returncode
@@ -1552,17 +2317,22 @@ class ContainerizedOpenClawResearchAgentAdapter:
                         private_output_safe = True
             else:
                 private_output_safe = True
-            run_completed = True
         except FileNotFoundError as exc:
             raise RuntimeError(
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: {self.config.container_runtime}"
             ) from exc
         finally:
-            termination_confirmed = run_completed
-            if not termination_confirmed:
-                termination_confirmed = (
-                    self._confirm_research_org_session_terminated(container_name)
+            if not _research_org_termination_confirmed(
+                termination_proof,
+                runtime_instance_id=container_name,
+            ):
+                termination_proof = self.reconcile_research_org_session(
+                    container_name
                 )
+            termination_confirmed = _research_org_termination_confirmed(
+                termination_proof,
+                runtime_instance_id=container_name,
+            )
             if termination_confirmed:
                 with self._lock:
                     self._active.discard(container_name)
@@ -1573,6 +2343,12 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 prompt_path.unlink(missing_ok=True)
                 if not private_output_safe:
                     invocation.private_output_path.unlink(missing_ok=True)
+        if not termination_confirmed:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_ORPHANED_WRITER}: research organization "
+                "container termination was not confirmed by remove plus "
+                "inspect-not-found"
+            )
         finished = utc_now()
         provider_session_handle_sha256 = hashlib.sha256(
             session_key.encode("utf-8")
@@ -1585,6 +2361,10 @@ class ContainerizedOpenClawResearchAgentAdapter:
         ):
             private_output_sha256 = sha256_file(invocation.private_output_path)
             private_output_size_bytes = invocation.private_output_path.stat().st_size
+        _write_private_json(
+            private_root / "container_termination_receipt.json",
+            dict(termination_proof),
+        )
         receipt_type = (
             "COMPLETED"
             if returncode == 0
@@ -1611,7 +2391,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             ),
             private_output_sha256=private_output_sha256,
             private_output_size_bytes=private_output_size_bytes,
-            termination_confirmed=True,
+            termination_proof=termination_proof,
         )
         return ResearchOrgSessionOutcome(
             returncode=int(returncode),
@@ -1637,10 +2417,15 @@ class ContainerizedOpenClawResearchAgentAdapter:
         *,
         started_at_utc: str,
         error: Exception,
+        host_job_id: str,
     ) -> ResearchOrgSessionOutcome:
         container_name = invocation.runtime_instance_id
-        termination_confirmed = self._confirm_research_org_session_terminated(
+        termination_proof = self.reconcile_research_org_session(
             container_name
+        )
+        termination_confirmed = _research_org_termination_confirmed(
+            termination_proof,
+            runtime_instance_id=container_name,
         )
         with self._lock:
             if termination_confirmed:
@@ -1661,7 +2446,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             (private_root / "research_org_task.md").unlink(missing_ok=True)
             invocation.private_output_path.unlink(missing_ok=True)
 
-        job_id = str(invocation.identity.get("job_id") or "")
+        job_id = host_job_id
         model = _pinned_container_model(self.config.openclaw_model)
         agent_id = _safe_runtime_token(
             f"research-org-{invocation.role_id}-{invocation.attempt_id[-8:]}"
@@ -1684,6 +2469,11 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 f"{stderr}\n{BLOCK_AGENT_ORPHANED_WRITER}: "
                 "research organization container termination was not confirmed"
             )
+        if private_root is not None:
+            _write_private_json(
+                private_root / "container_termination_receipt.json",
+                dict(termination_proof),
+            )
         adapter_receipt = self._sign_research_org_adapter_receipt(
             invocation,
             receipt_type="FAILED",
@@ -1695,7 +2485,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             error_class=error_class,
             private_output_sha256=None,
             private_output_size_bytes=None,
-            termination_confirmed=termination_confirmed,
+            termination_proof=termination_proof,
         )
         return ResearchOrgSessionOutcome(
             returncode=1,
@@ -1726,12 +2516,28 @@ class ContainerizedOpenClawResearchAgentAdapter:
         error_class: str | None,
         private_output_sha256: str | None,
         private_output_size_bytes: int | None,
-        termination_confirmed: bool,
+        termination_proof: Mapping[str, Any],
     ) -> dict[str, Any]:
+        termination_confirmed = _research_org_termination_confirmed(
+            termination_proof,
+            runtime_instance_id=invocation.runtime_instance_id,
+        )
+        termination_receipt_id = str(
+            termination_proof.get("receipt_id") or ""
+        )
         trust_store = ensure_runtime_trust_store(
             self.config.state_root / "research-org-trust",
             installation_id=self.config.installation_id,
         )
+        proof_signature_reasons = trust_store.verify(
+            termination_proof,
+            expected_issuer="runtime_adapter",
+        )
+        if proof_signature_reasons:
+            raise RuntimeError(
+                f"{BLOCK_AGENT_RUNTIME_FAILED}: unsigned or invalid "
+                "research organization termination proof"
+            )
         return trust_store.sign(
             "runtime_adapter",
             {
@@ -1777,8 +2583,21 @@ class ContainerizedOpenClawResearchAgentAdapter:
                             "workspace_readonly": True,
                             "aws_credentials": False,
                             "installation_id": self.config.installation_id,
+                            "termination_receipt_id": termination_receipt_id,
+                            "termination_runtime_handle_sha256": hashlib.sha256(
+                                invocation.runtime_instance_id.encode("utf-8")
+                            ).hexdigest(),
                         }
                     ),
+                    "runtime": {
+                        "provider": self.config.openclaw_auth_provider,
+                        "model": _pinned_container_model(
+                            self.config.openclaw_model
+                        ),
+                        "transport": "openclaw_disposable_container",
+                        "isolation_class": "container_staged_context",
+                        "owned_termination_supported": True,
+                    },
                     "parent_session_uid": invocation.parent_session_uid,
                     "lease_epoch": invocation.scheduler_epoch,
                 },
@@ -1793,59 +2612,144 @@ class ContainerizedOpenClawResearchAgentAdapter:
             },
         )
 
+    def reconcile_research_org_session(
+        self,
+        runtime_instance_id: str,
+    ) -> dict[str, Any]:
+        """Remove exactly one owned runtime and sign inspect-not-found evidence.
+
+        The method is intentionally handle-scoped.  It never lists containers
+        and never terminates by image, model, role, or process name.  A present
+        container must carry the complete ownership label tuple before it can
+        be removed.  An exact Docker/Podman not-found response is the only
+        accepted terminal observation.
+        """
+
+        issued_at = utc_now()
+        runtime_handle_sha256 = hashlib.sha256(
+            runtime_instance_id.encode("utf-8")
+        ).hexdigest()
+        initial_state = "INVALID_IDENTITY"
+        ownership_labels_verified = False
+        remove_attempted = False
+        inspect_not_found = False
+        if re.fullmatch(r"fforg-[a-z0-9-]{8,62}", runtime_instance_id):
+            try:
+                initial = subprocess.run(
+                    [
+                        self.config.container_runtime,
+                        "inspect",
+                        "--format",
+                        "{{json .Config.Labels}}",
+                        runtime_instance_id,
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=20,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                initial_state = "INSPECT_FAILED"
+            else:
+                if _docker_container_not_found(initial, runtime_instance_id):
+                    initial_state = "ABSENT"
+                    # `docker run --rm` may already have removed the exact
+                    # runtime.  Do not issue a name-based remove after absence:
+                    # that would race a newly created, unowned same-name
+                    # container.  The exact not-found observation is terminal.
+                    inspect_not_found = True
+                elif initial.returncode != 0:
+                    initial_state = "INSPECT_FAILED"
+                else:
+                    try:
+                        labels = json.loads(initial.stdout)
+                    except json.JSONDecodeError:
+                        labels = None
+                    ownership_labels_verified = bool(
+                        isinstance(labels, dict)
+                        and labels.get("factorforge.console.managed") == "true"
+                        and labels.get("factorforge.console.installation")
+                        == self.config.installation_id
+                        and labels.get("factorforge.research-org.session")
+                        == "true"
+                        and labels.get("factorforge.research-org.runtime")
+                        == runtime_instance_id
+                    )
+                    if not ownership_labels_verified:
+                        initial_state = "UNOWNED_PRESENT"
+                    else:
+                        initial_state = "OWNED_PRESENT"
+                        remove_attempted = True
+                        removed = self._stop_container(runtime_instance_id)
+                        try:
+                            final = subprocess.run(
+                                [
+                                    self.config.container_runtime,
+                                    "inspect",
+                                    runtime_instance_id,
+                                ],
+                                text=True,
+                                capture_output=True,
+                                timeout=20,
+                                check=False,
+                            )
+                        except (OSError, subprocess.TimeoutExpired):
+                            final = None
+                        inspect_not_found = bool(
+                            removed
+                            and final is not None
+                            and _docker_container_not_found(
+                                final, runtime_instance_id
+                            )
+                        )
+        termination_confirmed = inspect_not_found
+        final_state = "ABSENT" if termination_confirmed else "UNCONFIRMED"
+        trust_store = ensure_runtime_trust_store(
+            self.config.state_root / "research-org-trust",
+            installation_id=self.config.installation_id,
+        )
+        return trust_store.sign(
+            "runtime_adapter",
+            {
+                "receipt_type": "RESEARCH_ORG_CONTAINER_TERMINATION",
+                "identity": {
+                    "runtime_instance_id": runtime_instance_id,
+                    "runtime_handle_sha256": runtime_handle_sha256,
+                    "adapter_id": self.config.installation_id,
+                },
+                "ordering": {"issued_at_utc": issued_at},
+                "termination": {
+                    "initial_state": initial_state,
+                    "ownership_labels_verified": ownership_labels_verified,
+                    "remove_attempted": remove_attempted,
+                    "inspect_not_found": inspect_not_found,
+                    "final_state": final_state,
+                    "termination_confirmed": termination_confirmed,
+                },
+                "authority": {
+                    "scope": "OWNED_CONTAINER_TERMINATION_ONLY",
+                    "retry_authorized": False,
+                    "factor_verdict": "NOT_ISSUED",
+                },
+            },
+        )
+
     def _confirm_research_org_session_terminated(
         self,
         runtime_instance_id: str,
     ) -> bool:
-        if self.cancel_research_org_session(runtime_instance_id):
-            return True
-        try:
-            inspect = subprocess.run(
-                [self.config.container_runtime, "inspect", runtime_instance_id],
-                text=True,
-                capture_output=True,
-                timeout=20,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        return _docker_container_not_found(inspect, runtime_instance_id)
+        proof = self.reconcile_research_org_session(runtime_instance_id)
+        return _research_org_termination_confirmed(
+            proof,
+            runtime_instance_id=runtime_instance_id,
+        )
 
     def cancel_research_org_session(self, runtime_instance_id: str) -> bool:
-        if not re.fullmatch(r"fforg-[a-z0-9-]{8,62}", runtime_instance_id):
-            return False
-        try:
-            inspect = subprocess.run(
-                [
-                    self.config.container_runtime,
-                    "inspect",
-                    "--format",
-                    "{{json .Config.Labels}}",
-                    runtime_instance_id,
-                ],
-                text=True,
-                capture_output=True,
-                timeout=20,
-                check=False,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            return False
-        if inspect.returncode != 0:
-            return _docker_container_not_found(inspect, runtime_instance_id)
-        try:
-            labels = json.loads(inspect.stdout)
-        except json.JSONDecodeError:
-            return False
-        if (
-            not isinstance(labels, dict)
-            or labels.get("factorforge.console.managed") != "true"
-            or labels.get("factorforge.console.installation")
-            != self.config.installation_id
-            or labels.get("factorforge.research-org.session") != "true"
-            or labels.get("factorforge.research-org.runtime")
-            != runtime_instance_id
-        ):
-            return False
-        return self._stop_container(runtime_instance_id)
+        proof = self.reconcile_research_org_session(runtime_instance_id)
+        return _research_org_termination_confirmed(
+            proof,
+            runtime_instance_id=runtime_instance_id,
+        )
 
     def _prepare_runtime(
         self,
@@ -2790,9 +3694,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 for relative, baseline in parent_output_bytes.items():
                     try:
                         exists = _workspace_relative_entry_exists(root, relative)
-                        if baseline is None and exists:
-                            rollback_failures.append(relative)
-                        elif baseline is not None and (
+                        if baseline is None and exists or baseline is not None and (
                             not exists
                             or _read_stable_workspace_file_bytes(
                                 root,
@@ -3293,51 +4195,131 @@ class ContainerizedOpenClawResearchAgentAdapter:
         git_dir: Path,
         engine_commit: str,
     ) -> Callable[[dict[str, Any], dict[str, Any]], list[str]]:
-        formula_source = self._read_verified_engine_blob(
-            engine_root=engine_root,
-            git_dir=git_dir,
-            engine_commit=engine_commit,
-            relative=Path("factor_factory/mechanism_math/formula_specific.py"),
+        module_relatives = (
+            (
+                "factor_factory.artifact_identity",
+                Path("factor_factory/artifact_identity.py"),
+            ),
+            (
+                "factor_factory.formula.field_aliases",
+                Path("factor_factory/formula/field_aliases.py"),
+            ),
+            (
+                "factor_factory.formula.ir",
+                Path("factor_factory/formula/ir.py"),
+            ),
+            (
+                "factor_factory.formula.registry",
+                Path("factor_factory/formula/registry.py"),
+            ),
+            (
+                "factor_factory.formula.semantics",
+                Path("factor_factory/formula/semantics.py"),
+            ),
+            (
+                "factor_factory.formula.parser",
+                Path("factor_factory/formula/parser.py"),
+            ),
+            (
+                "factor_factory.knowledge_reference",
+                Path("factor_factory/knowledge_reference.py"),
+            ),
+            (
+                "factor_factory.measurement_program",
+                Path("factor_factory/measurement_program.py"),
+            ),
+            (
+                "factor_factory.mechanism_math.formula_specific",
+                Path("factor_factory/mechanism_math/formula_specific.py"),
+            ),
+            (
+                "factor_factory.mechanism_math.main_agent_memo",
+                Path("factor_factory/mechanism_math/main_agent_memo.py"),
+            ),
         )
-        memo_source = self._read_verified_engine_blob(
-            engine_root=engine_root,
-            git_dir=git_dir,
-            engine_commit=engine_commit,
-            relative=Path("factor_factory/mechanism_math/main_agent_memo.py"),
+        verified_sources = tuple(
+            (
+                logical_name,
+                relative,
+                self._read_verified_engine_blob(
+                    engine_root=engine_root,
+                    git_dir=git_dir,
+                    engine_commit=engine_commit,
+                    relative=relative,
+                ),
+            )
+            for logical_name, relative in module_relatives
         )
-        package_name = f"_factorforge_trusted_mechanism_{uuid.uuid4().hex}"
-        package = types.ModuleType(package_name)
-        package.__path__ = []  # type: ignore[attr-defined]
-        formula_name = f"{package_name}.formula_specific"
-        memo_name = f"{package_name}.main_agent_memo"
-        formula_module = types.ModuleType(formula_name)
-        formula_module.__package__ = package_name
-        formula_module.__file__ = "<trusted-engine>/formula_specific.py"
-        memo_module = types.ModuleType(memo_name)
-        memo_module.__package__ = package_name
-        memo_module.__file__ = "<trusted-engine>/main_agent_memo.py"
-        sys.modules[package_name] = package
-        sys.modules[formula_name] = formula_module
-        sys.modules[memo_name] = memo_module
+        package_name = f"_factorforge_trusted_engine_{uuid.uuid4().hex}"
+        trusted_factor_factory = f"{package_name}.factor_factory"
+        registered_names: list[str] = []
+
+        def register_module(module: types.ModuleType) -> None:
+            sys.modules[module.__name__] = module
+            registered_names.append(module.__name__)
+            parent_name, separator, child_name = module.__name__.rpartition(".")
+            if separator:
+                setattr(sys.modules[parent_name], child_name, module)
+
+        for namespace in (
+            package_name,
+            trusted_factor_factory,
+            f"{trusted_factor_factory}.formula",
+            f"{trusted_factor_factory}.mechanism_math",
+        ):
+            package = types.ModuleType(namespace)
+            package.__package__ = namespace
+            package.__path__ = []  # type: ignore[attr-defined]
+            register_module(package)
+
+        def trusted_import(
+            name: str,
+            globals: dict[str, Any] | None = None,
+            locals: dict[str, Any] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> Any:
+            if level == 0 and (
+                name == "factor_factory" or name.startswith("factor_factory.")
+            ):
+                imported = builtins.__import__(
+                    f"{package_name}.{name}",
+                    globals,
+                    locals,
+                    fromlist,
+                    level,
+                )
+                if not fromlist:
+                    return sys.modules[trusted_factor_factory]
+                return imported
+            return builtins.__import__(name, globals, locals, fromlist, level)
+
+        trusted_builtins = dict(vars(builtins))
+        trusted_builtins["__import__"] = trusted_import
+        loaded_modules: dict[str, types.ModuleType] = {}
         try:
-            exec(
-                compile(
-                    formula_source,
-                    formula_module.__file__,
-                    "exec",
-                    dont_inherit=True,
-                ),
-                formula_module.__dict__,
-            )
-            exec(
-                compile(
-                    memo_source,
-                    memo_module.__file__,
-                    "exec",
-                    dont_inherit=True,
-                ),
-                memo_module.__dict__,
-            )
+            for logical_name, relative, source in verified_sources:
+                module_name = f"{package_name}.{logical_name}"
+                module = types.ModuleType(module_name)
+                module.__package__ = module_name.rpartition(".")[0]
+                module.__file__ = (
+                    f"/__factorforge_trusted__/{relative.as_posix()}"
+                )
+                module.__dict__["__builtins__"] = trusted_builtins
+                register_module(module)
+                exec(
+                    compile(
+                        source,
+                        module.__file__,
+                        "exec",
+                        dont_inherit=True,
+                    ),
+                    module.__dict__,
+                )
+                loaded_modules[logical_name] = module
+            memo_module = loaded_modules[
+                "factor_factory.mechanism_math.main_agent_memo"
+            ]
             validator = getattr(
                 memo_module,
                 "validate_main_agent_mechanism_memo",
@@ -3351,9 +4333,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted mechanism validator is invalid"
             ) from exc
         finally:
-            sys.modules.pop(memo_name, None)
-            sys.modules.pop(formula_name, None)
-            sys.modules.pop(package_name, None)
+            for registered_name in reversed(registered_names):
+                sys.modules.pop(registered_name, None)
 
     def _load_verified_council_validator(
         self,
@@ -3363,32 +4344,160 @@ class ContainerizedOpenClawResearchAgentAdapter:
         engine_commit: str,
         workspace: Path,
     ) -> Callable[..., list[str]]:
-        source = self._read_verified_engine_blob(
-            engine_root=engine_root,
-            git_dir=git_dir,
-            engine_commit=engine_commit,
-            relative=Path(
-                "skills/factor-forge-step6/scripts/"
-                "validate_agentic_council_result.py"
+        module_relatives = (
+            (
+                "factor_factory.research_workspace",
+                Path("factor_factory/research_workspace.py"),
+            ),
+            (
+                "factor_factory.research_org.contracts",
+                Path("factor_factory/research_org/contracts.py"),
+            ),
+            (
+                "factor_factory.research_org.runtime_trust",
+                Path("factor_factory/research_org/runtime_trust.py"),
+            ),
+            (
+                "factor_factory.human_approval",
+                Path("factor_factory/human_approval.py"),
+            ),
+            (
+                "factor_factory.oos_exposure_incident",
+                Path("factor_factory/oos_exposure_incident.py"),
+            ),
+            (
+                "factor_factory.evo_oos",
+                Path("factor_factory/evo_oos.py"),
+            ),
+            (
+                "factor_factory.research_evidence",
+                Path("factor_factory/research_evidence.py"),
+            ),
+            (
+                "factor_factory.research_release",
+                Path("factor_factory/research_release.py"),
+            ),
+            (
+                "factor_factory.metric_verifier",
+                Path("factor_factory/metric_verifier.py"),
+            ),
+            (
+                "factor_factory.research_proof",
+                Path("factor_factory/research_proof.py"),
+            ),
+            (
+                "factor_factory.research_obligation_verifier",
+                Path("factor_factory/research_obligation_verifier.py"),
+            ),
+            (
+                "factor_factory.evo_v2",
+                Path("factor_factory/evo_v2.py"),
+            ),
+            (
+                "factor_factory.measurement_program",
+                Path("factor_factory/measurement_program.py"),
+            ),
+            (
+                "factor_factory.research_conjecture",
+                Path("factor_factory/research_conjecture.py"),
+            ),
+            (
+                "factor_factory.revision_council.evo_v2",
+                Path("factor_factory/revision_council/evo_v2.py"),
+            ),
+            (
+                "factor_factory.revision_council.production",
+                Path("factor_factory/revision_council/production.py"),
+            ),
+            (
+                "factor_factory._trusted_council_validator",
+                Path(
+                    "skills/factor-forge-step6/scripts/"
+                    "validate_agentic_council_result.py"
+                ),
             ),
         )
-        module_name = f"_factorforge_trusted_council_{uuid.uuid4().hex}"
-        module = types.ModuleType(module_name)
-        module.__file__ = (
-            "/__factorforge_trusted__/skills/factor-forge-step6/scripts/"
-            "validate_agentic_council_result.py"
-        )
-        original_sys_path = list(sys.path)
-        try:
-            exec(
-                compile(
-                    source,
-                    module.__file__,
-                    "exec",
-                    dont_inherit=True,
+        verified_sources = tuple(
+            (
+                logical_name,
+                relative,
+                self._read_verified_engine_blob(
+                    engine_root=engine_root,
+                    git_dir=git_dir,
+                    engine_commit=engine_commit,
+                    relative=relative,
                 ),
-                module.__dict__,
             )
+            for logical_name, relative in module_relatives
+        )
+        package_name = f"_factorforge_trusted_council_{uuid.uuid4().hex}"
+        trusted_factor_factory = f"{package_name}.factor_factory"
+        registered_names: list[str] = []
+
+        def register_module(module: types.ModuleType) -> None:
+            sys.modules[module.__name__] = module
+            registered_names.append(module.__name__)
+            parent_name, separator, child_name = module.__name__.rpartition(".")
+            if separator:
+                setattr(sys.modules[parent_name], child_name, module)
+
+        for namespace in (
+            package_name,
+            trusted_factor_factory,
+            f"{trusted_factor_factory}.research_org",
+            f"{trusted_factor_factory}.revision_council",
+        ):
+            package = types.ModuleType(namespace)
+            package.__package__ = namespace
+            package.__path__ = []  # type: ignore[attr-defined]
+            register_module(package)
+
+        def trusted_import(
+            name: str,
+            globals: dict[str, Any] | None = None,
+            locals: dict[str, Any] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> Any:
+            if level == 0 and (
+                name == "factor_factory" or name.startswith("factor_factory.")
+            ):
+                imported = builtins.__import__(
+                    f"{package_name}.{name}",
+                    globals,
+                    locals,
+                    fromlist,
+                    level,
+                )
+                if not fromlist:
+                    return sys.modules[trusted_factor_factory]
+                return imported
+            return builtins.__import__(name, globals, locals, fromlist, level)
+
+        trusted_builtins = dict(vars(builtins))
+        trusted_builtins["__import__"] = trusted_import
+        loaded_modules: dict[str, types.ModuleType] = {}
+        try:
+            for logical_name, relative, source in verified_sources:
+                module_name = f"{package_name}.{logical_name}"
+                module = types.ModuleType(module_name)
+                module.__package__ = module_name.rpartition(".")[0]
+                module.__file__ = str(engine_root / relative)
+                module.__dict__["__builtins__"] = trusted_builtins
+                register_module(module)
+                exec(
+                    compile(
+                        source,
+                        module.__file__,
+                        "exec",
+                        dont_inherit=True,
+                    ),
+                    module.__dict__,
+                )
+                loaded_modules[logical_name] = module
+            module = loaded_modules[
+                "factor_factory._trusted_council_validator"
+            ]
             validator = getattr(module, "validate_agentic_result", None)
             if not callable(validator):
                 raise RuntimeError("trusted Council validator callable is missing")
@@ -3400,7 +4509,8 @@ class ContainerizedOpenClawResearchAgentAdapter:
                 f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: trusted Council validator is invalid"
             ) from exc
         finally:
-            sys.path[:] = original_sys_path
+            for registered_name in reversed(registered_names):
+                sys.modules.pop(registered_name, None)
 
     def _prepare_git_view(self, *, runtime_root: Path, worktree: Path, base_commit: str) -> Path:
         commit = base_commit.strip().lower()
@@ -4748,6 +5858,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
         model: str,
         *,
         expected_tools: list[str] = REQUIRED_CONTAINER_TOOLS,
+        expected_repo_root: str | None = None,
     ) -> None:
         try:
             payload = json.loads(profile_config.read_text(encoding="utf-8"))
@@ -4757,6 +5868,7 @@ class ContainerizedOpenClawResearchAgentAdapter:
             payload,
             expected_model_broker_url=self.config.container_model_broker_url,
             expected_tools=expected_tools,
+            expected_repo_root=expected_repo_root,
         )
         agents = ((payload.get("agents") or {}).get("list") or []) if isinstance(payload, dict) else []
         match = next((item for item in agents if str(item.get("id") or "") == agent_id), None)
@@ -4771,7 +5883,18 @@ class ContainerizedOpenClawResearchAgentAdapter:
         expected = {"workspace": worktree, "agentDir": agent_dir}
         for key, path in expected.items():
             actual = str(match.get(key) or "")
-            if not actual or Path(actual).resolve() != path.resolve():
+            if not actual:
+                raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent {key} binding mismatch")
+            exact_container_workspace = (
+                key == "workspace"
+                and path == RESEARCH_ORG_CONTAINER_WORKSPACE
+            )
+            path_mismatch = (
+                actual != path.as_posix()
+                if exact_container_workspace
+                else Path(actual).resolve() != path.resolve()
+            )
+            if path_mismatch:
                 raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent {key} binding mismatch")
         if str(match.get("model") or "") != model:
             raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: agent model binding mismatch")
@@ -4979,7 +6102,7 @@ raise SystemExit(0 if accepted else 1)
             ("allowed-model", f"{self.config.container_model_broker_url}/healthz"),
             (
                 "allowed-s3",
-                "https://yufan-data-lake.s3.ap-southeast-1.amazonaws.com",
+                "https://factorforge-example-data.s3.ap-southeast-1.amazonaws.com",
             ),
             ("blocked-proxy", "https://api.deepseek.com"),
             ("blocked-proxy", "https://example.com"),
@@ -6884,7 +8007,7 @@ def _activate_denied_secret_registry(scan_path: Path) -> None:
         0o640,
     )
     try:
-        payload = f"{scan_path.name}\n".encode("utf-8")
+        payload = f"{scan_path.name}\n".encode()
         offset = 0
         while offset < len(payload):
             offset += os.write(descriptor, payload[offset:])
@@ -7030,6 +8153,7 @@ def _validate_profile_policy(
     *,
     expected_model_broker_url: str = REQUIRED_MODEL_BROKER_URL,
     expected_tools: list[str] = REQUIRED_CONTAINER_TOOLS,
+    expected_repo_root: str | None = None,
 ) -> None:
     if not isinstance(payload, dict):
         raise RuntimeError(f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container profile is not an object")
@@ -7040,6 +8164,13 @@ def _validate_profile_policy(
     if defaults.get("skipBootstrap") is not True or defaults.get("skills") != []:
         raise RuntimeError(
             f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container profile must skip bootstrap and global skills"
+        )
+    if (
+        expected_repo_root is not None
+        and defaults.get("repoRoot") != expected_repo_root
+    ):
+        raise RuntimeError(
+            f"{BLOCK_AGENT_RUNTIME_UNAVAILABLE}: container repo root is invalid"
         )
     compaction = defaults.get("compaction") or {}
     if any(compaction.get(key) != value for key, value in REQUIRED_COMPACTION_POLICY.items()):

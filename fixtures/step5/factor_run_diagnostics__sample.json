@@ -16,9 +16,9 @@
           "pearson_ic_mean": -1.0
         },
         "artifact_paths": [
-          "/home/ubuntu/.openclaw/workspace/factorforge/evaluations/STEP5_SAMPLE_CPV/self_quant_analyzer/evaluation_payload.json"
+          "/opt/factorforge/workspace/factorforge/evaluations/STEP5_SAMPLE_CPV/self_quant_analyzer/evaluation_payload.json"
         ],
-        "payload_path": "/home/ubuntu/.openclaw/workspace/factorforge/evaluations/STEP5_SAMPLE_CPV/self_quant_analyzer/evaluation_payload.json"
+        "payload_path": "/opt/factorforge/workspace/factorforge/evaluations/STEP5_SAMPLE_CPV/self_quant_analyzer/evaluation_payload.json"
       }
     ]
   },

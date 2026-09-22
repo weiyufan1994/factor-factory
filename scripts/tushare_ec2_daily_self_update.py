@@ -21,9 +21,9 @@ if str(REPO_ROOT) not in sys.path:
 from factor_factory.data_access.mutation_guard import require_data_mutation_authority
 
 
-DEFAULT_TOKEN_FILE = "/home/ubuntu/.openclaw/media/inbound/tushares_token---f5492736-ee8f-4214-b0de-0422f0cfa0a3"
-DEFAULT_REMOTE_ROOT = Path("/home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取")
-DEFAULT_BUCKET = "yufan-data-lake"
+DEFAULT_TOKEN_FILE = "/home/researcher/.openclaw/media/inbound/tushares_token---f5492736-ee8f-4214-b0de-0422f0cfa0a3"
+DEFAULT_REMOTE_ROOT = Path("/opt/factorforge/workspace/repos/quant_self/tushare数据获取")
+DEFAULT_BUCKET = "factorforge-example-data"
 DAILY_KEY = "tushares/行情数据/daily.csv"
 DAILY_INCREMENTAL_PREFIX = "tushares/行情数据/daily_incremental"
 DAILY_BASIC_PREFIX = "tushares/行情数据/daily_basic_incremental"
@@ -44,7 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--bucket", default=DEFAULT_BUCKET)
     parser.add_argument("--end-date", default=datetime.now().strftime("%Y%m%d"))
     parser.add_argument("--start-after", default=None)
-    parser.add_argument("--python-bin", default="/home/ubuntu/miniconda3/envs/rdagent/bin/python")
+    parser.add_argument("--python-bin", default="/home/researcher/miniconda3/envs/rdagent/bin/python")
     parser.add_argument("--skip-basics", action="store_true")
     parser.add_argument("--skip-daily-basic", action="store_true")
     parser.add_argument("--skip-adj-factor", action="store_true")

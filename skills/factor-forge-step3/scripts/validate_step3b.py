@@ -7,7 +7,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FF / 'objects'
 CODE = FF / 'generated_code'
@@ -528,7 +528,18 @@ def candidate_direct_code_paths(
 
 
 def scan_direct_code_text(text: str, extra_patterns: list[str]) -> None:
-    patterns = list(dict.fromkeys(FORBIDDEN_DIRECT_CODE_PATTERNS + [str(p) for p in extra_patterns if p]))
+    caller_patterns = []
+    for raw_pattern in extra_patterns:
+        if not raw_pattern:
+            continue
+        pattern = str(raw_pattern)
+        if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", pattern):
+            # Contract-supplied identifier tokens name complete identifiers.
+            # Treating them as raw regex substrings makes `label` match benign
+            # names such as `evidence_label` and prose such as `labels it`.
+            pattern = rf"\b{re.escape(pattern)}\b"
+        caller_patterns.append(pattern)
+    patterns = list(dict.fromkeys(FORBIDDEN_DIRECT_CODE_PATTERNS + caller_patterns))
     hits = []
     for pattern in patterns:
         try:
@@ -879,19 +890,9 @@ def add_direct_code_alias_columns(df):
 
 
 def direct_code_expects_polars(module) -> bool:
-    path = Path(getattr(module, '__file__', '') or '')
-    try:
-        text = path.read_text(encoding='utf-8')
-    except OSError:
-        text = ''
-    polars_api_markers = [
-        '.with_columns(',
-        '.select(',
-        '.lazy(',
-        'pl.col(',
-        'polars.col(',
-    ]
-    return any(marker in text for marker in polars_api_markers)
+    from factor_factory.implementation_runtime import expects_polars
+
+    return expects_polars(module)
 
 
 def maybe_polars_frame(df, use_polars: bool):
@@ -916,6 +917,25 @@ def normalize_direct_code_result(result):
     return result
 
 
+def direct_code_requires_complete_minute_session_fixture(code_contract: dict | None) -> bool:
+    contract = code_contract if isinstance(code_contract, dict) else {}
+    input_schema = contract.get('input_schema') if isinstance(contract.get('input_schema'), dict) else {}
+    minute_required = {
+        str(field).strip()
+        for field in (input_schema.get('minute_required') or [])
+        if str(field).strip()
+    }
+    return {'open', 'trade_time'}.issubset(minute_required)
+
+
+def a_share_raw_session_times() -> list[str]:
+    import pandas as pd
+
+    morning = pd.date_range('2000-01-03 09:30:00', '2000-01-03 11:30:00', freq='min')
+    afternoon = pd.date_range('2000-01-03 13:01:00', '2000-01-03 15:00:00', freq='min')
+    return [stamp.strftime('%H:%M:%S') for stamp in (*morning, *afternoon)]
+
+
 def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract: dict | None = None) -> None:
     import pandas as pd
 
@@ -923,7 +943,17 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
     compute = getattr(module, 'compute_factor', None)
     if compute is None or not callable(compute):
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor missing')
-    dates = [f'202601{day:02d}' for day in range(1, 12)]
+    complete_minute_session = direct_code_requires_complete_minute_session_fixture(code_contract)
+    dates = (
+        [stamp.strftime('%Y%m%d') for stamp in pd.bdate_range('2026-01-05', periods=22)]
+        if complete_minute_session
+        else [f'202601{day:02d}' for day in range(1, 12)]
+    )
+    minute_times = (
+        a_share_raw_session_times()
+        if complete_minute_session
+        else ['09:30:00', '09:31:00', '09:32:00']
+    )
     daily_rows = []
     minute_rows = []
     required_fields = {
@@ -954,7 +984,7 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
                 'pressure_sq_sum': pressure_scale * pressure_scale / 3.0,
                 'absolute_move_sum': 0.03 + 0.002 * day_index,
                 'intraday_ret_noise': 0.010 + 0.001 * stock_index,
-                'minute_count': 3,
+                'minute_count': len(minute_times),
                 'signed_amt_sum': direction * pressure_scale * (0.12 + 0.01 * day_index),
                 'gross_amt': pressure_scale,
                 'amt_sq_sum': pressure_scale * pressure_scale / 3.0,
@@ -1009,17 +1039,55 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
                 sell_total = row['sell_sm_amount'] + row['sell_md_amount'] + row['sell_lg_amount'] + row['sell_elg_amount']
                 row['net_mf_amount'] = buy_total - sell_total
             daily_rows.append(row)
-            for minute_index, minute in enumerate(['09:30:00', '09:31:00', '09:32:00']):
-                minute_close = close + (minute_index - 1) * 0.03
-                volume = 1000.0 + stock_index * 500.0 + day_index * 20.0 + minute_index * 50.0
+            running_close = close
+            event_index = 100
+            for minute_index, minute in enumerate(minute_times):
+                if not complete_minute_session:
+                    minute_close = close + (minute_index - 1) * 0.03
+                    volume = (
+                        1000.0
+                        + stock_index * 500.0
+                        + day_index * 20.0
+                        + minute_index * 50.0
+                    )
+                    minute_rows.append({
+                        'ts_code': ts_code,
+                        'trade_date': trade_date,
+                        'trade_time': f'{trade_date} {minute}',
+                        'close': minute_close,
+                        'vol': volume,
+                        'amount': minute_close * volume,
+                    })
+                    continue
+                minute_open = running_close
+                minute_return = 0.0
+                is_event_day = (
+                    stock_index == 0
+                    and day_index == len(dates) - 1
+                )
+                if is_event_day and minute_index == event_index:
+                    minute_return = 0.01
+                elif is_event_day and event_index < minute_index <= event_index + 30:
+                    minute_return = 0.0005
+                minute_close = minute_open * (1.0 + minute_return)
+                volume = (
+                    1000.0
+                    + stock_index * 500.0
+                    + day_index * 20.0
+                    + minute_index * 0.25
+                )
+                if is_event_day and minute_index == event_index:
+                    volume = 100000.0
                 minute_rows.append({
                     'ts_code': ts_code,
                     'trade_date': trade_date,
                     'trade_time': f'{trade_date} {minute}',
+                    'open': minute_open,
                     'close': minute_close,
                     'vol': volume,
                     'amount': minute_close * volume,
                 })
+                running_close = minute_close
     daily_df = add_direct_code_alias_columns(pd.DataFrame(daily_rows))
     if str((code_contract or {}).get('state_dataset') or '') == 'intraday_retained_chip_state_v1' or 'lcr_raw' in required_fields:
         state_rows = []
@@ -1060,21 +1128,17 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
         params = list(signature.parameters.values())
     except (TypeError, ValueError) as exc:
         raise AssertionError(f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: cannot inspect compute_factor signature: {exc}') from exc
-    accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
-    accepts_daily_keyword = (
-        accepts_kwargs
-        or 'daily_df' in signature.parameters
-        or any(p.name == 'daily_df' and p.kind != inspect.Parameter.POSITIONAL_ONLY for p in params)
-    )
-    if not accepts_daily_keyword:
+    try:
+        signature.bind(daily_df=daily_input, minute_df=minute_input)
+    except TypeError as exc:
         raise AssertionError(
-            'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: compute_factor must accept keyword argument daily_df'
-        )
+            f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: {exc}'
+        ) from exc
     try:
         result = compute(daily_df=daily_input, minute_df=minute_input)
     except TypeError as exc:
         raise AssertionError(
-            f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: compute_factor keyword call failed: {exc}'
+            f'BLOCK_DIRECT_CODE_FIXTURE_EXECUTION_FAILED: factor body raised TypeError: {exc}'
         ) from exc
     result = normalize_direct_code_result(result)
     if not isinstance(result, pd.DataFrame):
@@ -1097,6 +1161,30 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
         )
 
 
+def validate_prepared_partitioned_controller(path: Path) -> None:
+    """Validate the explicit controller interface without simulating raw minutes.
+
+    Prepared state projections intentionally reject ``compute_factor`` because
+    their legal input is one declared state partition at a time.  The real
+    Step3B sample run below verifies its output; this structural check keeps
+    the generic direct-code fixture from calling the wrong interface.
+    """
+    module = import_module_from_path(path)
+    metadata = getattr(module, 'METADATA', {})
+    assert isinstance(metadata, dict) and metadata.get('prepared_state_projection') is True, (
+        'BLOCK_STEP3B_PREPARED_CONTROLLER_METADATA_MISSING: '
+        'prepared controller must declare METADATA.prepared_state_projection=true'
+    )
+    assert metadata.get('raw_minute_access') is False, (
+        'BLOCK_STEP3B_PREPARED_CONTROLLER_RAW_MINUTE_ACCESS: '
+        'prepared controller must declare raw_minute_access=false'
+    )
+    assert callable(getattr(module, 'compute_factor_partitioned', None)), (
+        'BLOCK_STEP3B_PREPARED_CONTROLLER_MISSING: '
+        'prepared state direct_code must define compute_factor_partitioned'
+    )
+
+
 def validate_direct_code_mode(
     spec: dict,
     plan: dict,
@@ -1108,6 +1196,7 @@ def validate_direct_code_mode(
     code_dir: Path,
     stub: Path,
     real_impl: Path,
+    prep: dict,
 ) -> None:
     contract = spec.get('implementation_contract') or {}
     identity = spec.get('artifact_identity') or {}
@@ -1153,7 +1242,11 @@ def validate_direct_code_mode(
     scan_direct_code_text(text, extra_patterns)
     scan_direct_code_ast(text)
     assert_high_speed_code_policy(text, code_contract or contract)
-    run_direct_code_fixture_smoke(implementation_path, output_schema, code_contract)
+    local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
+    if str(local_inputs.get('input_mode') or '') == 'derived_state_with_daily':
+        validate_prepared_partitioned_controller(implementation_path)
+    else:
+        run_direct_code_fixture_smoke(implementation_path, output_schema, code_contract)
 
 
 def custom_block_source(block: dict) -> str:
@@ -1362,6 +1455,7 @@ def validate_mode_specific(
             code_dir=code_dir,
             stub=stub,
             real_impl=real_impl,
+            prep=prep,
         )
     elif mode == 'hybrid':
         validate_hybrid_mode(
@@ -1395,6 +1489,18 @@ def assert_step2_context(label: str, ctx: dict):
     assert isinstance(ctx.get('reuse_instruction_for_future_agents'), list), (
         f'{label}.step2_research_context.reuse_instruction_for_future_agents must be a list'
     )
+    profile = ctx.get('research_compatibility_profile')
+    flexible_local = profile == 'factorforge_ordinary_local_is_flexible_v1'
+    for key in ['innovative_idea_seeds', 'similar_case_lessons_imported']:
+        value = ctx.get(key)
+        assert isinstance(value, list), (
+            f'{label}.step2_research_context.{key} must be a list'
+        )
+        if not value:
+            reason = ctx.get(f'{key}_absence_reason')
+            assert flexible_local and isinstance(reason, str) and reason.strip(), (
+                f'{label}.step2_research_context.{key} empty without explicit absence reason'
+            )
     for key in ['target_statistic', 'economic_mechanism']:
         assert not str(ctx.get(key)).startswith('missing_'), (
             f'{label}.step2_research_context.{key} still carries a missing_* sentinel; rerun Step2 first'
@@ -1452,7 +1558,13 @@ def assert_no_step4_outputs_in_step3b(first_run_outputs: dict, code_dir: Path, m
         )
 
 
-def assert_step3b_sample_signal_non_null(path: Path, output_schema: dict | None = None) -> None:
+def assert_step3b_sample_signal_non_null(
+    path: Path,
+    output_schema: dict | None = None,
+    *,
+    implementation_mode: str | None = None,
+    run_metadata: dict | None = None,
+) -> None:
     import pandas as pd
 
     if path.suffix.lower() == '.parquet':
@@ -1462,14 +1574,63 @@ def assert_step3b_sample_signal_non_null(path: Path, output_schema: dict | None 
     if frame.empty:
         raise AssertionError(f'BLOCK_STEP3B_EMPTY_SAMPLE_OUTPUT: {path}')
     declared = output_schema.get('columns') if isinstance(output_schema, dict) else None
-    signal_candidates = [col for col in (declared or []) if col not in {'ts_code', 'trade_date'}]
+    declared_signals = [col for col in (declared or []) if col not in {'ts_code', 'trade_date'}]
+    signal_candidates = list(declared_signals)
     signal_candidates.extend(['factor_value', 'signal'])
     signal_column = next((col for col in signal_candidates if col in frame.columns), None)
+    if implementation_mode == 'direct_code':
+        metadata = run_metadata if isinstance(run_metadata, dict) else {}
+        declared_signal = (
+            'factor_value'
+            if 'factor_value' in declared_signals
+            else declared_signals[0]
+            if len(declared_signals) == 1
+            else None
+        )
+        if not declared_signal:
+            raise AssertionError(
+                'BLOCK_STEP3B_DIRECT_CODE_SAMPLE_DECLARED_SIGNAL_AMBIGUOUS: '
+                f'output_schema={output_schema}'
+            )
+        if metadata.get('implementation_mode') != 'direct_code':
+            raise AssertionError(
+                'BLOCK_STEP3B_DIRECT_CODE_SAMPLE_METADATA_MODE_MISMATCH: '
+                f'implementation_mode={metadata.get("implementation_mode")!r}'
+            )
+        if metadata.get('signal_column') != declared_signal:
+            raise AssertionError(
+                'BLOCK_STEP3B_DIRECT_CODE_SAMPLE_SIGNAL_FALLBACK: '
+                f'declared={declared_signal!r}, metadata={metadata.get("signal_column")!r}'
+            )
+        expected_schema = ['ts_code', 'trade_date', declared_signal]
+        actual_schema = [str(column) for column in frame.columns]
+        if actual_schema != expected_schema or metadata.get('selected_factor_schema') != expected_schema:
+            raise AssertionError(
+                'BLOCK_STEP3B_DIRECT_CODE_SAMPLE_SCHEMA_FALLBACK: '
+                f'expected={expected_schema}, actual={actual_schema}, '
+                f'metadata={metadata.get("selected_factor_schema")!r}'
+            )
+        signal_column = declared_signal
     if not signal_column:
         raise AssertionError(f'BLOCK_STEP3B_SAMPLE_SIGNAL_COLUMN_MISSING: {path}')
     if frame[signal_column].isna().all():
+        if (
+            implementation_mode == 'direct_code'
+            and (run_metadata or {}).get('signal_observation_status')
+            == 'NO_NON_NULL_VALUE_IN_BOUNDED_SAMPLE'
+        ):
+            return
         raise AssertionError(
             f'BLOCK_STEP3B_DIRECT_CODE_ALL_NULL_OUTPUT: sample signal column {signal_column} is entirely null in {path}'
+        )
+    if (
+        implementation_mode == 'direct_code'
+        and (run_metadata or {}).get('signal_observation_status')
+        == 'NO_NON_NULL_VALUE_IN_BOUNDED_SAMPLE'
+    ):
+        raise AssertionError(
+            'BLOCK_STEP3B_DIRECT_CODE_SAMPLE_OBSERVATION_STATUS_MISMATCH: '
+            f'non-null {signal_column} observed in {path}'
         )
 
 if __name__ == '__main__':
@@ -1617,20 +1778,30 @@ if __name__ == '__main__':
     minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
     daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
     input_mode = str(local_inputs.get('input_mode') or '')
+    prepared_derived_state = (
+        input_mode == 'derived_state_with_daily'
+        and local_inputs.get('step3b_daily_df_parquet')
+        and local_inputs.get('step3b_derived_state_root')
+    )
     step4_contract = h.get('step4_data_contract') or data.get('step4_data_contract') or prep.get('step4_data_contract') or local_inputs.get('step4_data_contract') or {}
     sample_queries = step4_contract.get('sample_queries') if isinstance(step4_contract, dict) else {}
     has_sample_contract = isinstance(sample_queries, dict) and bool(sample_queries.get('clean_daily_bar'))
-    if (minute_rel and daily_rel) or (input_mode == 'daily_only' and daily_rel) or has_sample_contract:
+    if (minute_rel and daily_rel) or (input_mode == 'daily_only' and daily_rel) or prepared_derived_state or has_sample_contract:
         run_dir = FF / 'runs' / rid
         factor_parquet = run_dir / f'step3b_sample_factor_values__{rid}.parquet'
         factor_csv = run_dir / f'step3b_sample_factor_values__{rid}.csv'
         meta_json = run_dir / f'step3b_sample_run_metadata__{rid}.json'
         assert factor_parquet.exists() or factor_csv.exists(), 'Step 3B requires non-formal sample factor values when sample data is available'
-        assert_step3b_sample_signal_non_null(factor_parquet if factor_parquet.exists() else factor_csv, data.get('output_schema') or {})
         assert meta_json.exists(), 'Step 3B requires sample run_metadata when sample data is available'
+        run_meta = load(meta_json)
+        assert_step3b_sample_signal_non_null(
+            factor_parquet if factor_parquet.exists() else factor_csv,
+            data.get('output_schema') or {},
+            implementation_mode=data.get('implementation_mode'),
+            run_metadata=run_meta,
+        )
         assert not (run_dir / f'factor_values__{rid}.parquet').exists(), 'Step3B must not create formal factor_values parquet'
         assert not (run_dir / f'run_metadata__{rid}.json').exists(), 'Step3B must not create formal Step4 run_metadata'
-        run_meta = load(meta_json)
         assert_step3b_runtime_performance_policy(run_meta)
         assert_step2_context('run_metadata', run_meta.get('step2_research_context'))
         assert_no_step4_outputs_in_step3b(data.get('first_run_outputs') or h.get('first_run_outputs') or {}, code_dir, run_meta)

@@ -16,6 +16,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.runtime_context import resolve_factorforge_context
+from factor_factory.child_materialization import (
+    validate_child_materialization_readback,
+)
+from factor_factory.research_org.contracts import ResearchOrganizationError
+from factor_factory.research_org.runtime_trust import load_runtime_trust_store
 
 APPROVAL_VERSION = "factorforge_main_agent_multibranch_synthesis_approval_v1"
 MATERIALIZATION_VERSION = "factorforge_multibranch_child_materialization_v1"
@@ -28,6 +33,20 @@ TOKEN_FAILED = "BLOCK_FACTORFORGE_MULTIBRANCH_MATERIALIZATION_FAILED"
 TOKEN_CHILD_COLLISION = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_ID_COLLISION"
 TOKEN_DUP_HASH = "BLOCK_FACTORFORGE_MULTIBRANCH_CHILD_FORMULA_DUPLICATE"
 TOKEN_PREFLIGHT_FAILED = "BLOCK_FACTORFORGE_MULTIBRANCH_PREFLIGHT_FAILED"
+TOKEN_INCIDENT_CONTEXT_REQUIRED = (
+    "BLOCK_FACTORFORGE_OOS_INCIDENT_HOST_CONTEXT_REQUIRED"
+)
+TOKEN_INCIDENT_CONTEXT_INCOMPLETE = (
+    "BLOCK_FACTORFORGE_OOS_INCIDENT_HOST_CONTEXT_INCOMPLETE"
+)
+TOKEN_INCIDENT_CONTEXT_INVALID = (
+    "BLOCK_FACTORFORGE_OOS_INCIDENT_HOST_CONTEXT_INVALID"
+)
+TOKEN_INCIDENT_CONTEXT_MISMATCH = (
+    "BLOCK_FACTORFORGE_OOS_INCIDENT_RUNTIME_TRUST_CONTEXT_MISMATCH"
+)
+OOS_HOST_TRUST_ROOT_ENV = "FACTORFORGE_OOS_HOST_TRUST_ROOT"
+OOS_HOST_INSTALLATION_ID_ENV = "FACTORFORGE_OOS_HOST_INSTALLATION_ID"
 
 
 def utc_now() -> str:
@@ -54,6 +73,43 @@ def sha256_file(path: Path) -> str:
 
 def tail(text: str, limit: int = 4000) -> str:
     return text[-limit:] if text else ""
+
+
+def resolve_incident_host_context(
+    trust_root_raw: str | None,
+    installation_id_raw: str | None,
+) -> tuple[Path, str]:
+    """Require one explicit, pre-existing Host pair for this mutating CLI."""
+
+    trust_raw = str(trust_root_raw or "").strip()
+    installation_id = str(installation_id_raw or "").strip()
+    if bool(trust_raw) != bool(installation_id):
+        raise ValueError(TOKEN_INCIDENT_CONTEXT_INCOMPLETE)
+    if not trust_raw:
+        raise ValueError(TOKEN_INCIDENT_CONTEXT_REQUIRED)
+    try:
+        trust_root = Path(trust_raw).expanduser().resolve(strict=True)
+        load_runtime_trust_store(
+            trust_root,
+            installation_id=installation_id,
+        )
+    except (OSError, ValueError, ResearchOrganizationError) as exc:
+        raise ValueError(TOKEN_INCIDENT_CONTEXT_INVALID) from exc
+
+    ambient_trust = str(os.environ.get(OOS_HOST_TRUST_ROOT_ENV) or "").strip()
+    ambient_installation = str(
+        os.environ.get(OOS_HOST_INSTALLATION_ID_ENV) or ""
+    ).strip()
+    if bool(ambient_trust) != bool(ambient_installation):
+        raise ValueError(TOKEN_INCIDENT_CONTEXT_MISMATCH)
+    if ambient_trust:
+        try:
+            ambient_root = Path(ambient_trust).expanduser().resolve(strict=True)
+        except (OSError, ValueError) as exc:
+            raise ValueError(TOKEN_INCIDENT_CONTEXT_MISMATCH) from exc
+        if ambient_root != trust_root or ambient_installation != installation_id:
+            raise ValueError(TOKEN_INCIDENT_CONTEXT_MISMATCH)
+    return trust_root, installation_id
 
 
 def council_dir(root: Path, report_id: str) -> Path:
@@ -376,7 +432,16 @@ def validate_approval(root: Path, report_id: str, approval: dict[str, Any]) -> N
         child_hashes.add(child_hash)
 
 
-def run_child_materializer(root: Path, parent: str, branch: dict[str, Any], approval: dict[str, Any]) -> dict[str, Any]:
+def run_child_materializer(
+    root: Path,
+    parent: str,
+    branch: dict[str, Any],
+    approval: dict[str, Any],
+    *,
+    incident_trust_root: Path | None,
+    incident_installation_id: str | None,
+    expected_host_trust_manifest_sha256: str | None,
+) -> dict[str, Any]:
     child = str(branch["child_report_id"])
     branch_context = branch.get("branch_context") if isinstance(branch.get("branch_context"), dict) else {}
     command = [
@@ -405,7 +470,28 @@ def run_child_materializer(root: Path, parent: str, branch: dict[str, Any], appr
         "--sibling-branch-count",
         str(approval["selected_branch_count"]),
     ]
+    if incident_trust_root is not None and incident_installation_id:
+        command.extend(
+            [
+                "--incident-trust-root",
+                str(incident_trust_root),
+                "--incident-installation-id",
+                incident_installation_id,
+            ]
+        )
+    if expected_host_trust_manifest_sha256:
+        command.extend(
+            [
+                "--expected-host-trust-manifest-sha256",
+                expected_host_trust_manifest_sha256,
+            ]
+        )
     env = dict(os.environ)
+    env.pop(OOS_HOST_TRUST_ROOT_ENV, None)
+    env.pop(OOS_HOST_INSTALLATION_ID_ENV, None)
+    if incident_trust_root is not None and incident_installation_id:
+        env[OOS_HOST_TRUST_ROOT_ENV] = str(incident_trust_root)
+        env[OOS_HOST_INSTALLATION_ID_ENV] = incident_installation_id
     env["FACTORFORGE_ROOT"] = str(root)
     env["FACTORFORGE_ULTIMATE_LOOP_MATERIALIZE"] = "1"
     proc = subprocess.run(command, cwd=str(REPO_ROOT), env=env, text=True, capture_output=True)
@@ -428,7 +514,16 @@ def run_child_materializer(root: Path, parent: str, branch: dict[str, Any], appr
     }
 
 
-def existing_materialization_reusable(root: Path, report_id: str, approval: dict[str, Any], *, loop_index: int) -> dict[str, Any] | None:
+def existing_materialization_reusable(
+    root: Path,
+    report_id: str,
+    approval: dict[str, Any],
+    *,
+    loop_index: int,
+    incident_trust_root: Path | None,
+    incident_installation_id: str | None,
+    expected_host_trust_manifest_sha256: str | None,
+) -> dict[str, Any] | None:
     path = aggregate_report_path(root, report_id, loop_index)
     if not path.exists():
         return None
@@ -447,6 +542,7 @@ def existing_materialization_reusable(root: Path, report_id: str, approval: dict
     if len(children) != len(branches):
         return None
     by_child = {str(child.get("child_report_id") or ""): child for child in children if isinstance(child, dict)}
+    current_revalidations: list[dict[str, Any]] = []
     for branch in branches:
         child_id = str(branch.get("child_report_id") or "")
         child = by_child.get(child_id)
@@ -487,13 +583,71 @@ def existing_materialization_reusable(root: Path, report_id: str, approval: dict
             or str(child_spec.get("child_formula_hash") or "") != expected["child_formula_hash"]
         ):
             return None
+        parent_handoff = (
+            root
+            / "objects"
+            / "handoff"
+            / f"handoff_to_step3b__{report_id}.json"
+        )
+        if not parent_handoff.is_file() or parent_handoff.is_symlink():
+            return None
+        if validate_child_materialization_readback(
+            workspace_root=root,
+            report_path=report_path,
+            parent_report_id=report_id,
+            child_report_id=child_id,
+            source_handoff_sha256=sha256_file(parent_handoff),
+            required_target_kinds={
+                "alpha_idea_master",
+                "factor_spec_master",
+                "data_prep_master",
+                "executable_revision_spec",
+                "qlib_adapter_config",
+                "state_dependency_contract",
+                "state_resolution",
+            },
+        ):
+            return None
+        # A structural aggregate/report replay cannot authorize current reuse.
+        # Re-enter the canonical child materializer: for EVO/pre-OOS children it
+        # replays preregistration, fresh allocation, and Web authority before its
+        # idempotent readback while the incident registry is the outermost lock.
+        current = run_child_materializer(
+            root,
+            report_id,
+            branch,
+            approval,
+            incident_trust_root=incident_trust_root,
+            incident_installation_id=incident_installation_id,
+            expected_host_trust_manifest_sha256=(
+                expected_host_trust_manifest_sha256
+            ),
+        )
+        current_revalidations.append(current)
+        if current["materialization_rc"] != 0:
+            detail = (
+                f"{current.get('stdout_tail') or ''}\n"
+                f"{current.get('stderr_tail') or ''}"
+            ).strip()
+            raise ValueError(
+                f"{TOKEN_FAILED}:current_revalidation_failed:{child_id}:{detail}"
+            )
     reused = dict(report)
     reused["materialization_reused"] = True
     reused["reused_existing_report_path"] = str(path)
+    reused["current_authority_revalidations"] = current_revalidations
     return reused
 
 
-def materialize(root: Path, report_id: str, *, loop_index: int) -> dict[str, Any]:
+def materialize(
+    root: Path,
+    report_id: str,
+    *,
+    loop_index: int,
+    incident_trust_root: Path | None,
+    incident_installation_id: str | None,
+    expected_host_trust_manifest_sha256: str | None,
+) -> dict[str, Any]:
     path = approval_path(root, report_id)
     if not path.exists():
         raise ValueError(TOKEN_APPROVAL_MISSING)
@@ -512,7 +666,17 @@ def materialize(root: Path, report_id: str, *, loop_index: int) -> dict[str, Any
         }
         write_json(aggregate_report_path(root, report_id, loop_index), payload)
         raise
-    existing = existing_materialization_reusable(root, report_id, approval, loop_index=loop_index)
+    existing = existing_materialization_reusable(
+        root,
+        report_id,
+        approval,
+        loop_index=loop_index,
+        incident_trust_root=incident_trust_root,
+        incident_installation_id=incident_installation_id,
+        expected_host_trust_manifest_sha256=(
+            expected_host_trust_manifest_sha256
+        ),
+    )
     if existing is not None:
         existing["preflight"] = reuse_preflight
         print(f"SKIPPED_EXISTING_MULTIBRANCH_MATERIALIZATION: {aggregate_report_path(root, report_id, loop_index)}")
@@ -533,7 +697,17 @@ def materialize(root: Path, report_id: str, *, loop_index: int) -> dict[str, Any
         raise
     children: list[dict[str, Any]] = []
     for branch in approval["selected_branches"]:
-        result = run_child_materializer(root, report_id, branch, approval)
+        result = run_child_materializer(
+            root,
+            report_id,
+            branch,
+            approval,
+            incident_trust_root=incident_trust_root,
+            incident_installation_id=incident_installation_id,
+            expected_host_trust_manifest_sha256=(
+                expected_host_trust_manifest_sha256
+            ),
+        )
         children.append(result)
         if result["materialization_rc"] != 0:
             payload = base_report(root, report_id, approval, loop_index, children, status="BLOCK", preflight=preflight)
@@ -581,6 +755,14 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--report-id", required=True)
     ap.add_argument("--factorforge-root", default=None)
     ap.add_argument("--loop-index", type=int, default=1)
+    ap.add_argument("--expected-host-trust-manifest-sha256", default=None)
+    ap.add_argument("--incident-trust-root", default=None)
+    ap.add_argument("--incident-installation-id", default=None)
+    ap.add_argument(
+        "--allow-legacy-incident-context-smoke",
+        action="store_true",
+        help=argparse.SUPPRESS,
+    )
     ap.add_argument("--allow-manual", action="store_true")
     return ap.parse_args()
 
@@ -592,7 +774,40 @@ def main() -> int:
         return 1
     try:
         ctx = resolve_factorforge_context(args.factorforge_root)
-        report = materialize(ctx.factorforge_root, args.report_id, loop_index=args.loop_index)
+        root = ctx.factorforge_root.expanduser().resolve(strict=True)
+        legacy_smoke = bool(
+            args.allow_legacy_incident_context_smoke
+            and os.environ.get("FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE") == "1"
+            and str(root).startswith(("/tmp/", "/private/tmp/"))
+            and not args.incident_trust_root
+            and not args.incident_installation_id
+        )
+        if legacy_smoke:
+            incident_trust_root = None
+            incident_installation_id = None
+        else:
+            incident_trust_root, incident_installation_id = (
+                resolve_incident_host_context(
+                    args.incident_trust_root,
+                    args.incident_installation_id,
+                )
+            )
+        if incident_trust_root is not None and (
+            incident_trust_root == root
+            or incident_trust_root in root.parents
+            or root in incident_trust_root.parents
+        ):
+            raise ValueError(TOKEN_INCIDENT_CONTEXT_INVALID)
+        report = materialize(
+            root,
+            args.report_id,
+            loop_index=args.loop_index,
+            incident_trust_root=incident_trust_root,
+            incident_installation_id=incident_installation_id,
+            expected_host_trust_manifest_sha256=(
+                args.expected_host_trust_manifest_sha256
+            ),
+        )
     except ValueError as exc:
         print(str(exc))
         return 1

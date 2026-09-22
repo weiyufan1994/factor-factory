@@ -19,7 +19,7 @@ if str(REPO_ROOT) not in sys.path:
 from factor_factory.data_access.mutation_guard import require_data_mutation_authority
 
 
-DEFAULT_BUCKET = 'yufan-data-lake'
+DEFAULT_BUCKET = 'factorforge-example-data'
 DEFAULT_DAILY_KEY = 'tushares/行情数据/daily.csv'
 DEFAULT_INCREMENTAL_PREFIX = 'tushares/行情数据/daily_incremental'
 DEFAULT_LOCAL_DAILY = Path.home() / '.qlib' / 'raw_tushare' / '行情数据' / 'daily.csv'

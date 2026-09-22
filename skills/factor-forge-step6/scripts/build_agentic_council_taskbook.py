@@ -10,20 +10,27 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path("/home/ubuntu/.openclaw/workspace")
+LEGACY_WORKSPACE = Path("/opt/factorforge/workspace")
 FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if (LEGACY_WORKSPACE / "factorforge").exists() else REPO_ROOT))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.research_conjecture import (
     PROTOCOL_VERSION,
+    RESEARCH_PROTOCOL_SCOPE_HOSTED,
+    RESEARCH_PROTOCOL_SCOPE_LOCAL_IS,
     load_json as load_protocol_json,
     research_protocol_paths,
     validate_protocol_bundle,
 )
 from factor_factory.measurement_program import (
     build_measurement_program_binding,
+    research_compatibility_profile_from_spec,
     validate_measurement_program,
+)
+from factor_factory.revision_council.production import (
+    build_evo_task_identity,
+    validate_formal_evo_packet,
 )
 
 OBJ = FF / "objects"
@@ -32,6 +39,9 @@ RUNTIME_POLICY_VERSION = "factorforge_runtime_dispatch_policy_v1"
 RUNTIME_VALUES = {"codex", "openclaw", "manual_file", "unknown"}
 TOKEN_PACKET_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING"
 TOKEN_MEASUREMENT_PROGRAM_INVALID = "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID"
+TOKEN_EVO_V2_PACKET = "BLOCK_COUNCIL_EVO_V2_FORMAL_PACKET_INVALID"
+TOKEN_EVO_V2_EXECUTOR = "BLOCK_COUNCIL_EVO_V2_REAL_AGENT_DISPATCH_REQUIRED"
+TOKEN_BLIND_CONTEXT_LEAK = "BLOCK_AGENTIC_COUNCIL_DISPATCH_BLIND_CONTEXT_LEAK"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -68,6 +78,72 @@ def safe_token(value: Any) -> str:
     return "_".join(part for part in text.split("_") if part)[:72] or "route"
 
 
+def _has_visible_value(value: Any) -> bool:
+    """Return whether a context value carries disclosure, not just a placeholder."""
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return bool(value)
+
+
+def _blind_context_leak_keys(visible_context: dict[str, Any]) -> list[str]:
+    """Identify main-agent thesis material that a blind route must not receive.
+
+    The ordinary measurement-program contract is author-disclosed context and is
+    therefore not itself a leak.  Only an explicit main-agent/preferred-thesis
+    authority marker inside that program is sensitive.
+    """
+    leaked: list[str] = []
+    direct_keys = (
+        "formula_specific_derivation",
+        "main_agent_mechanism_memo_ref",
+        "main_agent_mechanism_memo",
+        "main_agent_math_hypothesis",
+        "main_math_context",
+        "final_revision_strategy",
+        "favored_route_id",
+        "favored_thesis",
+        "preferred_thesis",
+    )
+    for key in direct_keys:
+        if _has_visible_value(visible_context.get(key)):
+            leaked.append(key)
+
+    program = visible_context.get("mechanism_conditioned_measurement_program")
+    if isinstance(program, dict):
+        for key in (
+            "selected_model_authority",
+            "main_agent_selected_model",
+            "favored_thesis",
+            "preferred_thesis",
+        ):
+            if _has_visible_value(program.get(key)):
+                leaked.append(f"mechanism_conditioned_measurement_program.{key}")
+        # A model name alone may be an author-disclosed specification.  Treat it
+        # as sensitive only when its provenance explicitly names the main agent
+        # or preferred thesis.
+        source = program.get("selected_model_source")
+        if str(source or "").strip().lower() in {
+            "main_agent",
+            "main_agent_memo",
+            "preferred_thesis",
+        }:
+            leaked.append("mechanism_conditioned_measurement_program.selected_model_source")
+    return leaked
+
+
+def select_dispatch_routes(registry_routes: Any, *, limit: int = 8) -> list[dict[str, Any]]:
+    """Select only open/active registry routes; closed history never falls back."""
+    selected = [
+        route
+        for route in registry_routes or []
+        if isinstance(route, dict)
+        and route.get("status") in {"open", "active", "supported", "inconclusive"}
+    ]
+    return selected[:limit]
+
+
 def agent_task(
     role: str,
     question: str,
@@ -76,18 +152,32 @@ def agent_task(
     *,
     route: dict[str, Any],
     visible_context: dict[str, Any],
+    evo_context: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     route_id = str(route.get("route_id") or role)
+    task_id = f"route_{safe_token(route_id)}"
     favored_visible = route.get("favored_thesis_visible") is True
+    if not favored_visible:
+        leaked = _blind_context_leak_keys(visible_context)
+        if leaked:
+            raise ValueError(
+                TOKEN_BLIND_CONTEXT_LEAK
+                + ":"
+                + json.dumps(
+                    {"route_id": route_id, "leaked_context_keys": leaked},
+                    ensure_ascii=False,
+                    sort_keys=True,
+                )
+            )
     measurement_program = visible_context.get(
         "mechanism_conditioned_measurement_program"
     )
     measurement_program_binding = build_measurement_program_binding(
         measurement_program
     )
-    return {
+    task = {
         "agent_role": role,
-        "task_id": f"route_{safe_token(route_id)}",
+        "task_id": task_id,
         "research_protocol_version": PROTOCOL_VERSION,
         "route_id": route_id,
         "route_family": route.get("route_family"),
@@ -121,7 +211,7 @@ def agent_task(
         + " Do not reconstruct from a generic family label or repeat a falsified revision rule.",
         "main_agent_mechanism_memo_ref": (
             f"objects/research_iteration_master/main_agent_mechanism_memo__{report_id}.json"
-            if favored_visible
+            if favored_visible and evo_context is None
             else None
         ),
         "proof_obligation_ids": route.get("proof_obligation_ids") or [],
@@ -169,6 +259,34 @@ def agent_task(
         ],
         "write_scope": f"objects/research_iteration_master/revision_council/{report_id}/agent_results/",
     }
+    if evo_context is not None:
+        task["evo_v2_required"] = True
+        task["evo_v2_packet_context"] = evo_context
+        task["evo_v2_task_identity"] = build_evo_task_identity(
+            evo_context,
+            report_id=report_id,
+            task_id=task_id,
+            route_id=route_id,
+            route_fingerprint=route.get("route_fingerprint"),
+            blind_context_hash=route.get("blind_context_hash"),
+        )
+        task["required_outputs"] = [
+            *task["required_outputs"],
+            "evo_v2_task_identity",
+            "evo_v2_closed_derivation_outcome",
+        ]
+        task["forbidden_changes"] = [
+            *task["forbidden_changes"],
+            "read or reuse sealed or consumed OOS evidence",
+            "change the frozen estimand, thresholds, trial budget, or OOS policy",
+        ]
+        task["research_question"] += (
+            " Use only the PURGED_IS_ONLY evidence view. Return exactly one EVO V2 "
+            "outcome: MINIMAL_MECHANISM_DELTA with one bound law, delta, and "
+            "economic backprojection; or NO_DERIVED_LAW with zero laws and a "
+            "complete derivation-failure proof."
+        )
+    return task
 
 
 def default_routes(failure_signature: str | None) -> list[dict[str, Any]]:
@@ -364,13 +482,53 @@ def main() -> None:
         print(TOKEN_PACKET_MISSING + ": " + json.dumps({"packet_path": str(packet_path)}, ensure_ascii=False), file=sys.stderr)
         raise SystemExit(1)
     packet = load_json(packet_path)
+    evo_context = packet.get("evo_v2")
+    evo_reasons = validate_formal_evo_packet(
+        packet,
+        workspace_root=FF,
+        report_id=rid,
+    )
+    if evo_reasons:
+        print(
+            TOKEN_EVO_V2_PACKET
+            + ": "
+            + json.dumps(
+                {"report_id": rid, "block_reasons": evo_reasons},
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+    if evo_context is not None:
+        if args.executor != "dispatch_manifest":
+            print(
+                TOKEN_EVO_V2_EXECUTOR
+                + ": "
+                + json.dumps({"report_id": rid, "executor": args.executor}),
+                file=sys.stderr,
+            )
+            raise SystemExit(1)
     iteration = load_json(iteration_path) if iteration_path.exists() else {}
+    spec_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
+    spec = load_json(spec_path) if spec_path.is_file() and not spec_path.is_symlink() else {}
+    compatibility_profile = research_compatibility_profile_from_spec(spec)
+    protocol_scope = (
+        RESEARCH_PROTOCOL_SCOPE_LOCAL_IS
+        if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+        else RESEARCH_PROTOCOL_SCOPE_HOSTED
+    )
     memo = nested(iteration, "research_judgment", "research_memo")
     if not isinstance(memo, dict):
         memo = {}
     revision = nested(packet, "research_memo", "revision_strategy")
     mechanism = nested(packet, "research_memo", "mechanism_analysis")
-    brief_ref = (packet.get("loop_research_brief") or {}).get("reference") or iteration.get("loop_research_brief") or {}
+    brief_ref = (
+        {}
+        if evo_context is not None
+        else (packet.get("loop_research_brief") or {}).get("reference")
+        or iteration.get("loop_research_brief")
+        or {}
+    )
 
     protocol_gate: dict[str, Any] = {
         "mode": args.research_protocol,
@@ -391,18 +549,14 @@ def main() -> None:
                 root=FF,
                 report_id=rid,
                 stage="pre_council",
+                scope=protocol_scope,
+                compatibility_profile=compatibility_profile,
             )
             protocol_reasons = protocol_report.get("block_reasons") or []
             protocol_gate["block_reasons"] = list(dict.fromkeys(protocol_reasons))
             protocol_gate["status"] = "valid" if not protocol_reasons else "invalid"
             if not protocol_reasons:
-                routes = [
-                    route
-                    for route in registry.get("routes") or []
-                    if isinstance(route, dict)
-                    and route.get("status")
-                    in {"open", "active", "supported", "inconclusive"}
-                ][:8]
+                routes = select_dispatch_routes(registry.get("routes") or [])
         if args.research_protocol == "required" and protocol_gate["status"] != "valid":
             print(
                 "BLOCK_FACTORFORGE_RESEARCH_CONJECTURE_PROTOCOL_REQUIRED: "
@@ -435,6 +589,8 @@ def main() -> None:
         measurement_program,
         available_knowledge_node_ids=declared_node_ids,
         require_web_executable=False,
+        compatibility_profile=compatibility_profile,
+        scope=protocol_scope,
     )
     measurement_program_binding = build_measurement_program_binding(
         measurement_program
@@ -464,7 +620,11 @@ def main() -> None:
         routes = default_routes(failure_signature)
 
     fact_context = {
-        "decision": (iteration.get("research_judgment") or {}).get("decision"),
+        "decision": (
+            None
+            if evo_context is not None
+            else (iteration.get("research_judgment") or {}).get("decision")
+        ),
         "mechanism_fit": mechanism.get("mechanism_fit") if isinstance(mechanism, dict) else None,
         "primary_failure_signature": failure_signature,
         "mechanism_conditioned_measurement_program": packet.get("mechanism_conditioned_measurement_program") or {},
@@ -481,6 +641,8 @@ def main() -> None:
         "key_metrics": packet.get("metrics") or {},
         "chart_evidence": packet.get("chart_evidence") or {},
     }
+    if evo_context is not None:
+        fact_context["evo_v2"] = evo_context
     tasks: list[dict[str, Any]] = []
     for route in routes:
         family = str(route.get("route_family") or "unclassified")
@@ -504,6 +666,7 @@ def main() -> None:
                         "exact_gap": route.get("exact_gap"),
                     },
                 },
+                evo_context=evo_context,
             )
         )
     taskbook = {
@@ -518,6 +681,7 @@ def main() -> None:
         "research_protocol_version": PROTOCOL_VERSION,
         "research_protocol_gate": protocol_gate,
         "research_protocol_artifacts": protocol_artifacts,
+        "evo_v2": evo_context,
         "route_selection_policy": {
             "selection_mode": (
                 "approach_registry"

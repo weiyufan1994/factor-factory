@@ -7,6 +7,30 @@ from ..intake.structured_intake_contract import StructuredIntake
 from ..research_discipline import attach_step1_research_discipline
 
 
+# These are caller-authored fields which describe the source/factor contract
+# rather than a merge implementation detail.  The legacy route never copied
+# them because its normalizer rebuilt a research discipline.  The local
+# agent-authored route must retain them verbatim instead of silently reducing
+# the chief packet to the small historical alpha-master projection.
+AGENT_AUTHORED_TOP_LEVEL_FIELDS = (
+    'factor_id',
+    'source_type',
+    'research_subject_mode',
+    'source_baseline_reference',
+    'source_semantic_review',
+    'local_agent_spec_inputs',
+    'direct_code_spec',
+    'code_contract',
+    'direct_code_contract',
+    'implementation_contract',
+    'batch_execution_plan',
+    'research_window_contract',
+    'evaluation_contract',
+    'math_discipline_review',
+    'learning_and_innovation',
+)
+
+
 def _as_list(value: Any) -> List[Any]:
     if value is None:
         return []
@@ -159,8 +183,26 @@ def merge_to_alpha_idea_master(
     primary_thesis: Dict[str, Any],
     challenger_thesis: Dict[str, Any],
     chief_decision: Dict[str, Any],
+    *,
+    agent_authored_only: bool = False,
 ) -> Dict[str, Any]:
-    """Build the canonical alpha_idea_master object from all inputs."""
+    """Build the canonical alpha_idea_master object from all inputs.
+
+    ``agent_authored_only`` is a narrow local-ingest mode.  It does not call
+    ``attach_step1_research_discipline`` (which performs deterministic
+    inference and knowledge retrieval).  Its caller must supply a complete
+    chief-authored ``research_discipline`` and is responsible for validating
+    that packet before this merger is called.  The default remains the legacy
+    normalization behaviour for all existing consumers.
+    """
+    if agent_authored_only:
+        return _merge_agent_authored_only(
+            primary_intake,
+            challenger_intake,
+            primary_thesis,
+            challenger_thesis,
+            chief_decision,
+        )
     ff = chief_decision.get('final_factor', {})
     mechanism_fields = _derive_step1_market_process_fields(chief_decision)
     measurement_program, measurement_program_provenance = _resolve_measurement_program(
@@ -263,3 +305,104 @@ def merge_to_alpha_idea_master(
         challenger_thesis,
         chief_decision,
     )
+
+
+def _merge_agent_authored_only(
+    primary_intake: StructuredIntake,
+    challenger_intake: StructuredIntake,
+    primary_thesis: Dict[str, Any],
+    challenger_thesis: Dict[str, Any],
+    chief_decision: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Project only explicitly authored chief content; infer nothing.
+
+    This intentionally avoids the normal legacy fallbacks from primary or
+    challenger fields.  Those inputs remain available in the evidence packet
+    written by the local CLI, while the canonical fields are explicitly owned
+    by the supplied chief decision.
+    """
+    discipline = chief_decision.get('research_discipline')
+    if not isinstance(discipline, dict):
+        raise ValueError('agent_authored_only requires chief_decision.research_discipline object')
+    final_factor = chief_decision.get('final_factor')
+    if not isinstance(final_factor, dict):
+        raise ValueError('agent_authored_only requires chief_decision.final_factor object')
+    measurement_program = discipline.get('mechanism_conditioned_measurement_program')
+    if not isinstance(measurement_program, dict) or not measurement_program:
+        raise ValueError(
+            'agent_authored_only requires chief_decision.research_discipline.'
+            'mechanism_conditioned_measurement_program object'
+        )
+    top_level_program = chief_decision.get('mechanism_conditioned_measurement_program')
+    if top_level_program is not None and top_level_program != measurement_program:
+        raise ValueError(
+            'agent_authored_only chief measurement program differs between top-level and research_discipline'
+        )
+
+    alpha_idea_master = {
+        'report_id': primary_intake.report_id,
+        'report_meta': deepcopy(primary_intake.report_meta),
+        'final_factor': deepcopy(final_factor),
+        'market_process_thesis': deepcopy(
+            chief_decision.get('market_process_thesis')
+            if isinstance(chief_decision.get('market_process_thesis'), dict)
+            else discipline.get('market_process_thesis')
+        ),
+        'economic_hypothesis_candidates': deepcopy(chief_decision.get('economic_hypothesis_candidates', [])),
+        'preferred_economic_hypothesis': deepcopy(chief_decision.get('preferred_economic_hypothesis', {})),
+        'alternative_return_source_tests': deepcopy(chief_decision.get('alternative_return_source_tests', [])),
+        'primary_mathematical_model': deepcopy(chief_decision.get('primary_mathematical_model', {})),
+        'formula_as_observable_estimator': deepcopy(chief_decision.get('formula_as_observable_estimator', {})),
+        'logic_provenance_summary': deepcopy(chief_decision.get('logic_provenance_summary', {})),
+        'assembly_path': deepcopy(chief_decision.get('assembly_path', final_factor.get('assembly_steps', []))),
+        'unresolved_ambiguities': deepcopy(chief_decision.get('unresolved_ambiguities', [])),
+        'chief_decision_summary': chief_decision.get('chief_decision_summary', ''),
+        'chief_confidence': chief_decision.get('chief_confidence', ''),
+        'chief_rationale': chief_decision.get('chief_rationale', ''),
+        'research_discipline': deepcopy(discipline),
+        'mechanism_conditioned_measurement_program': deepcopy(measurement_program),
+        'implementation_mode': (measurement_program.get('implementation') or {}).get('route'),
+        'measurement_program_provenance': {
+            'resolution': 'chief_authored_research_discipline',
+            'primary_agrees': (
+                not primary_intake.mechanism_conditioned_measurement_program
+                or primary_intake.mechanism_conditioned_measurement_program == measurement_program
+            ),
+            'challenger_agrees': (
+                not challenger_intake.mechanism_conditioned_measurement_program
+                or challenger_intake.mechanism_conditioned_measurement_program == measurement_program
+            ),
+        },
+        'market_process_thesis_provenance': {
+            'derivation_policy': 'chief_authored_only_no_inference_or_knowledge_retrieval',
+            'generic_template_used': False,
+        },
+        'provenance': {
+            'primary_intake_report_id': primary_intake.report_id,
+            'primary_thesis_route': 'primary',
+            'challenger_intake_report_id': challenger_intake.report_id,
+            'challenger_thesis_route': 'challenger',
+            'merge_mode': 'agent_authored_only',
+        },
+    }
+    for field in AGENT_AUTHORED_TOP_LEVEL_FIELDS:
+        if field in chief_decision:
+            alpha_idea_master[field] = deepcopy(chief_decision[field])
+    # The caller may carry additional experimental/source fields.  Keep those
+    # exact bytes in an explicit canonical extension namespace rather than
+    # treating them as normalizer inputs or dropping them.
+    core_fields = {
+        'report_id', 'final_factor', 'market_process_thesis',
+        'economic_hypothesis_candidates', 'preferred_economic_hypothesis',
+        'alternative_return_source_tests', 'primary_mathematical_model',
+        'formula_as_observable_estimator', 'logic_provenance_summary',
+        'assembly_path', 'unresolved_ambiguities', 'chief_decision_summary',
+        'chief_confidence', 'chief_rationale', 'research_discipline',
+        'mechanism_conditioned_measurement_program', *AGENT_AUTHORED_TOP_LEVEL_FIELDS,
+    }
+    alpha_idea_master['agent_authored_chief_extensions'] = {
+        key: deepcopy(value)
+        for key, value in chief_decision.items()
+        if key not in core_fields
+    }
+    return alpha_idea_master

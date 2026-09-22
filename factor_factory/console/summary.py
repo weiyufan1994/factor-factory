@@ -39,7 +39,7 @@ def render_dashboard(summaries: list[CampaignSummary], tasks: list[ConsoleTask] 
 
 
 def _render_task_launcher() -> str:
-    default_catalog = "/Users/humphrey/projects/factorforge-data-api-runtime/catalogs/manus_data_catalog.json"
+    default_catalog = "/Users/researcher/projects/factorforge-data-api-runtime/catalogs/manus_data_catalog.json"
     return "\n".join(
         [
             '<section id="task-launcher">',

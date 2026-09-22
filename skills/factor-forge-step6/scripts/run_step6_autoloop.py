@@ -10,7 +10,7 @@ from pathlib import Path
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FF / 'objects'
 

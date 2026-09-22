@@ -179,7 +179,7 @@ def case_command_manifest_required(root: Path) -> dict[str, Any]:
 
 def case_workspace_objects_root_rejected(root: Path) -> dict[str, Any]:
     report_id = "RUN_ISOLATION_WORKSPACE_OBJECTS_FORBIDDEN"
-    factor_root = Path("/home/ubuntu/.openclaw/workspace/objects")
+    factor_root = Path("/opt/factorforge/workspace/objects")
     case_root = root / "workspace_objects_root_rejected"
     manifest = manifest_payload(report_id=report_id, root=factor_root)
     proc, out_dir, called = run_step1_with_manifest(case_root, report_id=report_id, factor_root=factor_root, manifest=manifest)
@@ -452,8 +452,8 @@ def case_agent_tool_step1_writes_task_packet_only(root: Path) -> dict[str, Any]:
 def case_smoke_roots_forbidden() -> dict[str, Any]:
     probes = {
         "tmp": Path(f"/tmp/factorforge-smoke-forbidden-{os.getpid()}"),
-        "production_workspace": Path("/home/ubuntu/.openclaw/workspace/factorforge-smoke-forbidden"),
-        "production_archive": Path("/home/ubuntu/.openclaw/workspace/archive/factorforge-runs/factorforge-smoke-forbidden"),
+        "production_workspace": Path("/opt/factorforge/workspace/factorforge-smoke-forbidden"),
+        "production_archive": Path("/opt/factorforge/workspace/archive/factorforge-runs/factorforge-smoke-forbidden"),
     }
     results = {}
     for name, probe_root in probes.items():

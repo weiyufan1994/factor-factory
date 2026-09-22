@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Iterable
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_BUCKET = 'yufan-data-lake'
+DEFAULT_BUCKET = 'factorforge-example-data'
 DEFAULT_PREFIX = 'factorforge-knowledge'
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 DEFAULT_RUNTIME_ROOT = LEGACY_WORKSPACE / 'factorforge'
 
 KNOWLEDGE_SPECS = {

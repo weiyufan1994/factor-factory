@@ -8,7 +8,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 LEGACY_REPO_ROOT = LEGACY_WORKSPACE / 'repos' / 'factor-factory'
 
 
@@ -198,9 +198,9 @@ def _resolve_provider_uri(report_id: str) -> str:
     if env_uri:
         candidates.append(Path(env_uri).expanduser())
     candidates.extend([
-        Path('/home/ubuntu/.qlib/qlib_data/cn_data'),
+        Path('/home/researcher/.qlib/qlib_data/cn_data'),
         Path.home() / '.qlib' / 'qlib_data' / 'cn_data',
-        Path('/home/ubuntu/.qlib/qlib_data/cn_tushare_full_adj'),
+        Path('/home/researcher/.qlib/qlib_data/cn_tushare_full_adj'),
         Path.home() / '.qlib' / 'qlib_data' / 'cn_tushare_full_adj',
         RUNS / report_id / 'qlib_provider',
     ])

@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -17,7 +17,7 @@ if str(FF) not in sys.path:
 
 from skills.factor_forge_step1.modules.report_ingestion.research_discipline import attach_step1_research_discipline  # type: ignore
 from factor_factory.knowledge_context import retrieve_factor_knowledge_context
-from factor_factory.knowledge_reference import build_knowledge_reference_contract
+from factor_factory.knowledge_reference import build_knowledge_reference_contract, resolve_runtime_retrieval_index
 
 OBJ = FF / 'objects'
 
@@ -98,31 +98,26 @@ def attach_factor_knowledge_context(aim: dict) -> dict:
         for item in context.get('nodes') or []
         if isinstance(item, dict) and item.get('id')
     ]
-    graph_paths = [
-        REPO_ROOT / 'knowledge' / '因子工厂' / 'graph' / 'factor_knowledge_nodes.jsonl',
-        REPO_ROOT / 'knowledge' / '因子工厂' / 'graph' / 'factor_knowledge_edges.jsonl',
-    ]
     knowledge_reference_contract = build_knowledge_reference_contract(
         repo_root=REPO_ROOT,
-        knowledge_root=REPO_ROOT / 'knowledge' / '因子工厂',
+        knowledge_root=REPO_ROOT / 'knowledge',
+        retrieval_index=resolve_runtime_retrieval_index(REPO_ROOT),
         query_text=query_text,
         producer='step1_factor_knowledge_graph_retrieval',
+        top_k=5,
         retrieval_required=False,
     )
+    merged_lessons = list(dict.fromkeys([
+        *merged_lessons,
+        *knowledge_reference_contract.get('similar_case_lessons_imported', []),
+    ]))
     knowledge_reference_contract.update({
-        'source': 'factor_knowledge_graph' if node_ids else 'cold_start_or_unavailable',
+        'source': 'factor_knowledge_reference',
         'context_schema_version': context.get('schema_version'),
-        'index_paths_checked': [str(path) for path in graph_paths],
-        'indexes_available': [str(path) for path in graph_paths if path.is_file()],
-        'retrieval_status': 'retrieved' if node_ids else 'cold_start',
-        'hit_count': len(node_ids),
-        'retrieved_case_ids': node_ids,
+        # The graph context is supplementary. Do not overwrite the reference
+        # retriever's actual IDs, structured cases, or unavailable status.
         'cited_node_ids': node_ids,
         'similar_case_lessons_imported': merged_lessons,
-        'fallback_reason': None if node_ids else (
-            context.get('retrieval_error')
-            or 'knowledge_graph_cold_start_no_similar_case'
-        ),
         'retrieval_error': context.get('retrieval_error'),
         'not_same_factor_unless_identity_matches': True,
     })

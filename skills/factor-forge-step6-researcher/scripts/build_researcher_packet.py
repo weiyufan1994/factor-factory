@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
@@ -472,12 +472,10 @@ def main() -> None:
     out = Path(args.output) if args.output else OBJ / 'research_iteration_master' / f'researcher_packet__{rid}.json'
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(packet, ensure_ascii=False, indent=2), encoding='utf-8')
-    memo = build_researcher_memo(rid, paths, objects, backend_payloads)
-    memo_path = OBJ / 'research_iteration_master' / f'researcher_memo__{rid}.json'
-    memo_path.parent.mkdir(parents=True, exist_ok=True)
-    memo_path.write_text(json.dumps(memo, ensure_ascii=False, indent=2), encoding='utf-8')
+    # Preparation assembles evidence; it is not an independent research review.
+    # In particular, resuming Ultimate must never replace a researcher's own
+    # analysis with the legacy formula-family template.
     print(str(out))
-    print(str(memo_path))
 
 
 if __name__ == '__main__':

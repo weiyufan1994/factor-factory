@@ -352,7 +352,7 @@ use dataset streaming, mini-batches, gradient accumulation/checkpointing, and
 resumeable checkpoints rather than materializing the full tensor dataset.
 
 The current production/experimental split is documented in
-`docs/operations/factorforge-production-vs-experimental-performance.zh-CN.md`.
+the current checkout's `skills/factor-forge-ultimate/references/current-operating-contract.md` and the selected implementation's performance guidance. Historical deployment acceptance records are not included in this public projection.
 
 ## The Full Workflow
 
@@ -600,12 +600,12 @@ Canonical production knowledge layout:
 - human-readable production notes: `<factor_workspace>/knowledge/human_readable/`
 - canonical structured knowledge: `<factor_workspace>/knowledge/canonical/`
 - retrieval index: `<factor_workspace>/knowledge/retrieval/`
-- repo-root `/Users/humphrey/projects/factor-factory/knowledge/因子工厂/` is an explicit export/vault target only; it is not the default production write path.
+- repo-root `/Users/researcher/projects/factor-factory/knowledge/因子工厂/` is an explicit export/vault target only; it is not the default production write path.
 
 Do not use legacy duplicate roots as active knowledge stores:
 
-- `/Users/humphrey/projects/factor-factory/knowledge/obsidian_vault/`
-- `/Users/humphrey/projects/factor-factory/factorforge/objects/`
+- `/Users/researcher/projects/factor-factory/knowledge/obsidian_vault/`
+- `/Users/researcher/projects/factor-factory/factorforge/objects/`
 
 The S3 bundle may carry exported vault material, but production writes must originate from the workspace layout and include export provenance when copied to repo-root or S3-facing vault paths.
 
@@ -613,10 +613,10 @@ Mac publishes the authoritative object bundle with:
 
 ```bash
 python3 scripts/sync_factorforge_knowledge_bundle.py bundle \
-  --runtime-root /Users/humphrey/projects/factor-factory \
+  --runtime-root /Users/researcher/projects/factor-factory \
   --upload \
   --update-latest \
-  --bucket yufan-data-lake \
+  --bucket factorforge-example-data \
   --prefix factorforge-knowledge/mac-authoritative \
   --source-role mac_authoritative
 ```
@@ -624,10 +624,10 @@ python3 scripts/sync_factorforge_knowledge_bundle.py bundle \
 EC2 pulls the authoritative object bundle with:
 
 ```bash
-/home/ubuntu/.openclaw/workspace/.venvs/quant-research/bin/python \
+/opt/factorforge/workspace/.venvs/quant-research/bin/python \
   scripts/sync_factorforge_knowledge_bundle.py apply \
-  --runtime-root /home/ubuntu/.openclaw/workspace/factorforge \
-  --source s3://yufan-data-lake/factorforge-knowledge/mac-authoritative/latest.json \
+  --runtime-root /opt/factorforge/workspace/factorforge \
+  --source s3://factorforge-example-data/factorforge-knowledge/mac-authoritative/latest.json \
   --apply \
   --rebuild-index
 ```

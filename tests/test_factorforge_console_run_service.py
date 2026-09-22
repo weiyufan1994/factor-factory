@@ -73,6 +73,8 @@ def _test_conversation_ledger_binding() -> dict:
 @pytest.fixture(autouse=True)
 def _stub_materialized_web_contract(monkeypatch):
     import factor_factory.console.run_service as module
+    import factor_factory.console.ultimate_reader as reader
+    from types import SimpleNamespace
 
     monkeypatch.setattr(
         module,
@@ -84,6 +86,62 @@ def _stub_materialized_web_contract(monkeypatch):
             "factor_spec_sha256": "factor-spec-hash",
         },
     )
+    monkeypatch.setattr(
+        module,
+        "read_current_ultimate_workspace",
+        lambda workspace, *, report_id, **_kwargs: SimpleNamespace(
+            summary=reader.read_ultimate_workspace(
+                workspace,
+                report_id=report_id,
+            ),
+            authority_validation={
+                "contract_version": (
+                    "factorforge_console_current_formal_authority_v1"
+                ),
+                "status": "PASS",
+                "report_id": report_id,
+                "factor_verdict": "REJECT",
+                "formal_proof_eligible": True,
+                "authority_source": "unit_test_current_authority",
+                "evidence_ref": "unit-test",
+                "evidence_sha256": "a" * 64,
+                "block_reasons": [],
+            },
+        ),
+    )
+
+    def validate_current_authority_stub(
+        _workspace,
+        *,
+        report_id,
+        expected_factor_verdict,
+        formal_proof_eligible,
+        **_kwargs,
+    ):
+        return {
+            "contract_version": (
+                "factorforge_console_current_formal_authority_v1"
+            ),
+            "status": "PASS" if formal_proof_eligible else "NOT_APPLICABLE",
+            "report_id": report_id,
+            "factor_verdict": expected_factor_verdict,
+            "formal_proof_eligible": bool(formal_proof_eligible),
+            "authority_source": (
+                "unit_test_current_authority"
+                if formal_proof_eligible
+                else None
+            ),
+            "evidence_ref": "unit-test" if formal_proof_eligible else None,
+            "evidence_sha256": "a" * 64 if formal_proof_eligible else None,
+            "block_reasons": [],
+        }
+
+    monkeypatch.setattr(
+        module,
+        "validate_current_ultimate_authority",
+        validate_current_authority_stub,
+    )
+
     def write_host_attestation_stub(self, **kwargs):
         job = kwargs["job"]
         agent_result = kwargs["agent_result"]
@@ -1866,6 +1924,7 @@ def test_routed_console_runs_specialists_around_host_director(
         return complete_runtime
 
     host_admissions = []
+    episode_registrations = []
     monkeypatch.setattr(module, "run_research_organization_runtime", fake_runtime)
     monkeypatch.setattr(
         module,
@@ -1877,6 +1936,30 @@ def test_routed_console_runs_specialists_around_host_director(
         "_admit_host_research_director_result",
         lambda **kwargs: host_admissions.append(kwargs["agent_result"].session_key)
         or {"verdict": "PASS"},
+    )
+    monkeypatch.setattr(
+        module,
+        "is_validated_evo_v2_memory_runtime_enabled",
+        lambda **_kwargs: True,
+    )
+    monkeypatch.setattr(
+        module,
+        "register_terminal_historical_episode_candidate",
+        lambda **kwargs: episode_registrations.append(kwargs)
+        or {
+            "candidate_id": "episode_candidate_test",
+            "candidate_sha256": "a" * 64,
+            "relative_path": "episodes/episode_candidate_test.json",
+            "file_sha256": "b" * 64,
+            "written": True,
+            "authority": "historical_episode_candidate_only",
+            "episode_layer": "historical_episode",
+            "structural_or_conditional_lesson_generated": False,
+            "next_lesson_pipeline": (
+                "materialize_learning_candidates -> real independent review -> "
+                "Host CAS promotion"
+            ),
+        },
     )
     job = service.submit(
         ResearchRequest(
@@ -1901,7 +1984,1120 @@ def test_routed_console_runs_specialists_around_host_director(
     assert runtime_calls == [1, 2]
     assert adapter.host_runs == 1
     assert len(host_admissions) == 1
+    assert len(episode_registrations) == 1
+    assert episode_registrations[0]["terminal_outcome"]["factor_verdict"] == "REJECT"
+    assert episode_registrations[0]["terminal_outcome"][
+        "organization_runtime_verified"
+    ] is True
     assert completed.result["researcher_memory"]["status"] == "OUTCOME_RECORDED"
+    episode = completed.result["researcher_memory"]["evo_v2_historical_episode"]
+    assert episode["status"] == "CANDIDATE_RECORDED", episode
+    assert episode["episode_layer"] == "historical_episode"
+    assert episode["structural_or_conditional_lesson_generated"] is False
+    assert episode["authority"] == "historical_episode_candidate_only"
+
+
+class _PreformalDesignAdapter:
+    def __init__(self):
+        self.host_runs = 0
+        self.data_lease_calls = 0
+
+    def run(self, job, *, worktree: Path, workspace: Path, resume: bool):
+        from factor_factory.console.agent_adapter import AgentRunResult
+
+        assert resume is False
+        self.host_runs += 1
+        (workspace / "identity" / "web_execution_ledger.md").write_text(
+            "preformal host director design completed\n",
+            encoding="utf-8",
+        )
+        result_path = workspace / "identity" / "web_agent_completion.json"
+        _write_json(result_path, {"execution_status": "AUTHORING_COMPLETE"})
+        _write_json(
+            workspace / "identity" / "web_research_director_record.json",
+            {"status": "HOST_AUTHORED_PREFORMAL_DESIGN"},
+        )
+        return AgentRunResult(
+            returncode=0,
+            agent_id=f"agent-{job.job_id}",
+            session_key=f"session-{job.job_id}",
+            started_at_utc="2026-08-13T00:00:00Z",
+            finished_at_utc="2026-08-13T00:01:00Z",
+            stdout_tail="preformal design complete",
+            stderr_tail="",
+            result_path=str(result_path),
+        )
+
+    def run_research_org_session(self, _invocation):
+        raise AssertionError("orchestration test patches the signed org runtime")
+
+    def cancel_research_org_session(self, _runtime_instance_id):
+        return True
+
+    def denied_secret_values(self, _job_id: str):
+        return ()
+
+    def deactivate_denied_secrets(self, _job_id: str):
+        return None
+
+    def prepare_host_data_environment(self, _job_id: str):
+        self.data_lease_calls += 1
+        raise AssertionError("design-only may not request a Host data lease")
+
+
+def _patch_preformal_design_runtime(monkeypatch, module, service):
+    from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
+
+    ensure_runtime_trust_store(
+        service.config.state_root / "research-org-trust",
+        installation_id=service.config.installation_id,
+    )
+    runtime_calls = []
+    assurance = "signed_specialist_runtime_complete_host_director_external"
+
+    def fake_runtime(**_kwargs):
+        runtime_calls.append(len(runtime_calls) + 1)
+        if len(runtime_calls) == 1:
+            return {
+                "lifecycle": "WAITING_HOST_RESULT",
+                "result_count": 3,
+                "formal_independence_verified": False,
+            }
+        return {
+            "runtime_id": "runtime_preformal_test",
+            "lifecycle": "COMPLETE",
+            "result_count": 7,
+            "formal_independence_verified": True,
+            "runtime_assurance": assurance,
+            "transactional_ledger": {
+                "ledger_state": "COMPLETE",
+                "formal_independence_verified": True,
+                "assurance": assurance,
+            },
+        }
+
+    def signed_binding(job, *, workspace):
+        plan = json.loads(
+            (workspace / "identity" / "research_organization_plan.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        result_refs = [
+            {
+                "path": (
+                    f"objects/research_organization/{job.report_id}/results/"
+                    f"role_{index}.json"
+                ),
+                "sha256": f"{index + 1:064x}",
+            }
+            for index in range(7)
+        ]
+        return {
+            "plan_sha256": plan["plan_sha256"],
+            "runtime_id": "runtime_preformal_test",
+            "lifecycle": "COMPLETE",
+            "formal_independence_verified": True,
+            "runtime_assurance": assurance,
+            "runtime_projection_sha256": "a" * 64,
+            "transactional_ledger_sha256": "b" * 64,
+            "runtime_artifact_refs": [
+                {
+                    "path": (
+                        f"objects/research_organization/{job.report_id}/runtime/"
+                        "runtime_state.json"
+                    ),
+                    "sha256": "c" * 64,
+                }
+            ],
+            "result_artifact_refs": result_refs,
+            "runtime_artifact_count": 1,
+            "result_count": 7,
+        }
+
+    monkeypatch.setattr(module, "run_research_organization_runtime", fake_runtime)
+    monkeypatch.setattr(
+        module,
+        "validate_research_organization_bundle",
+        lambda **_kwargs: {"state": "ROUTED"},
+    )
+    monkeypatch.setattr(
+        service,
+        "_admit_host_research_director_result",
+        lambda **_kwargs: {"verdict": "PASS"},
+    )
+    monkeypatch.setattr(
+        service,
+        "_validated_preformal_organization_binding",
+        signed_binding,
+    )
+    return runtime_calls
+
+
+def test_preformal_design_only_runner_checkpoints_before_data_formal_and_oos(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+    from factor_factory.research_org.runtime_trust import load_runtime_trust_store
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    runtime_calls = _patch_preformal_design_runtime(
+        monkeypatch, module, service
+    )
+    formal_calls = []
+    oos_calls = []
+    monkeypatch.setattr(
+        service,
+        "_execute_host_formal_pipeline",
+        lambda *_args, **_kwargs: formal_calls.append(True),
+    )
+    monkeypatch.setattr(
+        module,
+        "ensure_empty_oos_exposure_private_registry",
+        lambda *_args, **_kwargs: oos_calls.append(True),
+    )
+    job = service.submit(
+        ResearchRequest(
+            title="DeepSeek price-volume design canary",
+            hypothesis=(
+                "Price-volume occupation geometry may identify constrained "
+                "liquidity transfer without yet asserting empirical alpha."
+            ),
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+
+    service.run_once()
+
+    paused = store.get_job(job.job_id)
+    assert paused.execution_status == "REVIEW_REQUIRED"
+    assert paused.protocol_status == "PAUSED"
+    assert paused.current_stage == "preformal_design_complete"
+    assert paused.factor_verdict == "UNKNOWN"
+    assert paused.council_status == "NOT_STARTED"
+    assert paused.formal_proof_eligible is False
+    assert runtime_calls == [1, 2]
+    assert adapter.host_runs == 1
+    assert adapter.data_lease_calls == 0
+    assert formal_calls == []
+    assert oos_calls == []
+    boundary = paused.result["preformal_design"]
+    assert boundary["current_factor_empirical_verdict"] == "NOT_ISSUED"
+    assert boundary["formal"] is False
+    assert boundary["promotion_allowed"] is False
+    assert boundary["resume_allowed"] is False
+    checkpoint = boundary["checkpoint"]
+    assert checkpoint["status"] == "PASS"
+    assert service.replay_preformal_design_checkpoint(job.job_id) == {
+        **checkpoint,
+        "organization_runtime_id": "runtime_preformal_test",
+        "organization_result_count": 7,
+    }
+
+    pointer_path = (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "preformal_design"
+        / "current.json"
+    )
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    receipt_path = (
+        pointer_path.parent
+        / "receipts"
+        / f"receipt_{pointer['receipt_id']}.json"
+    )
+    receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+    trust = load_runtime_trust_store(
+        service.config.state_root / "research-org-trust",
+        installation_id=service.config.installation_id,
+    )
+    assert trust.verify(receipt, expected_issuer="host_admission") == []
+    assert receipt["request_binding"]["research_scope"] == (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY
+    )
+    assert len(receipt["research_organization"]["result_artifact_refs"]) == 7
+    assert receipt["negative_execution_attestation"] == {
+        "host_data_lease_requested": False,
+        "data_materializer_invoked": False,
+        "ultimate_invoked": False,
+        "step3_6_invoked": False,
+        "oos_allocated": False,
+        "oos_read": False,
+        "oos_released": False,
+        "oos_consumed": False,
+        "forbidden_artifacts_absent": True,
+    }
+    workspace = Path(paused.workspace_path)
+    assert not (workspace / "identity/web_research_bootstrap_result.json").exists()
+    assert not list(workspace.glob("objects/runtime_context/ultimate_run_report__*"))
+    assert not (workspace / "objects/evo_v2").exists()
+
+    public_json = json.dumps(paused.to_dict(), ensure_ascii=False, sort_keys=True)
+    assert str(service.config.state_root) not in public_json
+    assert "snapshot_relative_path" not in public_json
+    assert "receipt_path" not in public_json
+    with pytest.raises(RuntimeError, match="terminal; start a new full_formal task"):
+        service.request_resume(job.job_id)
+    with pytest.raises(ValueError, match="terminal; start a new full_formal task"):
+        store.request_resume(job.job_id)
+
+
+def test_preformal_checkpoint_crash_before_db_projection_replays_same_receipt(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    runtime_calls = _patch_preformal_design_runtime(
+        monkeypatch, module, service
+    )
+    original_record = service._record_preformal_design_completion
+    monkeypatch.setattr(
+        service,
+        "_record_preformal_design_completion",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    job = service.submit(
+        ResearchRequest(
+            title="Crash-safe design canary",
+            hypothesis="Mechanism-only checkpoint before any empirical execution.",
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        service.run_once()
+
+    pointer_path = (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "preformal_design"
+        / "current.json"
+    )
+    first_pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    assert adapter.host_runs == 1
+    assert runtime_calls == [1, 2]
+    assert service._read_private_lifecycle(job)["status"] == "RUNNING"
+
+    store.pause_interrupted_jobs()
+    monkeypatch.setattr(
+        service,
+        "_record_preformal_design_completion",
+        original_record,
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    recovered = store.get_job(job.job_id)
+    second_pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    assert recovered.current_stage == "preformal_design_complete"
+    assert recovered.result["preformal_design"]["checkpoint"]["receipt_id"] == (
+        first_pointer["receipt_id"]
+    )
+    assert second_pointer == first_pointer
+    assert adapter.host_runs == 1
+    assert runtime_calls == [1, 2]
+    assert adapter.data_lease_calls == 0
+    assert service._read_private_lifecycle(job)["status"] == "TERMINAL"
+
+
+def test_private_json_once_does_not_publish_partial_final_file(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    root = root.resolve(strict=True)
+    parent = root / "checkpoint"
+    parent.mkdir(mode=0o700)
+    destination = parent / "current.json"
+    original_link = module.os.link
+
+    def crash_before_publish(*_args, **_kwargs):
+        raise OSError("simulated publish crash")
+
+    monkeypatch.setattr(module.os, "link", crash_before_publish)
+    with pytest.raises(RuntimeError, match="write failed"):
+        module._write_private_json_once(
+            destination,
+            {"status": "complete"},
+            root=root,
+            block_token="BLOCK_TEST",
+            label="checkpoint",
+        )
+    assert not destination.exists()
+    assert list(parent.iterdir()) == []
+
+    monkeypatch.setattr(module.os, "link", original_link)
+    module._write_private_json_once(
+        destination,
+        {"status": "complete"},
+        root=root,
+        block_token="BLOCK_TEST",
+        label="checkpoint",
+    )
+    assert json.loads(destination.read_text(encoding="utf-8")) == {
+        "status": "complete"
+    }
+
+
+def test_private_json_once_crash_after_link_recovers_only_same_inode_temp(
+    tmp_path,
+    monkeypatch,
+):
+    import os
+
+    import factor_factory.console.run_service as module
+
+    root = tmp_path / "private"
+    root.mkdir(mode=0o700)
+    root = root.resolve(strict=True)
+    parent = root / "checkpoint"
+    parent.mkdir(mode=0o700)
+    destination = parent / "current.json"
+    original_unlink = module.os.unlink
+    crash_state = {"raised": False}
+
+    def crash_after_link(path, *args, **kwargs):
+        name = os.fspath(path)
+        if (
+            not crash_state["raised"]
+            and name.startswith(".current.json.")
+            and destination.exists()
+        ):
+            crash_state["raised"] = True
+            raise KeyboardInterrupt("simulated process death after link publish")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "unlink", crash_after_link)
+    with pytest.raises(KeyboardInterrupt, match="after link publish"):
+        module._write_private_json_once(
+            destination,
+            {"status": "complete"},
+            root=root,
+            block_token="BLOCK_TEST",
+            label="checkpoint",
+        )
+    monkeypatch.setattr(module.os, "unlink", original_unlink)
+
+    linked_temp = next(parent.glob(".current.json.*.tmp"))
+    assert destination.stat().st_ino == linked_temp.stat().st_ino
+    assert destination.stat().st_nlink == 2
+    different_inode_temp = parent / f".current.json.{'f' * 32}.tmp"
+    different_inode_temp.write_text("attacker-controlled\n", encoding="utf-8")
+    assert destination.stat().st_ino != different_inode_temp.stat().st_ino
+
+    assert module._recover_private_json_once_publish(
+        destination,
+        root=root,
+        block_token="BLOCK_TEST",
+        label="checkpoint",
+    ) is True
+
+    assert destination.stat().st_nlink == 1
+    assert not linked_temp.exists()
+    assert different_inode_temp.read_text(encoding="utf-8") == (
+        "attacker-controlled\n"
+    )
+    content, _sha256, _relative = module._read_private_regular_file_once(
+        root,
+        destination,
+        block_token="BLOCK_TEST",
+        label="checkpoint",
+    )
+    assert json.loads(content.decode("utf-8")) == {"status": "complete"}
+    assert module._recover_private_json_once_publish(
+        destination,
+        root=root,
+        block_token="BLOCK_TEST",
+        label="checkpoint",
+    ) is False
+
+
+def test_preformal_snapshot_parent_symlink_escape_is_blocked(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+    from factor_factory.console.private_job_root import ensure_host_private_job_root
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _patch_preformal_design_runtime(monkeypatch, module, service)
+    job = service.submit(
+        ResearchRequest(
+            title="Symlink escape design canary",
+            hypothesis="A complete mechanism design with an explicit falsifier.",
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+    private_job = ensure_host_private_job_root(
+        service.config.state_root,
+        job.job_id,
+        create=True,
+    )
+    outside = tmp_path / "outside-state"
+    outside.mkdir()
+    (private_job / "preformal_design").symlink_to(
+        outside,
+        target_is_directory=True,
+    )
+
+    service.run_once()
+
+    blocked = store.get_job(job.job_id)
+    assert blocked.execution_status == "BLOCKED"
+    assert blocked.formal_proof_eligible is False
+    assert list(outside.iterdir()) == []
+    assert adapter.data_lease_calls == 0
+
+
+def test_preformal_db_projection_crash_reconciles_running_private_lifecycle(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _patch_preformal_design_runtime(monkeypatch, module, service)
+    original_finish = service._finish_private_execution
+    monkeypatch.setattr(
+        service,
+        "_finish_private_execution",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+    job = service.submit(
+        ResearchRequest(
+            title="Lifecycle reconciliation canary",
+            hypothesis="A design checkpoint that remains pre-empirical.",
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+
+    with pytest.raises(KeyboardInterrupt):
+        service.run_once()
+
+    projected = store.get_job(job.job_id)
+    assert projected.current_stage == "preformal_design_complete"
+    assert service._read_private_lifecycle(job)["status"] == "RUNNING"
+    monkeypatch.setattr(service, "_finish_private_execution", original_finish)
+
+    service._reconcile_preformal_terminal_lifecycles()
+
+    assert service._read_private_lifecycle(job)["status"] == "TERMINAL"
+    assert store.get_job(job.job_id).current_stage == "preformal_design_complete"
+    assert adapter.host_runs == 1
+    assert adapter.data_lease_calls == 0
+
+
+def test_startup_reconciliation_quarantines_damaged_job_and_continues(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    runtime_calls = _patch_preformal_design_runtime(
+        monkeypatch,
+        module,
+        service,
+    )
+
+    def create_running_checkpoint(title):
+        job = service.submit(
+            ResearchRequest(
+                title=title,
+                hypothesis="A design checkpoint that remains pre-empirical.",
+                research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+            )
+        )
+        with monkeypatch.context() as crash_patch:
+            crash_patch.setattr(
+                service,
+                "_finish_private_execution",
+                lambda *_args, **_kwargs: (
+                    _ for _ in ()
+                ).throw(KeyboardInterrupt()),
+            )
+            with pytest.raises(KeyboardInterrupt):
+                service.run_once()
+        return store.get_job(job.job_id)
+
+    damaged = create_running_checkpoint("Damaged startup reconciliation")
+    runtime_calls.clear()
+    intact = create_running_checkpoint("Intact startup reconciliation")
+    damaged_workspace = Path(damaged.workspace_path)
+    damaged_workspace.rename(tmp_path / "damaged-preformal-workspace")
+
+    try:
+        service.start()
+
+        assert service._thread is not None
+        assert service._thread.is_alive()
+        assert service.healthcheck() is True
+        blocked = store.get_job(damaged.job_id)
+        assert blocked.execution_status == "BLOCKED"
+        assert blocked.protocol_status == "BLOCK"
+        assert blocked.factor_verdict == "BLOCK"
+        assert blocked.current_stage == "blocked"
+        assert blocked.error_code == module.BLOCK_RESUME_TRUST_INVALID
+        assert service._read_private_lifecycle(damaged)["status"] == "NON_RESUMABLE"
+        assert service._non_resumable_marker_path(damaged.job_id).is_file()
+        assert any(
+            event["event_type"] == "PREFORMAL_DESIGN_RECONCILIATION_BLOCKED"
+            for event in store.list_events(damaged.job_id)
+        )
+        assert service._read_private_lifecycle(intact)["status"] == "TERMINAL"
+        assert any(
+            event["event_type"] == "PREFORMAL_DESIGN_LIFECYCLE_RECONCILED"
+            for event in store.list_events(intact.job_id)
+        )
+        assert runtime_calls == [1, 2]
+        assert adapter.host_runs == 2
+    finally:
+        service.stop()
+
+
+def test_startup_reconciliation_marker_failure_makes_runner_unhealthy(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+    from factor_factory.console.models import (
+        RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        ResearchRequest,
+    )
+
+    adapter = _PreformalDesignAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _patch_preformal_design_runtime(monkeypatch, module, service)
+    damaged = service.submit(
+        ResearchRequest(
+            title="Unclassified startup reconciliation",
+            hypothesis="A design checkpoint that remains pre-empirical.",
+            research_scope=RESEARCH_SCOPE_PREFORMAL_DESIGN_ONLY,
+        )
+    )
+    with monkeypatch.context() as crash_patch:
+        crash_patch.setattr(
+            service,
+            "_finish_private_execution",
+            lambda *_args, **_kwargs: (
+                _ for _ in ()
+            ).throw(KeyboardInterrupt()),
+        )
+        with pytest.raises(KeyboardInterrupt):
+            service.run_once()
+    projected = store.get_job(damaged.job_id)
+    Path(projected.workspace_path).rename(
+        tmp_path / "unclassified-preformal-workspace"
+    )
+    queued = service.submit(_request("Queued behind unhealthy startup"))
+    monkeypatch.setattr(
+        service,
+        "_mark_job_non_resumable",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("fail")),
+    )
+
+    try:
+        service.start()
+
+        assert service._thread is not None
+        assert service._thread.is_alive()
+        assert service.healthcheck() is False
+        assert service.run_once() is None
+        assert store.get_job(queued.job_id).execution_status == "QUEUED"
+        unclassified = store.get_job(damaged.job_id)
+        assert unclassified.execution_status == "REVIEW_REQUIRED"
+        assert unclassified.current_stage == "preformal_design_complete"
+        assert any(
+            event["event_type"]
+            == "PREFORMAL_DESIGN_RECONCILIATION_HEALTH_BLOCKED"
+            for event in store.list_events(damaged.job_id)
+        )
+    finally:
+        service.stop()
+
+
+def test_evo_v2_memory_gate_runs_after_materializer_and_before_ultimate(
+    tmp_path,
+    monkeypatch,
+):
+    import factor_factory.console.run_service as module
+
+    source, store, service = _service(tmp_path, _TerminalRejectAdapter())
+    catalog = tmp_path / "catalog.json"
+    _write_json(catalog, {"datasets": []})
+    service.config = replace(service.config, data_catalogs=(catalog,))
+    job = service.submit(_request("EVO pre-result gate ordering"))
+    allocation = service.allocator.allocate(
+        factor_id=job.factor_id,
+        research_id=job.research_id,
+        report_id=job.report_id,
+        implementation_mode="operator",
+    )
+    job = store.update_job(
+        job.job_id,
+        base_commit=allocation.base_commit,
+        worktree_path=str(allocation.worktree_path),
+        workspace_path=str(allocation.workspace_path),
+    )
+    service._write_request_artifacts(job, allocation)
+    calls = []
+
+    def fake_run(argv, **_kwargs):
+        calls.append(list(argv))
+        return SimpleNamespace(returncode=0, stdout="PASS\n", stderr="")
+
+    paused_state = {
+        "stage": "AWAITING_TRANSFER_AUTHORING_AND_REVIEW",
+        "formal_execution_allowed": False,
+        "event_sha256": "a" * 64,
+        "pause": {
+            "required": True,
+            "reason": "independent review required",
+            "resume_action": "admit transfer",
+        },
+    }
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        module,
+        "is_validated_evo_v2_memory_runtime_enabled",
+        lambda **_kwargs: True,
+    )
+    memory_calls = []
+    monkeypatch.setattr(
+        module,
+        "prepare_evo_v2_memory_round",
+        lambda **kwargs: memory_calls.append(kwargs) or paused_state,
+    )
+
+    with pytest.raises(module.EvoV2MemoryGatePause) as exc_info:
+        _ORIGINAL_EXECUTE_HOST_FORMAL_PIPELINE(
+            service,
+            job,
+            worktree=allocation.worktree_path,
+            workspace=allocation.workspace_path,
+            resume=False,
+            denied_values=(),
+            host_data_env={},
+        )
+
+    assert exc_info.value.state == paused_state
+    assert len(memory_calls) == 1
+    assert len(calls) == 1
+    assert calls[0][1].endswith("materialize_factorforge_web_research.py")
+    assert all(
+        not argv[1].endswith("run_factorforge_ultimate.py") for argv in calls
+    )
+    assert source.is_dir()
+
+
+class _CountingTerminalRejectAdapter(_TerminalRejectAdapter):
+    def __init__(self):
+        self.calls = 0
+
+    def run(self, job, *, worktree: Path, workspace: Path, resume: bool):
+        self.calls += 1
+        return super().run(
+            job,
+            worktree=worktree,
+            workspace=workspace,
+            resume=resume,
+        )
+
+
+def _install_two_turn_memory_gate(
+    *,
+    monkeypatch,
+    service,
+):
+    import factor_factory.console.run_service as module
+
+    calls = {"pipeline": 0, "memory_round": 0, "ultimate": 0}
+    state_holder = {}
+    monkeypatch.setattr(
+        module,
+        "is_validated_evo_v2_memory_runtime_enabled",
+        lambda **_kwargs: True,
+    )
+
+    def load_state(**_kwargs):
+        state = state_holder["state"]
+        return {
+            "artifact_identity": {
+                key: state[key]
+                for key in ("factor_id", "research_id", "report_id")
+            },
+            "events": [state],
+            "current_state": state,
+        }
+
+    monkeypatch.setattr(module, "load_evo_v2_memory_round_state", load_state)
+
+    def prepare_ready(**_kwargs):
+        calls["memory_round"] += 1
+        return {
+            **state_holder["state"],
+            "stage": "COLD_START_VERIFIED_READY",
+            "formal_execution_allowed": True,
+            "pause": {
+                "required": False,
+                "reason": "",
+                "resume_action": "run Ultimate",
+            },
+        }
+
+    monkeypatch.setattr(module, "prepare_evo_v2_memory_round", prepare_ready)
+
+    def execute(current_job, *, workspace, worktree, resume, **_kwargs):
+        calls["pipeline"] += 1
+        if calls["pipeline"] == 1:
+            event_sha256 = "a" * 64
+            state = {
+                "contract_version": "factorforge_evo_v2_memory_runtime_state_v1",
+                "factor_id": current_job.factor_id,
+                "research_id": current_job.research_id,
+                "report_id": current_job.report_id,
+                "generation": 1,
+                "parent_event_sha256": None,
+                "stage": "AWAITING_TRANSFER_AUTHORING_AND_REVIEW",
+                "formal_execution_allowed": False,
+                "event_sha256": event_sha256,
+                "pause": {
+                    "required": True,
+                    "reason": "independent memory review required",
+                    "resume_action": "admit the reviewed transfer",
+                },
+                "authority_guard": {"results_or_oos_accessed": False},
+            }
+            state_holder["state"] = state
+            runtime_root = (
+                Path(workspace)
+                / "objects"
+                / "evo_v2"
+                / current_job.report_id
+                / "memory_runtime"
+            )
+            _write_json(runtime_root / "memory_runtime_state.json", state)
+            _write_json(
+                runtime_root
+                / "events"
+                / f"event_000001_{event_sha256[:12]}.json",
+                state,
+            )
+            receipt_path = (
+                service.config.state_root
+                / "jobs"
+                / current_job.job_id
+                / "formal-execution"
+                / "receipt_20260814T000000Z_abcdefabcdef.json"
+            )
+            _write_json(
+                receipt_path,
+                {
+                    "version": "factorforge_console_host_formal_execution_v2",
+                    "job_id": current_job.job_id,
+                    "factor_id": current_job.factor_id,
+                    "research_id": current_job.research_id,
+                    "report_id": current_job.report_id,
+                    "base_commit": current_job.base_commit,
+                    "resume": False,
+                    "commands": [
+                        {"name": "materialize_web_research", "returncode": 0}
+                    ],
+                },
+            )
+            receipt_path.chmod(0o600)
+            receipt = {
+                "receipt_id": receipt_path.relative_to(
+                    service.config.state_root
+                ).as_posix(),
+                "receipt_sha256": _file_sha256(receipt_path),
+                "ultimate_argv_sha256": "",
+                "ultimate_returncode": None,
+            }
+            raise module.EvoV2MemoryGatePause(state, receipt)
+
+        assert resume is False
+        ready = module.prepare_evo_v2_memory_round(
+            workspace=Path(workspace),
+            worktree=Path(worktree),
+            state_root=service.config.state_root,
+            installation_id=service.config.installation_id,
+            runner=service.agent_adapter,
+        )
+        assert ready["formal_execution_allowed"] is True
+        calls["ultimate"] += 1
+        return {
+            "receipt_id": (
+                f"jobs/{current_job.job_id}/formal-execution/"
+                "receipt_resume_20260814T000100Z.json"
+            ),
+            "receipt_sha256": "b" * 64,
+            "ultimate_argv_sha256": "c" * 64,
+            "ultimate_returncode": 0,
+        }
+
+    monkeypatch.setattr(service, "_execute_host_formal_pipeline", execute)
+    return calls, state_holder
+
+
+def test_evo_v2_memory_pause_resume_carries_attestation_through_both_validations(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _CountingTerminalRejectAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    calls, _state_holder = _install_two_turn_memory_gate(
+        monkeypatch=monkeypatch,
+        service=service,
+    )
+    job = service.submit(_request("Two-turn EVO memory resume"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    lifecycle_path = service._private_lifecycle_path(job.job_id)
+    paused_lifecycle = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+    attestation_id = paused_lifecycle["attestation_id"]
+    assert paused_lifecycle["status"] == "RESUMABLE"
+    assert attestation_id.startswith(
+        f"jobs/{job.job_id}/evo-v2-memory-gates/attestation_"
+    )
+    plan_path = Path(paused.workspace_path) / "identity" / "research_organization_plan.json"
+    plan_sha256 = _file_sha256(plan_path)
+
+    validation_statuses = []
+    original_validate = service._validate_evo_v2_memory_resume_context
+
+    def track_validation(current_job, **kwargs):
+        validation_statuses.append(
+            service._read_private_lifecycle(current_job)["status"]
+        )
+        return original_validate(current_job, **kwargs)
+
+    monkeypatch.setattr(
+        service,
+        "_validate_evo_v2_memory_resume_context",
+        track_validation,
+    )
+    monkeypatch.setattr(
+        service,
+        "_run_research_org_stage",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("research organization must not rerun")
+        ),
+    )
+
+    service.request_resume(job.job_id)
+    assert service._read_private_lifecycle(paused)["status"] == "RESUMABLE"
+    claimed = store.claim_next_job()
+    assert claimed is not None and claimed.job_id == job.job_id
+    service._run_job(claimed)
+
+    completed = store.get_job(job.job_id)
+    # The legacy terminal fixture is intentionally rejected by the current
+    # factor-proof reader.  This test owns the lifecycle/memory route only: it
+    # must reach the Ultimate read path without a resume-trust failure.
+    assert completed.execution_status == "BLOCKED"
+    assert (
+        completed.error_code
+        != "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
+    )
+    assert validation_statuses == ["RESUMABLE", "RUNNING"]
+    assert adapter.calls == 1
+    assert calls == {"pipeline": 2, "memory_round": 1, "ultimate": 1}
+    assert _file_sha256(plan_path) == plan_sha256
+    assert service._read_private_lifecycle(completed)["status"] == "RESUMABLE"
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "empty",
+        "absolute",
+        "parent_escape",
+        "wrong_filename",
+        "cross_job",
+        "symlink",
+        "mode",
+        "hardlink",
+        "self_hash",
+        "receipt_hash",
+        "event_hash",
+        "state_hash",
+    ],
+)
+def test_evo_v2_memory_resume_attestation_attacks_are_non_resumable(
+    tmp_path,
+    monkeypatch,
+    attack,
+):
+    adapter = _CountingTerminalRejectAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _install_two_turn_memory_gate(monkeypatch=monkeypatch, service=service)
+    job = service.submit(_request(f"EVO memory resume attack {attack}"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    lifecycle_path = service._private_lifecycle_path(job.job_id)
+    lifecycle = json.loads(lifecycle_path.read_text(encoding="utf-8"))
+    attestation_path = service.config.state_root / lifecycle["attestation_id"]
+    attestation = json.loads(attestation_path.read_text(encoding="utf-8"))
+
+    if attack == "empty":
+        lifecycle["attestation_id"] = ""
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "absolute":
+        lifecycle["attestation_id"] = str(attestation_path)
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "parent_escape":
+        lifecycle["attestation_id"] = "../attestation.json"
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "wrong_filename":
+        lifecycle["attestation_id"] = (
+            f"jobs/{job.job_id}/evo-v2-memory-gates/wrong.json"
+        )
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "cross_job":
+        lifecycle["attestation_id"] = lifecycle["attestation_id"].replace(
+            job.job_id,
+            "job_deadbeef00",
+            1,
+        )
+        _write_json(lifecycle_path, lifecycle)
+    elif attack == "symlink":
+        backup = attestation_path.with_suffix(".backup")
+        attestation_path.rename(backup)
+        attestation_path.symlink_to(backup)
+    elif attack == "mode":
+        attestation_path.chmod(0o640)
+    elif attack == "hardlink":
+        os.link(attestation_path, attestation_path.with_suffix(".hardlink"))
+    elif attack == "self_hash":
+        attestation["created_at_utc"] = "2026-08-14T00:00:00Z"
+        _write_json(attestation_path, attestation)
+        attestation_path.chmod(0o600)
+    elif attack == "receipt_hash":
+        receipt_path = (
+            service.config.state_root
+            / attestation["formal_execution_receipt_id"]
+        )
+        receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
+        receipt["commands"][0]["returncode"] = 1
+        _write_json(receipt_path, receipt)
+        receipt_path.chmod(0o600)
+    elif attack == "event_hash":
+        event_sha256 = paused.result["evo_v2_memory"]["state_ref"][
+            "event_sha256"
+        ]
+        event_path = (
+            Path(paused.workspace_path)
+            / "objects"
+            / "evo_v2"
+            / job.report_id
+            / "memory_runtime"
+            / "events"
+            / f"event_000001_{event_sha256[:12]}.json"
+        )
+        event = json.loads(event_path.read_text(encoding="utf-8"))
+        event["pause"]["reason"] = "tampered event"
+        _write_json(event_path, event)
+    elif attack == "state_hash":
+        state_path = (
+            Path(paused.workspace_path)
+            / paused.result["evo_v2_memory"]["state_ref"]["path"]
+        )
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        state["pause"]["reason"] = "tampered"
+        _write_json(state_path, state)
+    else:
+        raise AssertionError(attack)
+
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        service.request_resume(job.job_id)
+    assert service._non_resumable_marker_path(job.job_id).is_file()
+    persisted = service._read_private_lifecycle(paused)
+    assert persisted["status"] == "NON_RESUMABLE"
+    assert (
+        persisted["blocker"]
+        == "BLOCK_FACTORFORGE_CONSOLE_RESUME_TRUST_INVALID"
+    )
+    assert adapter.calls == 1
+
+
+def test_evo_v2_memory_running_crash_is_not_reclassified_as_resumable(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _CountingTerminalRejectAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _install_two_turn_memory_gate(monkeypatch=monkeypatch, service=service)
+    job = service.submit(_request("EVO memory RUNNING crash"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    attestation_id = service._read_private_lifecycle(paused)["attestation_id"]
+
+    service._begin_private_execution(paused, resume=True)
+    running = service._read_private_lifecycle(paused)
+    assert running["status"] == "RUNNING"
+    assert running["attestation_id"] == attestation_id
+    with pytest.raises(RuntimeError, match="RESUME_TRUST_INVALID"):
+        service.request_resume(job.job_id)
+    assert service._non_resumable_marker_path(job.job_id).is_file()
+    assert adapter.calls == 1
+
+
+def test_duplicate_resume_while_worker_is_active_does_not_quarantine_lifecycle(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _CountingTerminalRejectAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    _install_two_turn_memory_gate(monkeypatch=monkeypatch, service=service)
+    job = service.submit(_request("EVO memory duplicate active resume"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    service.request_resume(job.job_id)
+    claimed = store.claim_next_job()
+    assert claimed is not None and claimed.job_id == job.job_id
+
+    service._begin_private_execution(claimed, resume=True)
+    lifecycle_before = service._read_private_lifecycle(claimed)
+    assert lifecycle_before["status"] == "RUNNING"
+    with pytest.raises(ValueError, match="paused, blocked, or failed"):
+        service.request_resume(job.job_id)
+    lifecycle_after = service._read_private_lifecycle(claimed)
+    assert lifecycle_after == lifecycle_before
+    assert not service._non_resumable_marker_path(job.job_id).exists()
+    assert adapter.calls == 1
 
 
 def test_memory_write_failure_preserves_official_factor_outcome(
@@ -2021,6 +3217,7 @@ def test_host_director_admission_binds_validated_plan_and_real_session(
         report_id=job.report_id,
         implementation_mode="operator",
     )
+    job = replace(job, base_commit=allocation.base_commit)
     service._write_request_artifacts(job, allocation)
     workspace = allocation.workspace_path
     monkeypatch.setattr(module, "validate_plan", lambda *_args, **_kwargs: ({}, {}))
@@ -2218,14 +3415,19 @@ def test_host_director_admission_binds_validated_plan_and_real_session(
         "error_code": "",
         "stdout_tail": "",
         "stderr_tail": "",
+        "research_base_commit": job.base_commit,
+        "engine_commit": service._expected_base_commit,
     }
     for field, forged_value in (
         ("job_id", "job_forged"),
+        ("execution_mode", "shared_gateway"),
         ("session_key_sha256", "0" * 64),
         ("provider", "forged-provider"),
         ("model", "forged-model"),
         ("finished_at_utc", "2026-08-09T00:02:00Z"),
         ("returncode", 1),
+        ("research_base_commit", "0" * 40),
+        ("engine_commit", "1" * 40),
     ):
         forged_receipt = {**valid_receipt, field: forged_value}
         _write_json(receipt_path, forged_receipt)
@@ -2264,6 +3466,79 @@ def test_host_director_admission_binds_validated_plan_and_real_session(
     assert payload["public_research_record"]["handoff"][
         "host_agent_run_receipt_sha256"
     ] == _file_sha256(receipt_path)
+
+
+def test_shared_gateway_host_director_receipt_uses_exact_legacy_schema(
+    tmp_path,
+):
+    from factor_factory.console.agent_adapter import AgentRunResult
+
+    _source, _store, service = _service(tmp_path, _TerminalRejectAdapter())
+    service.config = replace(service.config, execution_mode="shared_gateway")
+    job = service.submit(_request("Shared gateway receipt schema"))
+    receipt_path = (
+        service.config.state_root
+        / "jobs"
+        / job.job_id
+        / "agent_run_shared_gateway.json"
+    )
+    session_key = "shared-gateway-session-001"
+    started_at = "2026-08-09T00:00:00Z"
+    finished_at = "2026-08-09T00:01:00Z"
+    agent_result = AgentRunResult(
+        returncode=0,
+        agent_id="shared-gateway-agent",
+        session_key=session_key,
+        started_at_utc=started_at,
+        finished_at_utc=finished_at,
+        stdout_tail="",
+        stderr_tail="",
+        result_path=str(receipt_path),
+        provider=service.config.openclaw_auth_provider,
+        model=service.config.openclaw_model,
+    )
+    legacy_receipt = {
+        "version": "factorforge_console_agent_run_v1",
+        "job_id": job.job_id,
+        "factor_id": job.factor_id,
+        "research_id": job.research_id,
+        "report_id": job.report_id,
+        "agent_id": agent_result.agent_id,
+        "session_key_sha256": hashlib.sha256(
+            session_key.encode("utf-8")
+        ).hexdigest(),
+        "resume": False,
+        "resume_attempt_id": "",
+        "started_at_utc": started_at,
+        "finished_at_utc": finished_at,
+        "returncode": 0,
+        "provider": agent_result.provider,
+        "model": agent_result.model,
+        "error_code": "",
+        "stdout_tail": "",
+        "stderr_tail": "",
+    }
+    _write_json(receipt_path, legacy_receipt)
+
+    assert service._validated_host_agent_receipt(
+        job=job,
+        agent_result=agent_result,
+    ) == receipt_path.resolve(strict=True)
+
+    for forbidden_field, value in (
+        ("execution_mode", "shared_gateway"),
+        ("research_base_commit", "a" * 40),
+        ("engine_commit", "b" * 40),
+    ):
+        _write_json(
+            receipt_path,
+            {**legacy_receipt, forbidden_field: value},
+        )
+        with pytest.raises(RuntimeError, match="receipt binding is invalid"):
+            service._validated_host_agent_receipt(
+                job=job,
+                agent_result=agent_result,
+            )
 
 
 def test_production_ultimate_args_require_formal_complete_signed_runtime(tmp_path):
@@ -2613,6 +3888,14 @@ def test_mechanism_pause_writes_exact_agent_resume_contract_and_answer_form(tmp_
     assert "Do not invent a stochastic state" in prompt
     assert "math_hypothesis.process_or_distribution" not in prompt
     assert "mathematical_object_mapping.component_links" in prompt
+    assert "copy that component's exact canonical `formula_subexpression`" in prompt
+    assert "must include `formula_root`" in prompt
+    assert "Include no executable clause that is not selected" in prompt
+    assert "repeat the clause once for each component" in prompt
+    assert "Do not add comments or optional keyword arguments" in prompt
+    assert "Formula IR topology, nesting, arity, constants" in prompt
+    assert "Reuse the domain terms already declared" in prompt
+    assert "never introduce another expression" in prompt
     assert "identical JSON objects" in prompt
     assert "top-level `falsification_tests` as a JSON list with at least two" in prompt
     assert "Every list item must be one non-empty plain JSON string" in prompt
@@ -3174,6 +4457,30 @@ def test_current_program_accepts_open_mechanism_family_without_stochastic_coerci
     candidates[0]["model_family"] = "pathwise optimal-transport imbalance geometry"
     candidates[1]["model_family"] = "spectral phase-coupling alternative"
     candidates[2]["model_family"] = "observable alias null"
+    candidates[0]["mechanism_equation_or_functional"] = (
+        "transport_state_t = optimal_transport(observables_t)"
+    )
+    candidates[0]["market_outcome_projection"] = program[
+        "market_outcome_projection"
+    ]["projection_equation_or_map"]
+    candidates[0]["target_functional"] = program[
+        "observation_and_estimation"
+    ]["estimand"]
+    candidates[0]["observation_mapping"] = program[
+        "observation_and_estimation"
+    ]["observation_map"]
+    candidates[1]["mechanism_equation_or_functional"] = (
+        "phase_state_t = spectral_phase_coupling(observables_t)"
+    )
+    candidates[1]["market_outcome_projection"] = (
+        "phase state maps to a distinct signed payoff"
+    )
+    candidates[2]["mechanism_equation_or_functional"] = (
+        "alias_state_t = known_aliases_t + noise_t"
+    )
+    candidates[2]["market_outcome_projection"] = (
+        "null predicts zero incremental after-cost payoff"
+    )
     factor_spec = {
         "mechanism_conditioned_measurement_program": program,
         "canonical_spec": {
@@ -3838,6 +5145,352 @@ def test_host_formal_checkpoint_resume_does_not_call_research_agent(
     ] == "host_formal_checkpoint"
 
 
+@pytest.mark.parametrize(
+    ("progress_status", "expected_error"),
+    [
+        (
+            "WAITING_EXTERNAL_CONTROL",
+            "FACTORFORGE_CONSOLE_EVO_V2_EXTERNAL_CONTROL_REQUIRED",
+        ),
+    ],
+)
+def test_evo_v2_external_resume_stops_before_agent_and_formal_runner(
+    tmp_path,
+    monkeypatch,
+    progress_status,
+    expected_error,
+):
+    adapter = _PausedThenForgingAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("EVO V2 external control pause"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_run_report__{job.report_id}.json"
+    )
+    pause_outcome = "awaiting_evo_v2_external_approval_and_fresh_child"
+    _write_json(
+        proof_path,
+        {
+            "report_id": job.report_id,
+            "status": "PAUSED",
+            "failure": None,
+            "factor_verdict": "NOT_ISSUED",
+            "formal_proof_eligible": False,
+            "proof_semantics": (
+                "review_only_delta_awaiting_external_approval_and_fresh_child"
+            ),
+            "final_outcome": pause_outcome,
+            "evo_v2_execution_gate": {
+                "enabled": True,
+                "current_state": "TRANSFER_RECORDED",
+                "action": "AWAIT_EXTERNAL_APPROVAL_AND_CHILD",
+                "oos_release_allowed": False,
+                "oos_artifacts": [],
+            },
+        },
+    )
+    progress = {
+        "report_id": job.report_id,
+        "pause_outcome": pause_outcome,
+        "status": progress_status,
+        "start_step": None,
+        "reason": "verified_external_control_state",
+        "child_report_id": (
+            "EVO_CHILD_001" if progress_status == "CHILD_HANDOFF_READY" else None
+        ),
+    }
+
+    def trusted_external_pause(
+        _job,
+        *,
+        worktree,
+        workspace,
+        private_execution_started=False,
+    ):
+        return {
+            "start_step": "6",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+            "attestation_id": f"attestations/{job.job_id}.json",
+            "attestation_sha256": "attestation-hash",
+            "receipt_id": f"jobs/{job.job_id}/formal-execution/receipt.json",
+            "receipt_sha256": "receipt-hash",
+            "workspace_evidence_tree_root_sha256": stable_json_hash(
+                _workspace_evidence_tree(Path(workspace))
+            ),
+            "evo_v2_external_progress": progress,
+        }
+
+    formal_calls = []
+    monkeypatch.setattr(
+        service,
+        "_validate_trusted_resume_context",
+        trusted_external_pause,
+    )
+    monkeypatch.setattr(
+        service,
+        "_execute_host_formal_pipeline",
+        lambda *_args, **_kwargs: formal_calls.append("called"),
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    review = store.get_job(job.job_id)
+    assert review.execution_status == "REVIEW_REQUIRED"
+    assert review.protocol_status == "PAUSED"
+    assert review.error_code == expected_error
+    assert adapter.calls == 1
+    assert formal_calls == []
+    assert list(
+        (
+            service.config.state_root
+            / "jobs"
+            / job.job_id
+            / "host-checkpoint-runs"
+        ).glob("*.json")
+    ) == []
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "RESUMABLE"
+
+
+def test_evo_v2_authorized_child_runs_production_caller_not_parent_wrapper(
+    tmp_path,
+    monkeypatch,
+):
+    adapter = _PausedThenForgingAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("EVO V2 authorized child execution"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    proof_path = (
+        workspace
+        / "objects/runtime_context"
+        / f"ultimate_run_report__{job.report_id}.json"
+    )
+    pause_outcome = "awaiting_evo_v2_external_approval_and_fresh_child"
+    _write_json(
+        proof_path,
+        {
+            "report_id": job.report_id,
+            "status": "PAUSED",
+            "failure": None,
+            "factor_verdict": "NOT_ISSUED",
+            "formal_proof_eligible": False,
+            "proof_semantics": (
+                "review_only_delta_awaiting_external_approval_and_fresh_child"
+            ),
+            "final_outcome": pause_outcome,
+        },
+    )
+    child = f"{job.report_id}__EVO_CHILD_001"
+    progress = {
+        "report_id": job.report_id,
+        "pause_outcome": pause_outcome,
+        "status": "CHILD_HANDOFF_AUTHORIZED",
+        "start_step": None,
+        "reason": "signed_authorization_verified",
+        "child_report_id": child,
+    }
+
+    def trusted_external_pause(
+        _job, *, worktree, workspace, private_execution_started=False
+    ):
+        return {
+            "start_step": "6",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+            "attestation_id": f"attestations/{job.job_id}.json",
+            "attestation_sha256": "a" * 64,
+            "receipt_id": f"jobs/{job.job_id}/formal-execution/receipt.json",
+            "receipt_sha256": "b" * 64,
+            "workspace_evidence_tree_root_sha256": stable_json_hash(
+                _workspace_evidence_tree(Path(workspace))
+            ),
+            "evo_v2_external_progress": progress,
+        }
+
+    child_calls = []
+    monkeypatch.setattr(
+        service, "_validate_trusted_resume_context", trusted_external_pause
+    )
+    monkeypatch.setattr(
+        service,
+        "_execute_evo_v2_child_from_parent_handoff",
+        lambda *_args, **kwargs: child_calls.append(kwargs["child_report_id"])
+        or {
+            "ready": {"status": "CHILD_EXECUTION_READY"},
+            "execution": {
+                "status": "CHILD_RESUME_READY",
+                "resume_start_step": "4",
+                "execution_receipt_path": "/host/private/child-execution.json",
+                "execution_receipt_sha256": "c" * 64,
+            },
+        },
+    )
+    parent_formal_calls = []
+    monkeypatch.setattr(
+        service,
+        "_execute_host_formal_pipeline",
+        lambda *_args, **_kwargs: parent_formal_calls.append("called"),
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+    review = store.get_job(job.job_id)
+    assert child_calls == [child]
+    assert parent_formal_calls == []
+    assert review.execution_status == "REVIEW_REQUIRED"
+    assert review.current_stage == "evo_v2_child_resume_ready"
+    assert review.error_code == "FACTORFORGE_CONSOLE_EVO_V2_CHILD_EXECUTION_READY"
+    assert review.result["evo_v2_child_runtime"]["execution"][
+        "resume_start_step"
+    ] == "4"
+
+
+@pytest.mark.parametrize(
+    ("formal_verdict", "terminal_decision"),
+    [("ACCEPT", "promote_official"), ("REJECT", "reject")],
+)
+def test_evo_v2_signed_terminal_checkpoint_completes_without_any_runner(
+    tmp_path,
+    monkeypatch,
+    formal_verdict,
+    terminal_decision,
+):
+    adapter = _PausedThenForgingAdapter()
+    _source, store, service = _service(tmp_path, adapter)
+    job = service.submit(_request("EVO V2 signed terminal closure"))
+    service.run_once()
+    paused = store.get_job(job.job_id)
+    workspace = Path(paused.workspace_path)
+    proof_path = (
+        workspace
+        / "objects"
+        / "runtime_context"
+        / f"ultimate_run_report__{job.report_id}.json"
+    )
+    pause_outcome = "awaiting_evo_v2_non_revision_terminal_closure"
+    _write_json(
+        proof_path,
+        {
+            "report_id": job.report_id,
+            "status": "PAUSED",
+            "formal_proof_eligible": False,
+            "proof_semantics": pause_outcome,
+            "final_outcome": pause_outcome,
+            "failure": None,
+        },
+    )
+    closure_relative = (
+        f"objects/evo_v2/{job.report_id}/post_oos_terminal_closure.json"
+    )
+    closure_path = workspace / closure_relative
+    _write_json(
+        closure_path,
+        {
+            "report_id": job.report_id,
+            "formal_factor_verdict": formal_verdict,
+            "step6_decision": terminal_decision,
+            "authority_guard": {
+                "revision_authority": False,
+                "canonical_memory_write_allowed": False,
+            },
+        },
+    )
+    progress = {
+        "report_id": job.report_id,
+        "pause_outcome": pause_outcome,
+        "status": "TERMINAL_CHECKPOINT_READY",
+        "start_step": None,
+        "paused_lifecycle_state": "NO_QUALIFIED_CONTRADICTION",
+        "paused_lifecycle_generation": 2,
+        "paused_lifecycle_snapshot_path": (
+            f"objects/evo_v2/{job.report_id}/lifecycle_history/"
+            "lifecycle__0002.json"
+        ),
+        "paused_lifecycle_snapshot_sha256": "1" * 64,
+        "current_lifecycle_state": "NO_QUALIFIED_CONTRADICTION",
+        "current_lifecycle_generation": 2,
+        "current_lifecycle_sha256": "2" * 64,
+        "staging_event_count": 0,
+        "child_report_id": None,
+        "terminal_factor_verdict": formal_verdict,
+        "terminal_decision": terminal_decision,
+        "terminal_closure_path": closure_relative,
+        "terminal_closure_sha256": _file_sha256(closure_path),
+        "reason": "signed_non_revision_terminal_closure_verified",
+    }
+
+    def trusted_terminal_pause(
+        _job,
+        *,
+        worktree,
+        workspace,
+        private_execution_started=False,
+    ):
+        return {
+            "start_step": "6",
+            "ultimate_proof_sha256": _file_sha256(proof_path),
+            "attestation_id": f"attestations/{job.job_id}.json",
+            "attestation_sha256": "a" * 64,
+            "receipt_id": f"jobs/{job.job_id}/formal-execution/receipt.json",
+            "receipt_sha256": "b" * 64,
+            "workspace_evidence_tree_root_sha256": stable_json_hash(
+                _workspace_evidence_tree(Path(workspace))
+            ),
+            "evo_v2_external_progress": progress,
+        }
+
+    formal_calls = []
+    monkeypatch.setattr(
+        service,
+        "_validate_trusted_resume_context",
+        trusted_terminal_pause,
+    )
+    monkeypatch.setattr(
+        service,
+        "_execute_host_formal_pipeline",
+        lambda *_args, **_kwargs: formal_calls.append("called"),
+    )
+    service.request_resume(job.job_id)
+    service.run_once()
+
+    completed = store.get_job(job.job_id)
+    assert completed.execution_status == "COMPLETED"
+    assert completed.protocol_status == "PASS"
+    assert completed.factor_verdict == formal_verdict
+    assert completed.council_status == "NOT_REQUIRED"
+    assert completed.formal_proof_eligible is True
+    assert adapter.calls == 1
+    assert formal_calls == []
+    checkpoint_ref = completed.result["evo_v2_terminal_checkpoint"]
+    checkpoint_path = service.config.state_root / checkpoint_ref["path"]
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert checkpoint_ref["sha256"] == _file_sha256(checkpoint_path)
+    assert checkpoint["actor_kind"] == "host_terminal_checkpoint"
+    assert checkpoint["terminal_closure"] == {
+        "path": closure_relative,
+        "sha256": _file_sha256(closure_path),
+        "formal_factor_verdict": formal_verdict,
+        "terminal_decision": terminal_decision,
+    }
+    assert checkpoint["trusted_pause"]["sha256"] == _file_sha256(
+        proof_path
+    )
+    assert all(
+        value is False for value in checkpoint["authority"].values()
+    )
+    lifecycle = json.loads(
+        service._private_lifecycle_path(job.job_id).read_text(encoding="utf-8")
+    )
+    assert lifecycle["status"] == "TERMINAL"
+
+
 def test_generic_resume_preserves_explicit_human_decision_pause(tmp_path):
     adapter = _PausedThenForgingAdapter()
     _source, store, service = _service(tmp_path, adapter)
@@ -4334,6 +5987,13 @@ def test_host_execution_attestation_is_outside_agent_workspace(tmp_path, monkeyp
     )
     _write_json(evidence, {"report_id": job.report_id, "status": "PAUSED", "failure": None})
     _write_json(step4_evidence, {"report_id": job.report_id, "status": "PASS"})
+    from factor_factory.console.private_job_root import ensure_host_private_job_root
+
+    ensure_host_private_job_root(
+        service.config.state_root,
+        job.job_id,
+        create=True,
+    )
     result_path = service.config.state_root / "jobs" / job.job_id / "agent-result.json"
     _write_json(result_path, {"returncode": 0})
     summary = UltimateRunSummary(
@@ -4831,6 +6491,16 @@ def test_host_formal_executor_records_exact_materializer_and_ultimate_processes(
     assert calls[0][1]["env"]["AWS_SESSION_TOKEN"] == "host-session-token-for-test"
     assert calls[0][1]["env"]["FACTORFORGE_REPO_ROOT"] == str(worktree.resolve())
     assert calls[1][1]["env"]["FACTORFORGE_REPO_ROOT"] == str(worktree.resolve())
+    expected_incident_trust = str(
+        (service.config.state_root / "research-org-trust").resolve(strict=True)
+    )
+    for _argv, kwargs in calls:
+        assert kwargs["env"]["FACTORFORGE_OOS_HOST_TRUST_ROOT"] == (
+            expected_incident_trust
+        )
+        assert kwargs["env"]["FACTORFORGE_OOS_HOST_INSTALLATION_ID"] == (
+            service.config.installation_id
+        )
     assert "FACTORFORGE_CONSOLE_INVITE_PASSWORD" not in calls[0][1]["env"]
     assert "DEEPSEEK_API_KEY" not in calls[0][1]["env"]
     assert calls[1][1]["env"]["AWS_EC2_METADATA_DISABLED"] == "true"
@@ -4941,6 +6611,11 @@ def test_host_formal_execution_uses_deployed_engine_with_pinned_research_worktre
     )
     assert calls[1][0][1] == str(source / "scripts" / "run_factorforge_ultimate.py")
     assert not Path(calls[1][0][1]).is_relative_to(research_worktree)
+    for _argv, kwargs in calls:
+        python_paths = kwargs["env"]["PYTHONPATH"].split(os.pathsep)
+        assert python_paths[0] == str(source.resolve())
+        assert str(research_worktree.resolve()) in python_paths[1:]
+        assert kwargs["env"]["FACTORFORGE_REPO_ROOT"] == str(source.resolve())
     payload = json.loads(
         (service.config.state_root / receipt["receipt_id"]).read_text(encoding="utf-8")
     )
@@ -5104,15 +6779,57 @@ def test_formal_failure_checkpoint_is_attested_and_resumable(
     assert store.get_job(job.job_id).execution_status == "QUEUED"
 
 
-def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
+def test_host_formal_python_environment_keeps_engine_ahead_of_stale_worktree_and_data_api(
     tmp_path,
 ):
+    engine = tmp_path / "engine"
+    engine_console = engine / "factor_factory" / "console"
+    engine_console.mkdir(parents=True)
+    (engine / "factor_factory" / "__init__.py").write_text("\n", encoding="utf-8")
+    (engine_console / "__init__.py").write_text(
+        "CONTROL_MARKER = 'engine'\n",
+        encoding="utf-8",
+    )
+    (engine / "factor_factory" / "runtime_probe.py").write_text(
+        "ENGINE_ONLY_SYMBOL = 'new-engine-symbol'\n",
+        encoding="utf-8",
+    )
+    engine_script = engine / "scripts" / "formal_probe.py"
+    engine_script.parent.mkdir()
+    engine_script.write_text(
+        (
+            "from factor_factory.console import CONTROL_MARKER\n"
+            "from factor_factory.runtime_probe import ENGINE_ONLY_SYMBOL\n"
+            "from factorforge_data_api import DATA_API_MARKER\n"
+            "from job_specific_module import JOB_MARKER\n"
+            "assert CONTROL_MARKER == 'engine'\n"
+            "assert ENGINE_ONLY_SYMBOL == 'new-engine-symbol'\n"
+            "assert DATA_API_MARKER == 'external'\n"
+            "assert JOB_MARKER == 'job-worktree'\n"
+        ),
+        encoding="utf-8",
+    )
+
     worktree = tmp_path / "worktree"
-    control_console = worktree / "factor_factory" / "console"
-    control_console.mkdir(parents=True)
+    stale_console = worktree / "factor_factory" / "console"
+    stale_console.mkdir(parents=True)
     (worktree / "factor_factory" / "__init__.py").write_text("\n", encoding="utf-8")
-    (control_console / "__init__.py").write_text(
-        "CONTROL_MARKER = 'control'\n",
+    (stale_console / "__init__.py").write_text(
+        "CONTROL_MARKER = 'stale-worktree'\n",
+        encoding="utf-8",
+    )
+    (worktree / "factor_factory" / "runtime_probe.py").write_text(
+        "STALE_ONLY_SYMBOL = 'old-worktree-symbol'\n",
+        encoding="utf-8",
+    )
+    (worktree / "job_specific_module.py").write_text(
+        "JOB_MARKER = 'job-worktree'\n",
+        encoding="utf-8",
+    )
+    stale_script = worktree / "scripts" / "formal_probe.py"
+    stale_script.parent.mkdir()
+    stale_script.write_text(
+        "raise SystemExit(97)\n",
         encoding="utf-8",
     )
     bridge_source = PROJECT_ROOT / "deploy" / "factorforge-console" / "data-api-bridge"
@@ -5132,6 +6849,10 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
     )
     data_api_alias = tmp_path / "data-api-alias"
     data_api_alias.symlink_to(data_api_checkout, target_is_directory=True)
+    engine_alias = tmp_path / "engine-alias"
+    engine_alias.symlink_to(engine, target_is_directory=True)
+    worktree_alias = tmp_path / "worktree-alias"
+    worktree_alias.symlink_to(worktree, target_is_directory=True)
     unrelated_pythonpath = tmp_path / "unrelated-pythonpath"
     unrelated_pythonpath.mkdir()
 
@@ -5142,6 +6863,10 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
                 f"{data_api_checkout}{os.sep}.",
                 str(data_api_alias),
                 str(data_api_checkout / "factor_factory"),
+                str(engine_alias),
+                str(engine),
+                str(worktree_alias),
+                str(worktree),
                 str(unrelated_pythonpath),
             ]
         )
@@ -5149,11 +6874,19 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
     _configure_host_formal_python_environment(
         env,
         worktree=worktree,
+        source_repo=engine,
         data_api_pythonpath=data_api_checkout,
     )
 
     python_paths = env["PYTHONPATH"].split(os.pathsep)
-    assert python_paths[:2] == [str(worktree.resolve()), str(bridge_target.resolve())]
+    assert python_paths[:3] == [
+        str(engine.resolve()),
+        str(bridge_target.resolve()),
+        str(worktree.resolve()),
+    ]
+    assert python_paths.count(str(engine.resolve())) == 1
+    assert python_paths.count(str(bridge_target.resolve())) == 1
+    assert python_paths.count(str(worktree.resolve())) == 1
     assert not any(
         Path(item).is_relative_to(data_api_checkout.resolve()) for item in python_paths
     )
@@ -5162,24 +6895,20 @@ def test_host_formal_python_environment_keeps_control_package_ahead_of_data_api(
         data_api_package.resolve()
     )
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
-    assert env["FACTORFORGE_REPO_ROOT"] == str(worktree.resolve())
+    assert env["FACTORFORGE_REPO_ROOT"] == str(engine.resolve())
     probe = subprocess.run(
         [
             sys.executable,
-            "-c",
-            (
-                "from factor_factory.console import CONTROL_MARKER; "
-                "from factorforge_data_api import DATA_API_MARKER; "
-                "assert CONTROL_MARKER == 'control'; "
-                "assert DATA_API_MARKER == 'external'"
-            ),
+            str(engine_script),
         ],
-        cwd=tmp_path,
+        cwd=worktree,
         env={**os.environ, **env},
         text=True,
         capture_output=True,
         check=False,
     )
+    assert Path(probe.args[1]).resolve().is_relative_to(engine.resolve())
+    assert Path(probe.args[1]).resolve() != stale_script.resolve()
     assert probe.returncode == 0, probe.stderr
 
 

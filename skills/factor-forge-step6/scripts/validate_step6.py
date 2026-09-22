@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -25,14 +25,21 @@ from factor_factory.mechanism_math.formula_specific import (
 )
 from factor_factory.mechanism_math.main_agent_memo import validate_main_agent_mechanism_memo
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
-from factor_factory.measurement_program import validate_measurement_program
+from factor_factory.measurement_program import (
+    ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE,
+    research_compatibility_profile_from_spec,
+    validate_measurement_program,
+)
 from factor_factory.revision_council.guards import FORBIDDEN_TEXT_TOKEN, FORBIDDEN_PATTERNS
 from factor_factory.revision_council.validator import validate_revision_council_proposal
 from factor_factory.research_conjecture import (
+    RESEARCH_PROTOCOL_SCOPE_HOSTED,
+    RESEARCH_PROTOCOL_SCOPE_LOCAL_IS,
     research_protocol_paths,
     validate_protocol_bundle,
 )
 from factor_factory.research_proof import validate_factor_proof_certificate
+from factor_factory.primary_evaluator import recovery_evidence_complete
 from validate_agentic_council_result import (
     expected_manifest_task,
     validate_agentic_result,
@@ -165,6 +172,19 @@ CORE_LOOP_BRIEF_METRICS = {
     'group_long_short_spread_mean',
     'group_long_short_spread_ir',
 }
+# A prepared local-IS custom primary evaluator is permitted to omit these
+# diagnostics.  They must remain absent/NOT_EVALUATED rather than being
+# manufactured from a self-quant or qlib payload.  The long-side accounting
+# fields outside this set remain mandatory.
+CUSTOM_PRIMARY_OPTIONAL_LOOP_BRIEF_METRICS = {
+    'rank_ic_ir',
+    'pearson_ic_ir',
+    'cost_adjusted_long_side_max_drawdown',
+    'group_top_decile_mean_return',
+    'group_bottom_decile_mean_return',
+    'group_long_short_spread_mean',
+    'group_long_short_spread_ir',
+}
 SPECIFIED_MECHANISM_MATH_SUMMARY_FIELDS = {
     'model_family',
     'mathematical_object',
@@ -264,14 +284,125 @@ def check(name: str, condition: bool, error: str | None = None, severity: str = 
     }
 
 
+def local_terminal_reject_without_revision(
+    iteration: dict[str, Any],
+    step3b_handoff_path: Path,
+) -> bool:
+    """Recognize the one local-IS terminal path that has no revision to prove.
+
+    A rejected local empirical review may stop after its authored reviewers
+    agree.  It is neither an iteration nor a downstream authority event, so
+    requiring future revision obligations/counterexamples would manufacture a
+    non-existent next round.  Keep this deliberately narrower than a generic
+    ``reject``: it must be the producer's explicit local terminal shape and
+    must not have emitted a Step3B handoff.
+    """
+    judgment = nested_dict(iteration, 'research_judgment')
+    memo = nested_dict(judgment, 'research_memo')
+    boundary = nested_dict(memo, 'local_is_authority_boundary')
+    decision_source = memo.get('decision_source')
+    loop_action = nested_dict(iteration, 'loop_action')
+    return (
+        judgment.get('decision') == 'reject'
+        and isinstance(decision_source, dict)
+        and decision_source == {
+            'source': 'concordant_authored_local_researcher_and_independent_review',
+            'decision': 'reject',
+            'promotion_allowed': False,
+            'automatic_revision_allowed': False,
+        }
+        and boundary == {
+            'execution_status': 'step6_local_is_review_completed',
+            'factor_verdict': 'NOT_ISSUED',
+            'official_promotion_allowed': False,
+            'oos_access_allowed': False,
+            'original_quantitative_decision': 'reject',
+        }
+        and loop_action.get('should_modify_step3b') is False
+        and loop_action.get('loop_authorization') == 'advisory_only'
+        and loop_action.get('next_runner') == 'stop'
+        and loop_action.get('requires_human_approval_before_code_change') is False
+        and not step3b_handoff_path.exists()
+    )
+
+
+def protocol_validation_stage(
+    iteration: dict[str, Any],
+    scope: str,
+    step3b_handoff_path: Path,
+) -> str:
+    """Choose the strictest applicable protocol phase without inventing work."""
+    decision = nested_dict(iteration, 'research_judgment').get('decision')
+    if decision == 'promote_official':
+        return 'pre_promotion'
+    if (
+        scope == RESEARCH_PROTOCOL_SCOPE_LOCAL_IS
+        and local_terminal_reject_without_revision(iteration, step3b_handoff_path)
+    ):
+        return 'pre_council'
+    return 'pre_revision'
+
+
+def local_terminal_reject_without_actions(
+    iteration: dict[str, Any],
+    step3b_handoff_path: Path,
+    revision_strategy: dict[str, Any],
+    search_policy_decision: dict[str, Any],
+) -> bool:
+    """Allow no approval only for an authenticated terminal local stop.
+
+    ``advisory_only`` commonly still describes an unexecuted future proposal,
+    which must retain the human gate.  This exception is only for an authored
+    local rejection that has removed every revision and branch action.
+    """
+    loop_action = nested_dict(iteration, 'loop_action')
+    branch_templates = search_policy_decision.get('branch_templates')
+    return (
+        os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+        and local_terminal_reject_without_revision(iteration, step3b_handoff_path)
+        and revision_strategy.get('revision_needed') is False
+        and revision_strategy.get('revision_hypotheses') == []
+        and revision_strategy.get('terminal_local_rejection') is True
+        and branch_templates == []
+        and loop_action.get('modification_targets') == []
+        and loop_action.get('parallel_exploration_branches') == []
+        and loop_action.get('search_methods') == []
+    )
+
+
+def _declares_usable_custom_primary(status: dict[str, Any]) -> bool:
+    """Whether a status explicitly replaces—not supplements—self-quant.
+
+    This deliberately accepts neither an arbitrary ``not_required`` marker nor
+    a builtin alias.  Step4/5 remain responsible for validating the custom
+    payload and its real artifacts; Step6 only consumes their declared status.
+    """
+    backend = str(status.get('primary_evaluator_backend') or '').strip()
+    return (
+        backend not in {'', 'self_quant_analyzer', 'qlib_backtest'}
+        and status.get('primary_evaluator_evidence_status') in {
+            'complete', 'partial', 'missing', 'failed',
+        }
+    )
+
+
 def validate_evidence_status_contract(status: dict[str, Any] | None) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     if not isinstance(status, dict) or not status:
         return [check('evidence_status_present', False, 'BLOCK_STEP6_EVIDENCE_STATUS_MISSING: evidence_status missing')]
+    custom_primary = _declares_usable_custom_primary(status)
+    self_quant_status = status.get('self_quant_evidence_status')
+    self_quant_valid = self_quant_status in {'complete', 'partial', 'missing', 'failed'}
+    self_quant_replaced = self_quant_status == 'not_required' and custom_primary
     checks.extend([
         check('evidence_status_version', status.get('version') == VALID_STEP6_EVIDENCE_STATUS_VERSION, 'BLOCK_STEP6_EVIDENCE_STATUS_MISSING: invalid evidence_status.version'),
         check('evidence_status_wrapper_status', status.get('wrapper_validation_status') in {'PASS', 'BLOCK', 'FAILED'}, 'BLOCK_STEP6_EVIDENCE_STATUS_WRAPPER_MISSING: wrapper_validation_status missing'),
-        check('evidence_status_self_quant', status.get('self_quant_evidence_status') in {'complete', 'partial', 'missing', 'failed'}, 'BLOCK_STEP6_EVIDENCE_STATUS_SELF_QUANT_MISSING: self_quant_evidence_status missing'),
+        check('evidence_status_self_quant', self_quant_valid or self_quant_replaced, 'BLOCK_STEP6_EVIDENCE_STATUS_SELF_QUANT_MISSING: self_quant_evidence_status missing'),
+        check(
+            'evidence_status_custom_primary_when_self_quant_not_required',
+            self_quant_status != 'not_required' or custom_primary,
+            'BLOCK_STEP6_EVIDENCE_STATUS_PRIMARY_MISSING: self_quant may be not_required only with a declared custom primary evaluator status',
+        ),
         check('evidence_status_qlib', status.get('qlib_native_status') in VALID_STEP6_Q_LIB_NATIVE_STATUS, 'BLOCK_STEP6_EVIDENCE_STATUS_QLIB_MISSING: qlib_native_status missing'),
         check('evidence_status_long_side', status.get('long_side_evidence_status') in {'complete', 'partial', 'missing', 'failed'}, 'BLOCK_STEP6_EVIDENCE_STATUS_LONG_SIDE_MISSING: long_side_evidence_status missing'),
         check('evidence_status_cost', status.get('cost_model_status') in {'complete', 'partial', 'missing'}, 'BLOCK_STEP6_EVIDENCE_STATUS_COST_MISSING: cost_model_status missing'),
@@ -292,6 +423,40 @@ def normalized_words(value: Any) -> str:
     return ' '.join(re.findall(r'[a-zA-Z0-9_]+|[\u4e00-\u9fff]+', str(value or '').lower()))
 
 
+LOCAL_SEARCH_TARGET_KEYS = {
+    'fitness', 'fitness_metric', 'goal', 'objective', 'optimization_metric',
+    'reward', 'score_metric', 'search_target', 'selection_objective',
+    'success_criteria', 'target_metric',
+}
+
+
+def illegal_local_search_targets(value: Any, path: str = 'program_search_policy') -> list[str]:
+    """Find authored local objectives that use unavailable OOS evidence as a reward."""
+    failures: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            item_path = f'{path}.{key}'
+            if key in LOCAL_SEARCH_TARGET_KEYS:
+                candidates = item if isinstance(item, list) else [item]
+                for candidate in candidates:
+                    if not isinstance(candidate, str):
+                        continue
+                    lowered = candidate.casefold()
+                    mentions_oos = bool(
+                        re.search(r'(?<![a-z0-9])oos(?![a-z0-9])', lowered)
+                        or 'out_of_sample' in lowered
+                        or 'out-of-sample' in lowered
+                        or 'out of sample' in lowered
+                    )
+                    if mentions_oos:
+                        failures.append(item_path)
+            failures.extend(illegal_local_search_targets(item, item_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            failures.extend(illegal_local_search_targets(item, f'{path}[{index}]'))
+    return failures
+
+
 def generic_research_equation_metric_text(value: Any) -> bool:
     normalized = normalized_words(value)
     if normalized in GENERIC_RESEARCH_EQUATION_METRIC_TEXT:
@@ -308,6 +473,62 @@ def generic_research_equation_metric_text(value: Any) -> bool:
 
 def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
+
+
+def nonempty_string_list(value: Any) -> bool:
+    return (
+        isinstance(value, list)
+        and bool(value)
+        and all(isinstance(item, str) and bool(item.strip()) for item in value)
+    )
+
+
+def learning_list_state_valid(learning: dict[str, Any], key: str, flexible_local: bool) -> bool:
+    value = learning.get(key)
+    if nonempty_string_list(value):
+        return True
+    reason = learning.get(f'{key}_absence_reason')
+    if key == 'similar_case_lessons_imported' and reason is None:
+        reason = learning.get('similar_case_lessons_absence_reason')
+    return flexible_local and key in learning and isinstance(value, list) and not value and nonempty_str(reason)
+
+
+def program_search_methods_valid(policy: dict[str, Any], decision: str, flexible_local: bool) -> bool:
+    if not isinstance(policy, dict):
+        return False
+    methods = policy.get('method_library')
+    if flexible_local:
+        if (
+            isinstance(methods, dict)
+            and bool(methods)
+            and all(
+                isinstance(name, str) and bool(name.strip())
+                and isinstance(method, dict) and bool(method)
+                for name, method in methods.items()
+            )
+        ):
+            return True
+        return (
+            decision != 'iterate'
+            and 'method_library' in policy
+            and isinstance(methods, dict)
+            and not methods
+            and nonempty_str(policy.get('method_library_absence_reason'))
+        )
+    return isinstance(methods, dict) and REQUIRED_SEARCH_METHODS.issubset(set(methods))
+
+
+def next_research_tests_state_valid(research_memo: dict[str, Any], flexible_local: bool) -> bool:
+    value = research_memo.get('next_research_tests')
+    if nonempty_string_list(value):
+        return True
+    return (
+        flexible_local
+        and 'next_research_tests' in research_memo
+        and isinstance(value, list)
+        and not value
+        and nonempty_str(research_memo.get('next_research_tests_absence_reason'))
+    )
 
 
 def list_value(value) -> bool:
@@ -374,6 +595,37 @@ def present_metric(value) -> bool:
         return True
     except Exception:
         return False
+
+
+def loop_brief_missing_core_metrics(iteration: dict, metrics: dict) -> list[str]:
+    """Return genuinely missing loop-brief metrics without inventing diagnostics.
+
+    A declared custom primary evaluator supplies the primary account and IC
+    fields, but may truthfully mark IR/group/long-short diagnostics as
+    NOT_EVALUATED. A right-censored recovery likewise records an observed
+    lower bound and observation end rather than a fabricated recovery day.
+    Neither exception applies to legacy self-quant evidence or to required
+    long-side valuation fields.
+    """
+    evidence_status = iteration.get('evidence_status') or {}
+    if not isinstance(evidence_status, dict):
+        evidence_status = {}
+    headline_metrics = ((iteration.get('evidence_summary') or {}).get('headline_metrics') or {})
+    if not isinstance(headline_metrics, dict):
+        headline_metrics = {}
+    custom_primary = (
+        evidence_status.get('self_quant_evidence_status') == 'not_required'
+        and _declares_usable_custom_primary(evidence_status)
+    )
+    missing = {
+        key for key in CORE_LOOP_BRIEF_METRICS
+        if not present_metric(metrics.get(key))
+    }
+    if 'long_side_recovery_days' in missing and recovery_evidence_complete(headline_metrics):
+        missing.remove('long_side_recovery_days')
+    if custom_primary:
+        missing.difference_update(CUSTOM_PRIMARY_OPTIONAL_LOOP_BRIEF_METRICS)
+    return sorted(missing)
 
 
 def scan_forbidden_revision_text(value, prefix: str = '$') -> list[dict]:
@@ -571,7 +823,7 @@ def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
     ))
 
     metrics = brief.get('metrics') if isinstance(brief.get('metrics'), dict) else {}
-    missing_metrics = sorted(key for key in CORE_LOOP_BRIEF_METRICS if not present_metric(metrics.get(key)))
+    missing_metrics = loop_brief_missing_core_metrics(iteration, metrics)
     checks.append(check('loop_research_brief_core_metrics_present', not missing_metrics, f'loop brief core metrics missing/empty: {missing_metrics}'))
 
     charts = brief.get('chart_evidence') if isinstance(brief.get('chart_evidence'), dict) else {}
@@ -913,6 +1165,8 @@ def revision_council_attachment_checks(iteration: dict, research_memo: dict, ste
                     measurement_program=packet.get(
                         'mechanism_conditioned_measurement_program'
                     ),
+                    evo_v2_required=packet.get('evo_v2') is not None,
+                    workspace_root=FF,
                 )
             )
             checks.append(check(
@@ -938,6 +1192,7 @@ def revision_council_attachment_checks(iteration: dict, research_memo: dict, ste
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
+    ap.add_argument('--expected-host-trust-manifest-sha256', default=None)
     args = ap.parse_args()
     rid = args.report_id
 
@@ -967,6 +1222,77 @@ if __name__ == '__main__':
         all_record = load_json(all_library_path)
         knowledge = load_json(knowledge_path)
         frm = load_json(frm_path)
+        factor_spec_path = OBJ / 'factor_spec_master' / f'factor_spec_master__{rid}.json'
+        factor_spec = load_json(factor_spec_path) if factor_spec_path.exists() else {}
+        research_contract = factor_spec.get('research_contract') if isinstance(factor_spec.get('research_contract'), dict) else {}
+        compatibility_profile = research_compatibility_profile_from_spec(factor_spec)
+        local_is_only = os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+        flexible_local = local_is_only and compatibility_profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        from factor_factory.evo_child_execution import validate_evo_child_execution_gate
+
+        evo_gate_reasons = validate_evo_child_execution_gate(
+            workspace_root=FF,
+            report_id=rid,
+            factor_run_master=frm,
+            expected_host_trust_manifest_sha256=(
+                args.expected_host_trust_manifest_sha256
+            ),
+        )
+        checks.append(check(
+            'evo_child_execution_gate',
+            not evo_gate_reasons,
+            ';'.join(evo_gate_reasons) if evo_gate_reasons else None,
+        ))
+        iteration_tension = (
+            ((iteration.get('research_judgment') or {}).get('research_memo') or {})
+            .get('evo_transfer_tension_ledger')
+        )
+        knowledge_tension = (
+            (knowledge.get('research_memo') or {})
+            .get('evo_transfer_tension_ledger')
+        )
+        transfer_review_gate = knowledge.get(
+            'evo_transfer_tension_review_gate'
+        )
+        checks.append(check(
+            'evo_unreviewed_tension_not_copied_to_reusable_knowledge',
+            knowledge_tension is None,
+            'raw EVO transfer tension ledger requires a separate Host adjudication before reusable knowledge writeback',
+        ))
+        if iteration_tension is not None:
+            expected_test_ids = [
+                item.get('test_id')
+                for item in (iteration_tension.get('tests') or [])
+                if isinstance(item, dict)
+            ] if isinstance(iteration_tension, dict) else []
+            checks.append(check(
+                'evo_pending_tension_review_gate',
+                isinstance(transfer_review_gate, dict)
+                and transfer_review_gate.get('status')
+                == 'HOST_ADJUDICATION_REQUIRED_NOT_REUSABLE'
+                and transfer_review_gate.get('diagnostic_contract_sha256')
+                == iteration_tension.get('diagnostic_contract_sha256')
+                and transfer_review_gate.get('execution_result_ref')
+                == iteration_tension.get('execution_result_ref')
+                and transfer_review_gate.get('ordered_test_ids')
+                == expected_test_ids
+                and transfer_review_gate.get(
+                    'raw_tension_ledger_copied_to_knowledge'
+                ) is False
+                and transfer_review_gate.get('reusable_as_analogy') is False
+                and transfer_review_gate.get(
+                    'canonical_memory_promotion_allowed'
+                ) is False
+                and transfer_review_gate.get('factor_acceptance_affected')
+                is False,
+                'pending EVO transfer diagnostics must remain non-reusable and exact-bound to the iteration evidence',
+            ))
+        else:
+            checks.append(check(
+                'evo_pending_tension_review_gate_absent_without_diagnostic',
+                transfer_review_gate is None,
+                'EVO transfer review gate cannot appear without an iteration diagnostic ledger',
+            ))
         case = load_json(case_path)
         official_record = load_json(official_library_path) if official_library_path.exists() else None
         checks.extend(check_identity_transition('factor_run_master', frm, 'factor_case_master', case, 'factor_case_master'))
@@ -995,22 +1321,26 @@ if __name__ == '__main__':
             )
         )
         if protocol_required or protocol_paths['conjecture'].exists():
+            protocol_scope = (
+                RESEARCH_PROTOCOL_SCOPE_LOCAL_IS
+                if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+                else RESEARCH_PROTOCOL_SCOPE_HOSTED
+            )
+            protocol_stage = protocol_validation_stage(
+                iteration,
+                protocol_scope,
+                step3b_handoff_path,
+            )
             protocol_report = validate_protocol_bundle(
                 root=FF,
                 report_id=rid,
-                stage=(
-                    'pre_promotion'
-                    if decision == 'promote_official'
-                    else 'pre_revision'
-                ),
+                stage=protocol_stage,
+                scope=protocol_scope,
+                compatibility_profile=compatibility_profile,
                 iteration_path=iteration_path,
             )
             checks.append(check(
-                (
-                    'research_conjecture_protocol_pre_promotion'
-                    if decision == 'promote_official'
-                    else 'research_conjecture_protocol_pre_revision'
-                ),
+                'research_conjecture_protocol_' + protocol_stage,
                 protocol_report.get('verdict') == 'PASS',
                 '; '.join(protocol_report.get('block_reasons') or []),
             ))
@@ -1097,8 +1427,24 @@ if __name__ == '__main__':
         case_comparison = research_memo.get('case_comparison') or {}
         revision_strategy = research_memo.get('revision_strategy') or {}
         search_policy_decision = research_memo.get('search_policy_decision') or {}
-        method_library = program_search_policy.get('method_library') or {}
+        raw_method_library = program_search_policy.get('method_library')
+        method_library = raw_method_library if isinstance(raw_method_library, dict) else {}
         search_branches = ((program_search_policy.get('recommended_next_search') or {}).get('branches')) or []
+        checks.append(check(
+            'research_compatibility_profile_scope',
+            (compatibility_profile is None or flexible_local)
+            and (
+                compatibility_profile is None
+                or learning.get('research_compatibility_profile') == compatibility_profile
+                or research_memo.get('research_compatibility_profile') == compatibility_profile
+            ),
+            'compatibility profile is valid only for an explicit ordinary local IS object',
+        ))
+        checks.append(check(
+            'research_compatibility_profile_no_promotion',
+            not flexible_local or decision != 'promote_official',
+            'ordinary local IS compatibility profile cannot enable official promotion',
+        ))
         information_set_legality = str(math_discipline.get('information_set_legality') or '').lower()
         overfit_risk_items = [str(item).lower() for item in (math_discipline.get('overfit_risk') or [])]
         metric_evidence_items = (
@@ -1208,6 +1554,8 @@ if __name__ == '__main__':
             measurement_program,
             available_knowledge_node_ids=declared_node_ids,
             require_web_executable=False,
+            compatibility_profile=compatibility_profile,
+            scope=RESEARCH_PROTOCOL_SCOPE_LOCAL_IS if local_is_only else RESEARCH_PROTOCOL_SCOPE_HOSTED,
         ) if isinstance(measurement_program, dict) and measurement_program else []
         checks.append(check(
             'legacy_mechanism_math_contract_valid_if_present',
@@ -1510,8 +1858,14 @@ if __name__ == '__main__':
         ))
         checks.append(check(
             'search_policy_decision_human_approval_required',
-            search_policy_decision.get('human_approval_required') is True,
-            'search_policy_decision.human_approval_required must be true',
+            search_policy_decision.get('human_approval_required') is True
+            or local_terminal_reject_without_actions(
+                iteration,
+                step3b_handoff_path,
+                revision_strategy,
+                search_policy_decision,
+            ),
+            'search_policy_decision.human_approval_required must be true unless an authenticated local terminal rejection has no revision or branch actions',
         ))
         forbidden_search = set(search_policy_decision.get('forbidden_search') or [])
         checks.append(check(
@@ -1577,11 +1931,11 @@ if __name__ == '__main__':
             'official promotion requires assessed overfit risk',
         ))
         checks.append(check('learning_and_innovation_present', isinstance(learning, dict) and bool(learning), 'learning_and_innovation missing from research_memo'))
-        checks.append(check('learning_transferable_patterns_present', nonempty_list(learning.get('transferable_patterns')), 'learning transferable_patterns missing'))
-        checks.append(check('learning_anti_patterns_present', nonempty_list(learning.get('anti_patterns')), 'learning anti_patterns missing'))
-        checks.append(check('learning_similar_case_lessons_imported_present', nonempty_list(learning.get('similar_case_lessons_imported')), 'learning similar_case_lessons_imported missing; write explicit cold-start note if no cases exist'))
-        checks.append(check('learning_idea_seeds_present', nonempty_list(learning.get('innovative_idea_seeds')), 'learning innovative_idea_seeds missing'))
-        checks.append(check('learning_reuse_instruction_present', nonempty_list(learning.get('reuse_instruction_for_future_agents')), 'learning reuse_instruction_for_future_agents missing'))
+        checks.append(check('learning_transferable_patterns_present', learning_list_state_valid(learning, 'transferable_patterns', flexible_local), 'learning transferable_patterns missing'))
+        checks.append(check('learning_anti_patterns_present', learning_list_state_valid(learning, 'anti_patterns', flexible_local), 'learning anti_patterns missing'))
+        checks.append(check('learning_similar_case_lessons_imported_present', learning_list_state_valid(learning, 'similar_case_lessons_imported', flexible_local), 'learning similar_case_lessons_imported missing; write explicit cold-start note if no cases exist'))
+        checks.append(check('learning_idea_seeds_present', learning_list_state_valid(learning, 'innovative_idea_seeds', flexible_local), 'learning innovative_idea_seeds missing'))
+        checks.append(check('learning_reuse_instruction_present', learning_list_state_valid(learning, 'reuse_instruction_for_future_agents', flexible_local), 'learning reuse_instruction_for_future_agents missing'))
         checks.append(check('experience_chain_present', isinstance(experience_chain, dict) and bool(experience_chain), 'experience_chain missing from Step6 research judgment'))
         checks.append(check('experience_chain_current_attempt_present', isinstance(experience_chain.get('current_attempt'), dict), 'experience_chain.current_attempt missing'))
         checks.append(check('revision_taxonomy_present', isinstance(revision_taxonomy, dict) and bool(revision_taxonomy), 'revision_taxonomy missing from Step6 research judgment'))
@@ -1594,7 +1948,17 @@ if __name__ == '__main__':
             'portfolio_revision must be explicitly forbidden; Step6 cannot repair adoption by changing portfolio/decile/short mechanics',
         ))
         checks.append(check('program_search_policy_present', isinstance(program_search_policy, dict) and bool(program_search_policy), 'program_search_policy missing from Step6 research judgment'))
-        checks.append(check('program_search_methods_present', REQUIRED_SEARCH_METHODS.issubset(set(method_library.keys())), f'program_search_policy.method_library must include {sorted(REQUIRED_SEARCH_METHODS)}'))
+        illegal_search_targets = illegal_local_search_targets(program_search_policy) if flexible_local else []
+        checks.append(check(
+            'program_search_policy_no_oos_search_target',
+            not illegal_search_targets,
+            'ordinary local IS search policy cannot optimize on OOS targets: ' + ', '.join(illegal_search_targets),
+        ))
+        checks.append(check(
+            'program_search_methods_present',
+            program_search_methods_valid(program_search_policy, decision, flexible_local),
+            f'program_search_policy.method_library must include {sorted(REQUIRED_SEARCH_METHODS)}',
+        ))
         checks.append(check('diversity_position_present', isinstance(diversity_position, dict) and bool(diversity_position), 'diversity_position missing from Step6 research judgment'))
         checks.append(check(
             'iterate_requires_exploration_branches',
@@ -1611,7 +1975,11 @@ if __name__ == '__main__':
         checks.append(check('research_memo_evidence_quality_notes_present', nonempty_list(evidence_quality.get('notes')), 'evidence quality notes missing'))
         checks.append(check('research_memo_failure_regimes_present', nonempty_list(failure_analysis.get('expected_failure_regimes')), 'failure regimes missing'))
         checks.append(check('research_memo_decision_rationale_present', nonempty_list(research_memo.get('decision_rationale')), 'decision rationale missing'))
-        checks.append(check('research_memo_next_tests_present', nonempty_list(research_memo.get('next_research_tests')), 'next research tests missing'))
+        checks.append(check(
+            'research_memo_next_tests_present',
+            next_research_tests_state_valid(research_memo, flexible_local),
+            'next research tests missing',
+        ))
         checks.append(check('knowledge_research_memo_present', isinstance(knowledge.get('research_memo'), dict) and bool(knowledge.get('research_memo')), 'knowledge record must preserve research_memo'))
         checks.append(check(
             'external_researcher_context_present',

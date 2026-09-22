@@ -191,6 +191,70 @@ Adapter receipt 必须签名绑定：
 - private output hash/size；
 - return code、cancel、termination 与 error class。
 
+`session` 是 exact-shape 对象：缺字段或增加字段都 BLOCK。其字段必须且只能为：
+
+```text
+session_uid
+runtime_handle_sha256
+provider_handle_sha256
+adapter_id
+adapter_build_sha256
+container_image_digest
+isolation_profile_sha256
+runtime
+parent_session_uid
+lease_epoch
+```
+
+其中正式强隔离 runner 的 `session.runtime` 必须且只能为：
+
+```json
+{
+  "provider": "deepseek",
+  "model": "deepseek/deepseek-v4-flash",
+  "transport": "openclaw_disposable_container",
+  "isolation_class": "container_staged_context",
+  "owned_termination_supported": true
+}
+```
+
+字段顺序不构成 JSON authority，但 validator 按上述五个字段组成正式强隔离 tuple：
+
+```text
+(deepseek,
+ deepseek/deepseek-v4-flash,
+ openclaw_disposable_container,
+ container_staged_context,
+ true)
+```
+
+任何 provider、model、transport、isolation class 或终止所有权语义漂移，即使 receipt
+重新签名，也以 `adapter_receipt.runtime` BLOCK。对 session policy 为
+`isolated_session` 或 `independent_session` 的角色，该 tuple 还必须完全匹配，
+否则以 `adapter_receipt.runtime_strong_isolation` BLOCK。因此正式
+`formal-complete` runner 必须使用上述 disposable container 路径。
+
+`isolation_profile_sha256` 还必须是下列 exact-shape 对象的稳定 JSON hash；它将
+逻辑 runtime tuple 与实际容器网络、只读 workspace、无 AWS 凭据和精确终止证据
+绑定在一起：
+
+```json
+{
+  "class": "container_staged_context",
+  "network": "<container_network>",
+  "workspace_readonly": true,
+  "aws_credentials": false,
+  "installation_id": "<installation_id>",
+  "termination_receipt_id": "<signed_termination_receipt_id>",
+  "termination_runtime_handle_sha256": "<sha256(runtime_handle)>"
+}
+```
+
+Codex ephemeral adapter 只用于非正式的结构校验与 developer workflow。其
+`provider=codex`、`transport=codex_exec_ephemeral`、
+`isolation_class=codex_subagent_isolated` 回执可以被结构层识别，但不能满足上述
+正式强隔离 tuple，也不能替代 container runner 或形成 `formal-complete` assurance。
+
 只有 `sha256:<64 hex>` image digest 可获得 `signed_adapter` evidence class；未 pin image 只能得到 `signed_adapter_unpinned`，不能满足 formal runtime。
 
 ### 4.2 Host admission receipt
@@ -279,7 +343,8 @@ Host-private ledger 与 projection 一致，但 session 使用显式 test/develo
 7. provider/session handle 不复用；
 8. dependency event ordering 有效；
 9. Independent Council 是独立 session；
-10. ledger、event chain、canonical results 和 workspace projection 无差异。
+10. 每个强隔离角色的 `session.runtime` 都等于正式 DeepSeek V4 Flash container tuple；
+11. ledger、event chain、canonical results 和 workspace projection 无差异。
 
 该 assurance 证明 runtime independence，不证明 factor `ACCEPT`。
 

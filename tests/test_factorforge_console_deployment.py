@@ -181,7 +181,7 @@ def test_deployment_permissions_and_global_s3_denies_are_fail_closed() -> None:
     assert statements["DenyListOutsidePilotPrefixes"]["Effect"] == "Deny"
     policy_text = json.dumps(policy, sort_keys=True)
     assert "tushares/" not in policy_text
-    assert "yufan-data-lake/factorforge/*" not in policy_text
+    assert "factorforge-example-data/factorforge/*" not in policy_text
     assert "factorforge/data/catalog/data_catalog.json" in policy_text
     assert "factorforge/datamart/clean_daily_bar/v1/*" in policy_text
 

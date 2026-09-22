@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import shutil
@@ -17,6 +18,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 import factor_factory.metric_verifier as metric_verifier_module
+from factor_factory.oos_exposure_incident import (
+    ensure_empty_oos_exposure_private_registry,
+)
 from factor_factory.metric_verifier import (
     TRADING_CALENDAR_REGISTRY_PATH,
     TRADING_CALENDAR_REGISTRY_TRUST_BLOB,
@@ -49,6 +53,21 @@ def write_json(path: Path, payload: dict) -> None:
     )
 
 
+def smoke_incident_context(root: Path) -> tuple[Path, str]:
+    """Create a real Host-private empty incident registry for formal writers."""
+
+    trust_root = root.parent / f".{root.name}.factorforge-smoke-host-trust"
+    installation_id = (
+        "smoke-"
+        + hashlib.sha256(os.fspath(root.resolve()).encode()).hexdigest()[:20]
+    )
+    ensure_empty_oos_exposure_private_registry(
+        trust_root,
+        installation_id=installation_id,
+    )
+    return trust_root, installation_id
+
+
 def run_release_cli_smoke(
     *,
     source_panel: Path,
@@ -70,6 +89,7 @@ def run_release_cli_smoke(
     child_env["FACTORFORGE_TRUSTED_TRADE_CAL_CSV"] = str(
         source_calendar
     )
+    incident_trust_root, incident_installation_id = smoke_incident_context(root)
     spec_path = root / "objects" / "research_protocol" / "metric_spec.json"
     rules_path = root / "objects" / "research_protocol" / "rules.json"
     trials_path = root / "objects" / "research_protocol" / "trials.json"
@@ -179,6 +199,10 @@ def run_release_cli_smoke(
             str(panel_path),
             "--spec",
             str(spec_path),
+            "--host-trust-root",
+            str(incident_trust_root),
+            "--installation-id",
+            incident_installation_id,
         ],
         cwd=REPO_ROOT,
         env=child_env,
@@ -233,6 +257,10 @@ def run_release_cli_smoke(
 def main() -> int:
     root = Path("/tmp/factorforge_metric_verifier_smoke")
     shutil.rmtree(root, ignore_errors=True)
+    shutil.rmtree(
+        root.parent / f".{root.name}.factorforge-smoke-host-trust",
+        ignore_errors=True,
+    )
     root.mkdir(parents=True)
     report_id = "METRIC_VERIFIER_SMOKE"
     factor_id = "METRIC_VERIFIER_FACTOR"
@@ -534,12 +562,15 @@ def main() -> int:
         spec=spec,
     )
     spec.update(identities)
+    incident_trust_root, incident_installation_id = smoke_incident_context(root)
     write_oos_release_manifest(
         release_path,
         workspace_root=root,
         spec=spec,
         identities=identities,
         threshold_path=threshold_path,
+        incident_trust_root=incident_trust_root,
+        incident_installation_id=incident_installation_id,
     )
     spec_path = root / "objects" / "research_protocol" / "metric_spec.json"
     write_json(spec_path, spec)

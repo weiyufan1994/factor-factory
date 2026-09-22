@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -12,7 +13,7 @@ from typing import Any
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FACTORFORGE = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FACTORFORGE / 'objects'
 ALLOWED = {'success', 'partial', 'failed'}
@@ -28,6 +29,12 @@ QLIB_NATIVE_STATUS_VALUES = {
 }
 
 from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.evo_child_execution import validate_evo_child_execution_gate
+from factor_factory.primary_evaluator import (
+    PRIMARY_REQUIRED_ARTIFACTS,
+    primary_evaluator_plan,
+    validate_primary_evaluator_payload,
+)
 
 
 def utc_now() -> str:
@@ -86,6 +93,22 @@ def validate_acceptance_summary(summary: dict[str, Any] | None, issues: list[dic
     identity_missing = [field for field in ['report_id', 'factor_id', 'run_id', 'artifact_root', 'repo_sha'] if not summary.get(field)]
     if identity_missing:
         issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_RUN_IDENTITY_MISSING', 'message': 'acceptance_summary run identity missing', 'evidence': {'missing': identity_missing}})
+    repo_sha = str(summary.get('repo_sha') or '')
+    admitted_engine_commit = str(
+        os.getenv('FACTORFORGE_ADMITTED_ENGINE_COMMIT') or ''
+    )
+    local_is_only = os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+    if re.fullmatch(r'[0-9a-f]{40,64}', repo_sha) is None:
+        issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_REPO_IDENTITY_INVALID', 'message': 'acceptance_summary.repo_sha must be an exact commit'})
+    if (
+        not local_is_only
+        and os.getenv('FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY') == 'DENY'
+        and (
+            re.fullmatch(r'[0-9a-f]{40,64}', admitted_engine_commit) is None
+            or repo_sha != admitted_engine_commit
+        )
+    ):
+        issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_REPO_IDENTITY_MISMATCH', 'message': 'Agent-stage repo_sha must equal the Host-admitted engine commit'})
     step4 = summary.get('step4') if isinstance(summary.get('step4'), dict) else {}
     if not step4.get('self_quant_status') or step4.get('qlib_native_status') not in QLIB_NATIVE_STATUS_VALUES:
         issues.append({'severity': 'error', 'code': 'BLOCK_ACCEPTANCE_SUMMARY_BACKEND_SPLIT_MISSING', 'message': 'acceptance_summary must split self_quant_status and qlib_native_status'})
@@ -166,6 +189,7 @@ def validate_qlib_taxonomy(payload: dict[str, Any], *, mandatory: bool, issues: 
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
+    ap.add_argument('--expected-host-trust-manifest-sha256', default=None)
     args = ap.parse_args()
     rid = args.report_id
 
@@ -209,6 +233,19 @@ def main() -> None:
         issues.append({'severity': 'error', 'code': 'INVALID_RUN_STATUS', 'message': f'invalid run_status={proposed_status}'})
         proposed_status = 'failed'
     validate_formal_signal_coverage(run_master=run_master, diagnostics=diagnostics, issues=issues)
+    for reason in validate_evo_child_execution_gate(
+        workspace_root=FACTORFORGE,
+        report_id=rid,
+        factor_run_master=run_master,
+        expected_host_trust_manifest_sha256=(
+            args.expected_host_trust_manifest_sha256
+        ),
+    ):
+        issues.append({
+            'severity': 'error',
+            'code': 'BLOCK_FACTORFORGE_EVO_CHILD_EXECUTION_GATE',
+            'message': reason,
+        })
 
     output_paths = [Path(p) for p in run_master.get('output_paths', [])]
     output_exists = [p.exists() for p in output_paths]
@@ -248,6 +285,14 @@ def main() -> None:
             issues.append({'severity': 'error', 'code': 'MISSING_METRIC_POLICY', 'message': 'evaluation_plan.metric_policy must be explicit'})
             proposed_status = 'failed'
 
+    primary_plan = None
+    if isinstance(eval_plan, dict):
+        try:
+            primary_plan = primary_evaluator_plan(eval_plan)
+        except ValueError as exc:
+            issues.append({'severity': 'error', 'code': 'PRIMARY_EVALUATOR_PLAN_INVALID', 'message': str(exc)})
+            proposed_status = 'failed'
+
     if not isinstance(backend_runs, list):
         issues.append({'severity': 'error', 'code': 'MISSING_BACKEND_RUNS', 'message': 'factor_run_master must expose evaluation_results.backend_runs'})
         proposed_status = 'failed'
@@ -256,10 +301,16 @@ def main() -> None:
         if not successful_backends:
             issues.append({'severity': 'error', 'code': 'BLOCK_NO_SUCCESSFUL_BACKEND', 'message': 'Step4 must have at least one successful or partial backend; all-skipped/all-failed evidence cannot pass'})
             proposed_status = 'failed'
-        self_quant = next((item for item in backend_runs if item.get('backend') == 'self_quant_analyzer' or item.get('name') == 'self_quant_analyzer'), None)
-        if not self_quant or self_quant.get('status') not in {'success', 'partial'}:
-            issues.append({'severity': 'error', 'code': 'BLOCK_MISSING_SELF_QUANT_EVIDENCE', 'message': 'formal Step4 requires self_quant_analyzer success/partial long-only evidence'})
-            proposed_status = 'failed'
+        if primary_plan is None:
+            self_quant = next((item for item in backend_runs if item.get('backend') == 'self_quant_analyzer' or item.get('name') == 'self_quant_analyzer'), None)
+            if not self_quant or self_quant.get('status') not in {'success', 'partial'}:
+                issues.append({'severity': 'error', 'code': 'BLOCK_MISSING_SELF_QUANT_EVIDENCE', 'message': 'formal Step4 requires self_quant_analyzer success/partial long-only evidence'})
+                proposed_status = 'failed'
+        else:
+            primary_run = next((item for item in backend_runs if item.get('backend') == primary_plan['backend']), None)
+            if not primary_run or primary_run.get('status') not in {'success', 'partial'}:
+                issues.append({'severity': 'error', 'code': 'BLOCK_PRIMARY_EVALUATOR_EVIDENCE_MISSING', 'message': 'declared primary evaluator did not produce success/partial evidence', 'evidence': primary_plan})
+                proposed_status = 'failed'
         for item in backend_runs:
             if item.get('status') not in {'success', 'partial', 'failed', 'skipped'}:
                 issues.append({'severity': 'error', 'code': 'INVALID_BACKEND_STATUS', 'message': 'backend run status must be explicit', 'evidence': item})
@@ -357,6 +408,16 @@ def main() -> None:
                         if long_side.get('metric_period') != 'daily' or long_side.get('annualization_factor') is None:
                             issues.append({'severity': 'error', 'code': 'SELF_QUANT_LONG_SIDE_UNITS_MISSING', 'message': 'self_quant_analyzer long-side evidence must declare metric_period and annualization_factor', 'evidence': long_side})
                             proposed_status = 'failed'
+                    if primary_plan is not None and item.get('backend') == primary_plan['backend']:
+                        for issue in validate_primary_evaluator_payload(payload, eval_plan):
+                            issues.append({'severity': 'error', 'code': issue['code'], 'message': issue['message'], 'evidence': {'backend': primary_plan['backend']}})
+                            proposed_status = 'failed'
+                        artifacts = payload.get('artifacts') or {}
+                        for key in PRIMARY_REQUIRED_ARTIFACTS:
+                            artifact_path = artifacts.get(key)
+                            if not artifact_path or not Path(artifact_path).is_file() or Path(artifact_path).stat().st_size <= 0:
+                                issues.append({'severity': 'error', 'code': 'PRIMARY_EVALUATOR_ARTIFACT_UNREADABLE', 'message': f'primary evaluator artifact is missing or empty: {key}', 'evidence': {'path': artifact_path}})
+                                proposed_status = 'failed'
 
     if diagnostics.get('run_status') != run_master.get('run_status'):
         issues.append({'severity': 'warning', 'code': 'RUN_STATUS_MISMATCH', 'message': 'diagnostics run_status differs from run_master', 'evidence': {'run_master': run_master.get('run_status'), 'diagnostics': diagnostics.get('run_status')}})

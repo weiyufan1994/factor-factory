@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from factor_factory.primary_evaluator import primary_evaluator_plan, recovery_evidence_complete
+
 
 LONG_SIDE_REQUIRED_METRICS = {
     'long_side_annual_return',
@@ -130,6 +132,24 @@ def _self_quant_success(factor_run_master: dict[str, Any], factor_evaluation: di
     return False
 
 
+def _primary_evaluator_success(factor_run_master: dict[str, Any], factor_evaluation: dict[str, Any] | None = None) -> bool:
+    """Use an explicitly declared local primary evaluator, never a fallback."""
+    try:
+        plan = primary_evaluator_plan(factor_run_master.get('evaluation_plan'))
+    except ValueError:
+        return False
+    if plan is None:
+        return _self_quant_success(factor_run_master, factor_evaluation)
+    backend = plan['backend']
+    for item in ((factor_run_master.get('evaluation_results') or {}).get('backend_runs') or []):
+        if item.get('backend') == backend and item.get('status') in {'success', 'partial'}:
+            return True
+    for item in ((factor_evaluation or {}).get('backend_summary') or []):
+        if item.get('backend') == backend and item.get('status') in {'success', 'partial'}:
+            return True
+    return False
+
+
 def _flatten_key_metrics(factor_evaluation: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for item in factor_evaluation.get('backend_summary') or []:
@@ -154,10 +174,20 @@ def build_evidence_quality(
         aliases.setdefault('turnover', metrics.get('long_side_turnover_mean_daily'))
     if 'trading_cogs_annual' in metrics:
         aliases.setdefault('trading_cogs', metrics.get('trading_cogs_annual'))
+    if 'trading_cogs_daily' in metrics:
+        aliases.setdefault('trading_cogs', metrics.get('trading_cogs_daily'))
     missing_long = [key for key in sorted(LONG_SIDE_REQUIRED_METRICS) if aliases.get(key) is None]
+    if 'long_side_recovery_days' in missing_long and recovery_evidence_complete(aliases):
+        missing_long.remove('long_side_recovery_days')
+    try:
+        primary_plan = primary_evaluator_plan(factor_run_master.get('evaluation_plan'))
+    except ValueError:
+        primary_plan = None
     return {
         'step4_has_successful_backend': bool(_backend_successes(factor_run_master)),
         'self_quant_required_and_present': _self_quant_success(factor_run_master, factor_evaluation),
+        'primary_evaluator_required_and_present': _primary_evaluator_success(factor_run_master, factor_evaluation),
+        'required_primary_evaluator': (primary_plan or {}).get('backend', 'self_quant_analyzer'),
         'long_side_metrics_present': not missing_long,
         'missing_long_side_metrics': missing_long,
         'identity_chain_verified': bool(identity_chain_verified),

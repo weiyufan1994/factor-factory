@@ -1089,7 +1089,7 @@ def case_installed_cmp(root: Path, summaries: Path) -> dict[str, Any]:
     if installed_raw:
         installed_root = Path(installed_raw).expanduser()
     else:
-        ec2_skill_root = Path("/home/ubuntu/.openclaw/workspace/skills")
+        ec2_skill_root = Path("/opt/factorforge/workspace/skills")
         installed_root = ec2_skill_root if ec2_skill_root.exists() else Path.home() / ".codex" / "skills"
     pairs = [
         ("skills/factor-forge-step2/scripts/run_step2.py", str(installed_root / "factor-forge-step2" / "scripts" / "run_step2.py")),

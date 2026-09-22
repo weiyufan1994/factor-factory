@@ -7,8 +7,8 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 STEP4_SCRIPTS = PROJECT_ROOT / "skills" / "factor-forge-step4" / "scripts"
-LEGACY_REPO = Path("/home/ubuntu/.openclaw/workspace/repos/factor-factory")
-LEGACY_RUNTIME = Path("/home/ubuntu/.openclaw/workspace/factorforge")
+LEGACY_REPO = Path("/opt/factorforge/workspace/repos/factor-factory")
+LEGACY_RUNTIME = Path("/opt/factorforge/workspace/factorforge")
 
 
 def _load_script(name: str, path: Path):

@@ -13,6 +13,9 @@ if str(REPO_ROOT) not in sys.path:
 
 from factor_factory.research_conjecture import (
     PROTOCOL_VERSION,
+    RESEARCH_PROTOCOL_SCOPE_HOSTED,
+    RESEARCH_PROTOCOL_SCOPE_LOCAL_IS,
+    epistemic_evolution_enabled,
     research_protocol_paths,
     validate_approach_registry,
     validate_counterexample_registry,
@@ -21,6 +24,29 @@ from factor_factory.research_conjecture import (
     validate_research_state,
     write_json,
 )
+from factor_factory.measurement_program import (
+    INVALID_RESEARCH_COMPATIBILITY_PROFILE_BINDING,
+    research_compatibility_profile_from_spec,
+)
+
+
+INVALID_SPEC_PROFILE = "__invalid_report_bound_research_compatibility_profile__"
+
+
+def report_bound_compatibility_profile(root: Path, report_id: str) -> str | None:
+    path = root / "objects" / "factor_spec_master" / f"factor_spec_master__{report_id}.json"
+    if not path.exists():
+        return None
+    if path.is_symlink() or not path.is_file():
+        return INVALID_SPEC_PROFILE
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return INVALID_SPEC_PROFILE
+    if not isinstance(payload, dict) or payload.get("report_id") not in {None, report_id}:
+        return INVALID_SPEC_PROFILE
+    profile = research_compatibility_profile_from_spec(payload)
+    return INVALID_SPEC_PROFILE if profile == INVALID_RESEARCH_COMPATIBILITY_PROFILE_BINDING else profile
 
 
 def load_json(path: str) -> dict[str, Any]:
@@ -55,6 +81,11 @@ def main() -> int:
     parser.add_argument("--approaches", required=True)
     parser.add_argument("--obligations")
     parser.add_argument("--counterexamples")
+    parser.add_argument(
+        "--local-is-only",
+        action="store_true",
+        help="Validate an explicitly non-authoritative ordinary local-IS protocol.",
+    )
     args = parser.parse_args()
 
     root = Path(args.workspace_root).expanduser().resolve(strict=False)
@@ -77,9 +108,26 @@ def main() -> int:
     for name, payload in source_payloads.items():
         reasons.extend(identity_reasons(payload, report_id=args.report_id, artifact=name))
     reasons.extend(validate_research_state(source_payloads["state"]))
-    reasons.extend(validate_research_conjecture(source_payloads["conjecture"]))
+    scope = (
+        RESEARCH_PROTOCOL_SCOPE_LOCAL_IS
+        if args.local_is_only
+        else RESEARCH_PROTOCOL_SCOPE_HOSTED
+    )
+    compatibility_profile = report_bound_compatibility_profile(root, args.report_id)
     reasons.extend(
-        validate_approach_registry(source_payloads["approaches"], stage="pre_council")
+        validate_research_conjecture(
+            source_payloads["conjecture"],
+            scope=scope,
+            compatibility_profile=compatibility_profile,
+        )
+    )
+    reasons.extend(
+        validate_approach_registry(
+            source_payloads["approaches"],
+            stage="pre_council",
+            scope=scope,
+            compatibility_profile=compatibility_profile,
+        )
     )
     if "obligations" in source_payloads:
         reasons.extend(
@@ -122,7 +170,9 @@ def main() -> int:
             {
                 "verdict": "PASS",
                 "report_id": args.report_id,
-                "written": {name: str(paths[name]) for name in source_payloads},
+                "written": {
+                    **{name: str(paths[name]) for name in source_payloads},
+                },
                 "producer_policy": "agent_authored_no_deterministic_semantic_fallback",
             },
             ensure_ascii=False,

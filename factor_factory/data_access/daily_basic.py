@@ -43,7 +43,7 @@ def default_daily_basic_parquet_root() -> Path:
     cache_root = os.getenv('FACTORFORGE_DATA_CACHE')
     if cache_root:
         return Path(cache_root).expanduser() / 'daily_basic' / DAILY_BASIC_PARQUET_SCHEMA_VERSION
-    worker_cache = Path('/home/ubuntu/factorforge_data_api_cache/daily_basic') / DAILY_BASIC_PARQUET_SCHEMA_VERSION
+    worker_cache = Path('/home/researcher/factorforge_data_api_cache/daily_basic') / DAILY_BASIC_PARQUET_SCHEMA_VERSION
     if worker_cache.parent.exists():
         return worker_cache
     return Path.home() / '.cache' / 'factorforge_data_api' / 'daily_basic' / DAILY_BASIC_PARQUET_SCHEMA_VERSION
@@ -56,7 +56,7 @@ def candidate_daily_basic_parquet_roots(explicit_root: str | Path | None = None)
     candidates.append(default_daily_basic_parquet_root())
     if os.getenv('FACTORFORGE_DATA_CACHE'):
         candidates.append(Path(os.environ['FACTORFORGE_DATA_CACHE']).expanduser() / 'daily_basic' / DAILY_BASIC_PARQUET_SCHEMA_VERSION)
-    candidates.append(Path('/home/ubuntu/factorforge_data_api_cache/daily_basic') / DAILY_BASIC_PARQUET_SCHEMA_VERSION)
+    candidates.append(Path('/home/researcher/factorforge_data_api_cache/daily_basic') / DAILY_BASIC_PARQUET_SCHEMA_VERSION)
     candidates.append(Path.home() / '.cache' / 'factorforge_data_api' / 'daily_basic' / DAILY_BASIC_PARQUET_SCHEMA_VERSION)
     out: list[Path] = []
     seen: set[str] = set()

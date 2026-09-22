@@ -1,0 +1,119 @@
+{
+  "evidence": {
+    "boundary": "Primary method references support definitions and modelling constraints only. This node contains no factor result, return claim, causal identification, or canonical experience admission.",
+    "classification": "reference_only_no_empirical_claim",
+    "primary_references": [
+      {
+        "method": "wavelet",
+        "url": "https://www.di.ens.fr/~mallat/papiers/MallatTheory89.pdf"
+      },
+      {
+        "method": "kalman",
+        "url": "https://doi.org/10.1115/1.3662552"
+      },
+      {
+        "method": "causal_convolution",
+        "url": "https://arxiv.org/abs/1609.03499"
+      },
+      {
+        "method": "variational_tv",
+        "url": "https://doi.org/10.1016/0167-2789(92)90242-F"
+      }
+    ]
+  },
+  "factor_ids": [],
+  "id": "node::method_transient_signal_models_20260907",
+  "mechanism": {
+    "causal_convolution_observation_mapping": "For observed history only, z_t=sum_{k=0}^{K} h_k y_{t-k}; a learned causal convolution may use dilations but must exclude y_{t+k}. It preserves a finite causal receptive-field representation and loses information outside that field unless architecture/state explicitly carries it; filtering a peak does not make that peak attention or overreaction.",
+    "economic_hypothesis": "Observed price, volume, spread or order-flow paths may combine a short-lived shock, a more persistent unobserved state, and behavior at more than one time scale. This is an observation-model question, not proof that attention, overreaction, or a causal payer has been identified.",
+    "failure_localization": "If a projected feature performs poorly, first inspect missing observations, availability timing, alignment, normalization, and projection/reconstruction loss. Do not infer that the economic hypothesis failed until these measurement alternatives and their falsifiers have been compared.",
+    "kalman_observation_mapping": "Specify x_t=F_t x_{t-1}+w_t and y_t=H_t x_t+v_t; filter x_{t|t}=x_{t|t-1}+K_t(y_t-H_t x_{t|t-1}). It preserves an explicit state/observation/noise decomposition but loses unmodelled nonlinear, non-Gaussian, or structural-break behavior. A time-varying-gain Kalman recursion can still be linear in its inputs, but it is not one single fixed convolution kernel. Only with constant F/H/K and a stated treatment of initial-state terms can its input response be written as a fixed causal kernel, generally IIR rather than finite FIR.",
+    "mathematical_falsification_checks": "Falsify the selected projection before performance interpretation: (1) compare one-sided versus centered transforms and require a legal-time match; (2) test whether state innovation/residuals retain predictable structure; (3) perturb scale, F/H/Q/R, kernel support, or lambda and reject a conclusion that exists only at an unregistered setting; (4) compare raw observation, projected feature, and reconstruction/residual to localize missing data, timing, or projection loss before changing the economic story.",
+    "online_timing_boundary": "At decision time t, feature construction, normalization, parameter fitting, and state updates may use only information whose availability time is no later than t. A centered wavelet is not inherently leakage if its entire support lies in the legal historical window; support extending beyond decision time t is leakage, and boundary padding must be disclosed. Two-sided smoothers, posterior revisions, full-sample TV tuning, or convolution padding that sees t+1 onward are future leakage unless explicitly shifted and revalidated.",
+    "variational_tv_observation_mapping": "Estimate u by argmin_u (1/2)||y-u||_2^2 + lambda TV(u), with TV(u)=sum_t |u_t-u_{t-1}| in one dimension. For an online feature at t, the optimization input window must have right endpoint no later than t and the feature must be the endpoint estimate u_t; later-window posterior revisions of historical u must never overwrite the historical tradable feature. It preserves piecewise-smooth/edge structure under its penalty and can flatten gradual variation, move change timing, or manufacture apparent plateaus when lambda is misspecified.",
+    "wavelet_observation_mapping": "For a predeclared causal window x_{t-L:t}, compute scale/location coefficients W_x(a,b)=<x,psi_{a,b}> or local energy sum_b |W_x(a,b)|^2. It preserves localized scale-time variation and can lose phase, sign, cross-scale dependence, or an economic state when compressed to energy."
+  },
+  "node_type": "methodology",
+  "relations": [
+    {
+      "edge_type": "inspires",
+      "note": "Conditional inspiration only: use a wavelet representation when localized multiscale variation is the measured object; it is not evidence of a payer, attention, or return.",
+      "target": "method::wavelet_transform"
+    },
+    {
+      "edge_type": "inspires",
+      "note": "Conditional inspiration only: use a state-space model when latent-state dynamics and noise assumptions are explicit and falsifiable; it is not interchangeable with a wavelet projection.",
+      "target": "method::kalman_state_space_filter"
+    },
+    {
+      "edge_type": "inspires",
+      "note": "Conditional inspiration only: use a causal receptive field when an online finite-history map is the object; causal architecture alone does not establish behavioral mechanism.",
+      "target": "method::causal_convolution"
+    },
+    {
+      "edge_type": "inspires",
+      "note": "Conditional inspiration only: use TV/variational regularization when the chosen structural prior is piecewise smoothness or sparse changes; the penalty is not a discovered state law.",
+      "target": "method::variational_total_variation"
+    }
+  ],
+  "report_ids": [
+    "METHOD_TRANSIENT_SIGNAL_MODELS_20260907"
+  ],
+  "reuse_guidance": [
+    "Retrieve for 小波分析, wavelet, 卡尔曼, Kalman, 因果卷积, causal convolution, 变分, total variation, transient shock, latent state, multiscale, and online filtering questions.",
+    "Choose one method only after stating the observation equation, information time, retained/lost information, and a mathematical falsifier; record the other methods as competing projections where relevant.",
+    "Treat all four methods as conditional modelling inspiration. They cannot automatically replace one another, validate a factor, identify attention/overreaction, or justify a performance conclusion."
+  ],
+  "schema_version": "factor_knowledge_node_v1",
+  "source_paths": [
+    "docs/research/transient-signal-methods.zh-CN.md",
+    "https://www.di.ens.fr/~mallat/papiers/MallatTheory89.pdf",
+    "https://doi.org/10.1115/1.3662552",
+    "https://people.duke.edu/~hpgavin/SystemID/References/Kalman-JBE-1960.pdf",
+    "https://arxiv.org/abs/1609.03499",
+    "https://doi.org/10.1016/0167-2789(92)90242-F",
+    "https://math.ucla.edu/~lvese/285j.1.09f/ROF.pdf"
+  ],
+  "summary": "A reference-only method map for an economic hypothesis that separates a transient shock, a persistent latent state, and multiscale motion. Wavelets, Kalman filtering, causal convolutions, and variational/total-variation regularization are competing observation models, not equivalent substitutions. They neither establish a return nor identify a market cause.",
+  "taxonomy": {
+    "buyside_style": [
+      "alpha_combination_feature"
+    ],
+    "cn_quant_practice": [
+      "feature_for_ml"
+    ],
+    "data_source": [
+      "daily_ohlcv",
+      "minute_bar"
+    ],
+    "economic_mechanism": [
+      "liquidity_provision",
+      "inventory_pressure",
+      "attention"
+    ],
+    "failure_mode": [
+      "lookahead_risk",
+      "wrong_math_object",
+      "overfit_gate"
+    ],
+    "market_consensus": [
+      "multi_factor"
+    ],
+    "math_mechanism": [
+      "state_space",
+      "signal_processing",
+      "optimization_control",
+      "path_functional"
+    ],
+    "research_status": [
+      "mechanism_candidate"
+    ],
+    "tradability": [
+      "model_feature_only"
+    ],
+    "worldquant_style": [
+      "ts_operator"
+    ]
+  },
+  "title": "Transient signal models: wavelet 小波分析, Kalman 卡尔曼, causal convolution 因果卷积, and variational/TV 变分正则化"
+}

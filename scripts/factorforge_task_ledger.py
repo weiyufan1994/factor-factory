@@ -12,7 +12,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 DEFAULT_RUNTIME_ROOT = LEGACY_WORKSPACE / 'factorforge'
 
 VALID_STATUS = {

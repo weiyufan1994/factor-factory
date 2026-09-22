@@ -364,7 +364,7 @@ Every serious Step6 run should answer:
 ## Recommended execution chain
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace
+cd /opt/factorforge/workspace
 python3 repos/factor-factory/scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 5 --end-step 6
 python3 skills/factor-forge-step6/scripts/build_program_search_plan.py --report-id <report_id>
 python3 skills/factor-forge-step6/scripts/validate_program_search_plan.py --report-id <report_id>
@@ -475,7 +475,7 @@ python3 scripts/retrieve_factor_knowledge_context.py --text "<mechanism or facto
 - `references/input-contract.md`
 - `references/output-contract.md`
 - `docs/contracts/step6-contract.zh-CN.md`
-- `docs/operations/factor-research-loop.zh-CN.md`
+- `skills/factor-forge-ultimate/references/current-operating-contract.md`
 - `docs/operations/factorforge-math-research-discipline.zh-CN.md`
 ## Implementation and Factor Isolation Discipline
 

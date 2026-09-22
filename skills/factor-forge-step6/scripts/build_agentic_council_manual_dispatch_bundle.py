@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path("/home/ubuntu/.openclaw/workspace")
+LEGACY_WORKSPACE = Path("/opt/factorforge/workspace")
 FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if (LEGACY_WORKSPACE / "factorforge").exists() else REPO_ROOT))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -143,6 +143,11 @@ Result Contract:
 - math_mechanism_derivation.baseline_model: copy the frozen
   measurement_program_binding.mechanism_equation_or_functional exactly;
   proposed alternatives belong in model_mutation/candidate_revision_laws
+- if evo_v2_required: copy evo_v2_task_identity exactly and provide one closed
+  EVO outcome: MINIMAL_MECHANISM_DELTA with exactly one bound law, or
+  NO_DERIVED_LAW with zero laws and a complete derivation-failure proof
+- if evo_v2_required: use only PURGED_IS_ONLY evidence and do not read or cite
+  sealed or consumed OOS artifacts
 
 No Hidden Chain-of-Thought Requirement:
 Do not provide hidden chain-of-thought. Provide only a public derivation record suitable for audit.
@@ -174,6 +179,8 @@ def dropbox_template(report_id: str, task: dict[str, Any], expected_result_path:
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,
         "human_approval_required": True,
+        "evo_v2_task_identity": task.get("evo_v2_task_identity"),
+        "evo_v2": None,
         "measurement_program_binding": task.get(
             "measurement_program_binding"
         )

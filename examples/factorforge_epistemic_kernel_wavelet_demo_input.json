@@ -1,0 +1,221 @@
+{
+  "source_text": "用户假设：当小盘股持仓过度拥挤、边际流动性提供者撤退时，被迫卖出会在多个时间尺度形成局部价格能量集中。",
+  "source_lineage": {
+    "source_type": "USER_ORAL_OR_TEXT_HYPOTHESIS",
+    "source_event_ref": "user-message-wavelet-demo-001",
+    "source_legally_available_at": "2026-08-31T09:00:00Z",
+    "language": "zh-CN",
+    "source_integrity_status": "VERIFIED",
+    "understanding_completeness": "COMPLETE_ENOUGH_TO_FORMALIZE",
+    "source_reader_context_status": "SOURCE_ONLY_CANDIDATE",
+    "selection_lineage_claim": "EX_ANTE_UNSELECTED_CLAIMED",
+    "proposer_outcome_exposure_claim": "NONE_CLAIMED",
+    "source_outcome_status": "SOURCE_OUTCOME_FREE",
+    "missing_source_components": [],
+    "novel_concepts_not_yet_mapped": [
+      "局部价格能量集中"
+    ],
+    "internal_tensions": [
+      "拥挤与流动性撤退的先后方向尚需区分"
+    ]
+  },
+  "author_claims": [
+    {
+      "statement_id": "source-claim-1",
+      "classification": "SOURCE_NATIVE_EXPLICIT",
+      "text": "小盘股持仓可能出现过度拥挤。",
+      "source_locators": [
+        "message:sentence:1"
+      ],
+      "depends_on_statement_ids": []
+    },
+    {
+      "statement_id": "source-claim-2",
+      "classification": "AGENT_PARAPHRASE",
+      "text": "流动性提供者撤退与被迫卖出共同塑造价格路径。",
+      "source_locators": [
+        "message:sentence:1"
+      ],
+      "depends_on_statement_ids": [
+        "source-claim-1"
+      ]
+    }
+  ],
+  "analyst_notes": [
+    {
+      "statement_id": "analyst-inference-1",
+      "classification": "AGENT_INFERENCE",
+      "text": "该机制可被表述为受约束持有者向剩余流动性供给者支付价格冲击成本。",
+      "source_locators": [],
+      "depends_on_statement_ids": [
+        "source-claim-1",
+        "source-claim-2"
+      ]
+    },
+    {
+      "statement_id": "analyst-unresolved-1",
+      "classification": "UNRESOLVED",
+      "text": "拥挤状态需要持仓数据还是潜变量尚未解决。",
+      "source_locators": [],
+      "depends_on_statement_ids": [
+        "source-claim-1"
+      ]
+    }
+  ],
+  "selected_semantic_body": {
+    "disposition": "FORMALIZED",
+    "selected_statement_ids": [
+      "source-claim-1",
+      "source-claim-2",
+      "analyst-inference-1"
+    ],
+    "economic_mechanism_claim": "拥挤持有者在流动性撤退时被迫向剩余承接者支付冲击成本。",
+    "payer_or_constraint": "融资和风险限额约束下的拥挤持有者。",
+    "estimand": "未来短周期相对收益对当前多尺度局部能量集中的条件响应。",
+    "information_set": "仅使用决策时点及之前的价格与成交量路径。",
+    "horizon": "未来五个交易日。",
+    "mathematical_object": "多尺度局部化时频能量与尺度间相位一致性。",
+    "broken_invariant_or_boundary": "常态流动性下尺度能量分散；撤退时局部尺度能量集中。",
+    "observation_mapping": "将价格增量投影到预注册的小波尺度并汇总局部能量比。",
+    "failure_signature": "若能量集中不随拥挤或流动性约束增强而变化，则机制失效。",
+    "falsifiers": [
+      "控制波动率后局部能量比不再与未来路径相关。",
+      "大盘高流动性股票出现同等强度且同方向的现象。"
+    ],
+    "material_rivals": [
+      "局部能量集中仅是波动率机械放大。",
+      "信号来自反转而非拥挤持有者的约束。"
+    ],
+    "regime_hypotheses": [
+      "融资收紧时效应增强。"
+    ],
+    "new_assumptions": [
+      "成交量可作为边际流动性供给变化的有噪声代理。"
+    ],
+    "clarification_questions": [
+      "拥挤状态是否要求持仓数据，还是只做潜变量？"
+    ]
+  },
+  "formalization_provenance": {
+    "attestation_mode": "CALLER_CLAIMED_PRE_RETRIEVAL__NOT_INDEPENDENTLY_VERIFIED",
+    "field_rows": [
+      {
+        "ordinal": 0,
+        "field_name": "economic_mechanism_claim",
+        "provenance_class": "PRE_RETRIEVAL_ANALYST_INFERENCE",
+        "statement_ids": ["analyst-inference-1"]
+      },
+      {
+        "ordinal": 1,
+        "field_name": "payer_or_constraint",
+        "provenance_class": "PRE_RETRIEVAL_ANALYST_INFERENCE",
+        "statement_ids": ["analyst-inference-1"]
+      },
+      {
+        "ordinal": 2,
+        "field_name": "estimand",
+        "provenance_class": "NEW_ASSUMPTION",
+        "statement_ids": []
+      },
+      {
+        "ordinal": 3,
+        "field_name": "information_set",
+        "provenance_class": "NEW_ASSUMPTION",
+        "statement_ids": []
+      },
+      {
+        "ordinal": 4,
+        "field_name": "horizon",
+        "provenance_class": "NEW_ASSUMPTION",
+        "statement_ids": []
+      },
+      {
+        "ordinal": 5,
+        "field_name": "mathematical_object",
+        "provenance_class": "NEW_ASSUMPTION",
+        "statement_ids": []
+      },
+      {
+        "ordinal": 6,
+        "field_name": "broken_invariant_or_boundary",
+        "provenance_class": "CALLER_CLAIMED_SOURCE_GROUNDED",
+        "statement_ids": ["source-claim-2"]
+      },
+      {
+        "ordinal": 7,
+        "field_name": "observation_mapping",
+        "provenance_class": "NEW_ASSUMPTION",
+        "statement_ids": []
+      },
+      {
+        "ordinal": 8,
+        "field_name": "failure_signature",
+        "provenance_class": "CALLER_CLAIMED_SOURCE_GROUNDED",
+        "statement_ids": ["source-claim-1"]
+      },
+      {
+        "ordinal": 9,
+        "field_name": "falsifiers",
+        "provenance_class": "NEW_ASSUMPTION",
+        "statement_ids": []
+      },
+      {
+        "ordinal": 10,
+        "field_name": "material_rivals",
+        "provenance_class": "NEW_ASSUMPTION",
+        "statement_ids": []
+      },
+      {
+        "ordinal": 11,
+        "field_name": "regime_hypotheses",
+        "provenance_class": "NEW_ASSUMPTION",
+        "statement_ids": []
+      },
+      {
+        "ordinal": 12,
+        "field_name": "new_assumptions",
+        "provenance_class": "NEW_ASSUMPTION",
+        "statement_ids": []
+      },
+      {
+        "ordinal": 13,
+        "field_name": "clarification_questions",
+        "provenance_class": "UNRESOLVED",
+        "statement_ids": ["analyst-unresolved-1"]
+      }
+    ]
+  },
+  "pre_a0_predictions": [
+    {
+      "prediction_id": "prediction-1",
+      "prediction": "局部能量集中与短期负向相对收益相关。",
+      "horizon": "未来五个交易日。",
+      "expected_direction": "NEGATIVE",
+      "falsified_when": "关系在波动率匹配后消失。"
+    }
+  ],
+  "phase_policy_candidate": {
+    "policy_version": "source-first-offline-a0-candidate-v1",
+    "phase": "A0",
+    "requested_lane_subset": [
+      "structural_isomorph",
+      "cross_math_analogy",
+      "near_miss_failure",
+      "direct_counterexample"
+    ],
+    "top_k_per_lane": 3
+  },
+  "retrieval_corpus_objects": null,
+  "real_knowledge_inputs": {
+    "node_index_path": "/Users/researcher/projects/factor-factory-epistemic-s4-native-kernel-20260831/knowledge/因子工厂/graph/factor_knowledge_nodes.jsonl",
+    "edge_index_path": "/Users/researcher/projects/factor-factory-epistemic-s4-native-kernel-20260831/knowledge/因子工厂/graph/factor_knowledge_edges.jsonl",
+    "taxonomy_path": "/Users/researcher/projects/factor-factory-epistemic-s4-native-kernel-20260831/knowledge/因子工厂/taxonomy/factor_taxonomy_v1.json",
+    "top_k_per_lane": 3
+  },
+  "session_scope_secret_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+  "diagnosis_inputs": {
+    "stage2_manifest_path": "/Users/researcher/projects/factor-forge-phase-safe-retrieval-standalone-prototype-r3-20260829/packet_manifest.json",
+    "fixture_json_path": "/Users/researcher/projects/factor-forge-failure-diagnosis-prototype-input-20260829/diagnosis-fixture.json",
+    "assertion_dependency_json_path": "/Users/researcher/projects/factor-forge-failure-diagnosis-prototype-input-r3-20260829/assertion-dependency-dag.json"
+  }
+}

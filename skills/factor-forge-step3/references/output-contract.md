@@ -30,10 +30,13 @@
   - `first_run_outputs.run_metadata_path`
   - `first_run_outputs.producer`
 
-## First-run factor value outputs (mandatory when Step 3A local snapshots exist)
-- `factorforge/runs/{report_id}/factor_values__{report_id}.parquet`
-- `factorforge/runs/{report_id}/factor_values__{report_id}.csv`
-- `factorforge/runs/{report_id}/run_metadata__{report_id}.json`
+## Non-formal sample proof (when a sample query and executable code exist)
+- `factorforge/runs/{report_id}/step3b_sample_factor_values__{report_id}.parquet`
+- optional CSV under the explicit output policy
+- `factorforge/runs/{report_id}/step3b_sample_run_metadata__{report_id}.json`
+- metadata: `is_formal_factor_values=false`, `purpose=step3_executability_proof`, `formal_factor_values_owner=Step4`
+- sample fields above and `first_run_outputs` are not formal execution completion
+- formal `factor_values` / metrics / NAV / plots remain Step4-owned
 
 ## Contract integrity rules
 - `report_id` must agree across filename, JSON payload, and handoff refs
@@ -41,9 +44,23 @@
 - `step2_research_context` must be identical across implementation plan, qlib expression draft, hybrid scaffold, and Step4 handoff
 - `missing_*` Step2 research-context sentinel values are validation failures, not acceptable defaults
 - local input snapshot scope must be internally consistent across minute/daily layers
-- a Step 3B PASS without factor values is only acceptable when no Step 3A local execution snapshots exist
+- missing sample proof needs an explicit reason; a plan-only PASS does not establish sample executability, and sample proof never releases Step4 without Step2 review and post-review tests
 - qlib-facing outputs should preserve a stable semantic mapping for:
   - `instrument` ↔ raw code field (e.g. `ts_code`)
   - `datetime` ↔ raw date/time fields (e.g. `trade_date`, `trade_time`)
   - append-only feature columns
 - Python factor implementations may stay imperative/custom, but their outputs should be transformable into qlib-friendly signal tables without ad-hoc per-factor schema invention
+
+## Data and downstream continuity
+
+Normalize supported source dates (`YYYYMMDD`, `YYYY-MM-DD`, Timestamp) to stable
+`YYYYMMDD`-compatible output keys through the shared date contract. Preserve
+`implementation_mode_decision` in plan, generated-code metadata, handoff, sample
+metadata when generated and the Ultimate report.
+
+Where present, retain the downstream surfaces `standard_formula_fields_contract`,
+`acceptance_summary`, `qlib_native_status`, `evidence_status`,
+`formula_implied_information`, `metric_anomaly_review`,
+`model_linked_metric_signature`, `volatility_drag`, `drawdown_recovery_area`,
+`component_ablation`, and `direction_losing_transform_review`. They are not
+permission for Step3B to generate Step4 metrics or invent unavailable evidence.

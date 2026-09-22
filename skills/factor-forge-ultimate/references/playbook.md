@@ -1,2 +1,1 @@
-See:
-- /Users/humphrey/projects/factor-factory/docs/operations/humphrey-factorforge-research-playbook.zh-CN.md
+Read the selected checkout's [research playbook](../../../docs/operations/humphrey-factorforge-research-playbook.zh-CN.md).

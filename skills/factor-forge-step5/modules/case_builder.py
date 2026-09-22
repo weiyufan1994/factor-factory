@@ -37,6 +37,7 @@ LONG_ONLY_ADOPTION_CONSTRAINTS = {
 }
 
 DEFAULT_TURNOVER_COST_RATE = 0.003
+RIGHT_CENSORED_RECOVERY_STATUS = "NOT_RECOVERED_BY_WINDOW_END"
 
 LONG_SIDE_PERFORMANCE_THRESHOLDS = {
     "candidate_min_sharpe": 0.50,
@@ -154,6 +155,7 @@ def build_factor_business_review(metrics: Dict[str, Any]) -> Dict[str, Any]:
     if trading_cogs is None and turnover is not None:
         trading_cogs = abs(turnover) * DEFAULT_TURNOVER_COST_RATE * 252
         trading_cogs_source = "estimated_from_turnover_30bps"
+    return_is_net_of_costs = metrics.get("return_basis") == "net_after_explicit_trading_costs"
     value_at_risk = _first_metric(metrics, [
         "value_at_risk",
         "var_95",
@@ -173,7 +175,11 @@ def build_factor_business_review(metrics: Dict[str, Any]) -> Dict[str, Any]:
         log_growth_proxy = mean_return + volatility_drag
 
     thresholds = LONG_SIDE_PERFORMANCE_THRESHOLDS
-    net_revenue_after_cogs = mean_return - trading_cogs if mean_return is not None and trading_cogs is not None else None
+    net_revenue_after_cogs = (
+        mean_return
+        if return_is_net_of_costs
+        else mean_return - trading_cogs if mean_return is not None and trading_cogs is not None else None
+    )
     risk_capital_required = None
     if expected_shortfall is not None:
         risk_capital_required = abs(expected_shortfall)
@@ -195,7 +201,7 @@ def build_factor_business_review(metrics: Dict[str, Any]) -> Dict[str, Any]:
     if mean_return is not None:
         economic_net_alpha = (
             mean_return
-            - (trading_cogs or 0.0)
+            - (0.0 if return_is_net_of_costs else (trading_cogs or 0.0))
             + (volatility_drag or 0.0)
             - (capital_charge or 0.0)
             - (drawdown_provision or 0.0)
@@ -225,7 +231,9 @@ def build_factor_business_review(metrics: Dict[str, Any]) -> Dict[str, Any]:
         drawdown_status = "acceptable" if max_drawdown >= thresholds["max_drawdown_soft_limit"] else "too_deep"
 
     recovery_status = "missing"
-    if recovery_days is not None:
+    if recovery_days is None and metrics.get("long_side_recovery_status") == RIGHT_CENSORED_RECOVERY_STATUS:
+        recovery_status = "right_censored_not_recovered"
+    elif recovery_days is not None:
         recovery_status = "acceptable" if recovery_days <= thresholds["recovery_days_soft_limit"] else "too_slow"
 
     return {
@@ -238,12 +246,14 @@ def build_factor_business_review(metrics: Dict[str, Any]) -> Dict[str, Any]:
             "source": "Step4 long_side_performance contract",
         },
         "factor_business_quality": {
-            "gross_revenue": mean_return,
+            "gross_revenue": None if return_is_net_of_costs else mean_return,
             "trading_cogs": trading_cogs,
             "trading_cogs_source": trading_cogs_source,
             "default_turnover_cost_rate": DEFAULT_TURNOVER_COST_RATE,
             "turnover_proxy": turnover,
             "net_revenue_after_cogs": net_revenue_after_cogs,
+            "return_basis": metrics.get("return_basis") or "gross_or_unspecified",
+            "trading_cogs_already_included_in_return": return_is_net_of_costs,
             "cogs_status": "explicit_or_estimated" if trading_cogs is not None else "missing_turnover_and_explicit_trading_cost",
             "volatility": volatility,
             "volatility_drag": volatility_drag,
@@ -255,6 +265,8 @@ def build_factor_business_review(metrics: Dict[str, Any]) -> Dict[str, Any]:
             "capital_impairment": max_drawdown,
             "drawdown_provision": drawdown_provision,
             "payback_days": recovery_days,
+            "recovery_lower_bound_days": metrics.get("long_side_recovery_lower_bound_days"),
+            "recovery_observation_end": metrics.get("long_side_recovery_observation_end"),
             "economic_net_alpha": economic_net_alpha,
             "calmar_ratio": calmar,
             "raroc": raroc,
@@ -280,6 +292,8 @@ def build_factor_business_review(metrics: Dict[str, Any]) -> Dict[str, Any]:
         "drawdown_status": drawdown_status,
         "depreciation_or_payback_proxy_recovery_days": recovery_days,
         "recovery_status": recovery_status,
+        "recovery_lower_bound_days": metrics.get("long_side_recovery_lower_bound_days"),
+        "recovery_observation_end": metrics.get("long_side_recovery_observation_end"),
         "risk_budget_note": (
             "Allocate risk budget from Sharpe, explicit trading COGS, volatility drag, risk capital, drawdown depth, "
             "and recovery time; a high-revenue factor with weak economic net alpha can still be unfinanceable."
@@ -304,6 +318,9 @@ def build_long_side_review(evaluation: Dict[str, Any]) -> Dict[str, Any]:
     elif sharpe_status == "missing":
         status = "unknown"
         note = "Long-side return exists but Sharpe evidence is missing; do not promote until Step4 emits risk-adjusted long-side performance."
+    elif business_review.get("recovery_status") == "right_censored_not_recovered":
+        status = "mixed"
+        note = "Recovery is right-censored at the observation end; retain the observed lower bound and do not promote."
     elif top_return > 0 and sharpe_status == "official_ready" and drawdown_status != "too_deep" and (rank_ic is None or rank_ic > 0):
         status = "official_ready"
         note = "Highest-score long side has positive revenue, Sharpe clears the official threshold, and drawdown is not beyond the soft limit."

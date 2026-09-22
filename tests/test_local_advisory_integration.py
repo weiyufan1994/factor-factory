@@ -430,3 +430,108 @@ def test_note_prose_correction_cannot_relabel_historical_research(private, field
     with pytest.raises(CorpusBuildError, match='identity or authority'):
         refresh(private)
     assert contract(private)['retrieval_status'] == 'unavailable'
+
+
+@pytest.mark.parametrize('flexible', [True, False])
+@pytest.mark.parametrize('state', ['changed', 'refresh_failed', 'withdrawn', 'current', 'declined', 'undeclared', 'unbound', 'unrelated_binding'])
+def test_actual_iteration_producer_rechecks_authored_import_source(private, tmp_path, monkeypatch, flexible, state):
+    """Real memo loader, index reader, retrieval, learning and iteration producer.
+
+    Economics/evaluation/revision builders below are stubs: this is not a
+    factor run or economic review. They must not mask the actual import path.
+    """
+    source = note(private)
+    refresh(private)
+    reference = load_step(1).attach_factor_knowledge_context(aim())['knowledge_reference_contract']
+    learning = {
+        'transferable_patterns': ['INDEPENDENT_AUTHORED_PATTERN'],
+        'anti_patterns': ['INDEPENDENT_AUTHORED_COUNTEREXAMPLE'],
+        'innovative_idea_seeds': ['INDEPENDENT_AUTHORED_IDEA'],
+        'reuse_instruction_for_future_agents': ['INDEPENDENT_AUTHORED_REUSE'],
+        'similar_case_lessons_imported': [] if state == 'declined' else ['HISTORICAL_IMPORTED_PROSE'],
+        'similar_case_lessons_absence_reason': 'Author explicitly declines this retrieved analogy.',
+    }
+    authored = {'learning_and_innovation': learning, 'economic_logic': 'INDEPENDENT_ECONOMIC_LOGIC',
+                'next_research_tests': ['INDEPENDENT_FALSIFIER']}
+    if state == 'undeclared':
+        learning.pop('similar_case_lessons_imported')
+        learning.pop('similar_case_lessons_absence_reason')
+    if state not in {'unbound', 'unrelated_binding'}:
+        authored['knowledge_reference_contract'] = reference
+    module = load_step(6)
+    monkeypatch.setattr(module, 'OBJ', tmp_path / 'workspace/objects')
+    memo_path = write(module.OBJ / 'research_iteration_master/researcher_memo__CURRENT.json', authored)
+    memo_bytes = memo_path.read_bytes()
+    if state in {'changed', 'refresh_failed', 'withdrawn'}:
+        child = revision(source, validity_status='withdrawn', invalidation_reason='Synthetic withdrawal')
+        if state == 'refresh_failed':
+            invalid = json.loads(child.read_bytes())
+            invalid['research_note_revision']['supersedes_sha256'] = '0' * 64
+            write(child, invalid)
+            with pytest.raises(CorpusBuildError):
+                refresh(private)
+        elif state == 'withdrawn':
+            refresh(private)
+    monkeypatch.setattr(module, 'load_researcher_journal', lambda _: {})
+    monkeypatch.setattr(module, 'load_window_evidence', lambda _: pytest.fail('producer must not read OOS'))
+    monkeypatch.setattr(module, 'decide', lambda *_: 'reject')
+    monkeypatch.setattr(module, 'local_reviewers_agree_to_reject', lambda *_: False)
+    monkeypatch.setattr(module, 'derive_strengths_weaknesses', lambda *_: ([], [], [], []))
+    monkeypatch.setattr(module, 'extract_headline_metrics', lambda *_: {})
+    monkeypatch.setattr(module, 'summarize_window_evidence', lambda _: ([], []))
+    monkeypatch.setattr(module, 'infer_research_framework', lambda *_: {
+        'factor_family': 'other', 'monetization_model': 'mixed', 'bias_type': 'other',
+        'return_source_hypothesis': 'INDEPENDENT_ECONOMIC_LOGIC', 'expected_failure_regimes': [],
+        'objective_constraint_dependency': 'none', 'constraint_sources': [],
+        'crowding_risk': 'unknown', 'capacity_constraints': 'unknown', 'implementation_risk': 'unknown',
+        'improvement_frontier': [], 'program_search_axes': [], 'review_checklist': [],
+        'research_commentary': [], 'revision_principles': [],
+    })
+    monkeypatch.setattr(module, 'build_research_memo', lambda *a, **k: {
+        'economic_logic': copy.deepcopy(k['authored_memo']['economic_logic']), 'evidence_quality': {'notes': []},
+    })
+    for name in ['build_evidence_status', 'build_formula_understanding', 'build_math_discipline_review',
+                 'build_experience_chain', 'build_diversity_position', 'build_evidence_audit',
+                 'build_mechanism_analysis', 'build_formula_specific_derivation',
+                 'validate_mechanism_formula_consistency', 'build_case_comparison']:
+        monkeypatch.setattr(module, name, lambda *a, **k: {})
+    monkeypatch.setattr(module, 'build_metric_interpretation', lambda *_: {'verdict': 'inconclusive', 'long_side_adoption_review': {}})
+    monkeypatch.setattr(module, 'build_revision_taxonomy', lambda *_: {'macro_revision': {}, 'micro_revision': {}, 'expression_revision': {}, 'portfolio_revision': {'forbidden': True}})
+    monkeypatch.setattr(module, 'build_revision_strategy', lambda *_: {'revision_needed': False, 'loop_authorization': 'advisory_only', 'revision_quality': 'not_needed', 'primary_failure_signature': 'none'})
+    monkeypatch.setattr(module, 'build_search_policy_decision', lambda *_: {'branch_templates': [], 'recommended_mode': 'kill', 'human_approval_required': False, 'selection_rationale': []})
+    monkeypatch.setattr(module, 'should_write_step3b_handoff', lambda *_: False)
+    bundle = {
+        'factor_run_master': {'report_id': 'CURRENT', 'factor_id': 'CURRENT', 'run_status': 'complete',
+                             'evaluation_results': {'backend_runs': []}, 'evaluation_plan': {}, 'artifact_identity': {}},
+        'factor_case_master': {'factor_id': 'CURRENT', 'final_status': 'rejected', 'lessons': [QUERY]},
+        'factor_evaluation': {}, 'handoff_to_step6': {},
+        'factor_spec_master': {'research_contract': {
+            'research_compatibility_profile': 'factorforge_ordinary_local_is_flexible_v1' if flexible else None}},
+        'paths': {'handoff_to_step6': 'synthetic-handoff.json'},
+    }
+    if state == 'unrelated_binding':
+        bundle['handoff_to_step6']['knowledge_reference_contract'] = reference
+    result = module.build_iteration_payload(bundle, {})
+    current = result['research_judgment']['research_memo']
+    actual = current['learning_and_innovation']
+    if state == 'current':
+        assert actual['similar_case_lessons_imported'] == ['HISTORICAL_IMPORTED_PROSE']
+        assert actual['advisory_import_status'] == 'CURRENT_SOURCE_VERSION'
+    elif state == 'declined':
+        assert actual['similar_case_lessons_imported'] == []
+        assert actual['similar_case_lessons_absence_reason'] == learning['similar_case_lessons_absence_reason']
+        assert actual['advisory_import_status'] == 'AUTHOR_IMPORTED_NONE'
+    elif state == 'undeclared':
+        assert actual['similar_case_lessons_imported'] == []
+        assert actual['advisory_import_status'] == 'AUTHOR_IMPORT_NOT_DECLARED'
+    else:
+        assert actual['similar_case_lessons_imported'] == []
+        assert actual['advisory_import_status'] == 'UNVERIFIED_OR_STALE_SOURCE_NOT_CURRENT'
+        assert 'HISTORICAL_IMPORTED_PROSE' not in json.dumps(result['knowledge_writeback']['learning_and_innovation'])
+    assert current['economic_logic'] == 'INDEPENDENT_ECONOMIC_LOGIC'
+    assert current['researcher_agent_memo']['learning_and_innovation'] == learning
+    if flexible:
+        assert actual['transferable_patterns'] == learning['transferable_patterns']
+        assert actual['anti_patterns'] == learning['anti_patterns']
+        assert actual['innovative_idea_seeds'] == learning['innovative_idea_seeds']
+    assert memo_path.read_bytes() == memo_bytes

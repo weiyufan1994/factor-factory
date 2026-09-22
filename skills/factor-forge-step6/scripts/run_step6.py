@@ -34,7 +34,7 @@ from factor_factory.provenance import (
     derive_identity as derive_provenance_identity,
 )
 from factor_factory.knowledge_context import graph_node_to_similar_case, retrieve_factor_knowledge_context
-from factor_factory.advisory_runtime import configured_advisory_root, read_visible_experience
+from factor_factory.advisory_runtime import configured_advisory_root, read_visible_experience, carried_reference_is_current
 from factor_factory.knowledge_reference import resolve_runtime_retrieval_index
 from factor_factory.mechanism_math.formula_specific import (
     build_formula_specific_derivation,
@@ -80,6 +80,7 @@ def uses_local_advisory() -> bool:
 RETRIEVAL_INDEX = (resolve_runtime_retrieval_index(REPO_ROOT) if uses_local_advisory() else
                    Path(os.getenv('FACTORFORGE_RETRIEVAL_INDEX') or (FF / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl')))
 _RETRIEVAL_INDEX_ERROR: str | None = None
+_RETRIEVAL_INDEX_SHA256: str | None = None
 LOOP_RESEARCH_BRIEF_VERSION = 'factorforge_loop_research_brief_v1'
 REQUIRED_LOOP_BRIEF_CHART_KEYS = [
     'rank_ic_timeseries',
@@ -277,11 +278,13 @@ def load_researcher_journal(report_id: str) -> dict[str, Any] | None:
 
 
 def load_retrieval_docs() -> list[dict[str, Any]]:
-    global _RETRIEVAL_INDEX_ERROR
+    global _RETRIEVAL_INDEX_ERROR, _RETRIEVAL_INDEX_SHA256
     _RETRIEVAL_INDEX_ERROR = None
+    _RETRIEVAL_INDEX_SHA256 = None
     if uses_local_advisory():
         try:
-            return read_visible_experience(RETRIEVAL_INDEX)[0]
+            rows, _RETRIEVAL_INDEX_SHA256 = read_visible_experience(RETRIEVAL_INDEX)
+            return rows
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             _RETRIEVAL_INDEX_ERROR = str(exc)
             return []
@@ -3281,7 +3284,8 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         'factor_knowledge_context': factor_knowledge_context,
         'embedding_index_available': embedding_available,
         'embedding_endpoint': None if local_advisory else EMBEDDING_ENDPOINT,
-        **({'semantic_retrieval': semantic_state} if local_advisory else {}),
+        **({'semantic_retrieval': semantic_state, 'experience_index_sha256': _RETRIEVAL_INDEX_SHA256,
+            'index_paths_checked': [str(RETRIEVAL_INDEX)]} if local_advisory else {}),
         'query_terms': query_tokens[:40],
         'similar_cases': top,
         'retrieval_notes': ([
@@ -3298,6 +3302,41 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
     }
 
 
+def _check_authored_advisory_imports(result, authored_learning, authored_reference):
+    """Preserve authored thought, but do not activate unbound historical imports."""
+    key = 'similar_case_lessons_imported'
+    if not uses_local_advisory():
+        return result
+    if key not in authored_learning:
+        result[key] = []
+        result['advisory_import_status'] = 'AUTHOR_IMPORT_NOT_DECLARED'
+        result['similar_case_lessons_absence_reason'] = (
+            'No authored advisory import was declared; current retrieval is separate reference context.'
+        )
+        return result
+    value = deepcopy(authored_learning[key])
+    result[key] = value  # Includes an author's explicit choice to import none.
+    for reason_key in ('similar_case_lessons_imported_absence_reason', 'similar_case_lessons_absence_reason'):
+        if reason_key in authored_learning:
+            result[reason_key] = authored_learning[reason_key]
+    if isinstance(value, list) and value:
+        reference = (authored_learning['knowledge_reference_contract']
+                     if 'knowledge_reference_contract' in authored_learning else authored_reference)
+        if not isinstance(reference, dict) or not carried_reference_is_current(reference, RETRIEVAL_INDEX):
+            result[key] = []
+            result['advisory_import_status'] = 'UNVERIFIED_OR_STALE_SOURCE_NOT_CURRENT'
+            result['similar_case_lessons_absence_reason'] = (
+                'Historical imported advisory has no verifiable current source version; '
+                'the original authored memo is retained for review, not used as a current prior.'
+            )
+            result['similar_case_lessons_imported_absence_reason'] = result['similar_case_lessons_absence_reason']
+        else:
+            result['advisory_import_status'] = 'CURRENT_SOURCE_VERSION'
+    elif value == []:
+        result['advisory_import_status'] = 'AUTHOR_IMPORTED_NONE'
+    return result
+
+
 def build_learning_and_innovation(
     framework: dict[str, Any],
     decision: str,
@@ -3307,6 +3346,7 @@ def build_learning_and_innovation(
     retrieval_context: dict[str, Any],
     authored_learning: dict[str, Any] | None = None,
     flexible_local: bool = False,
+    authored_reference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     authored_learning = authored_learning if isinstance(authored_learning, dict) else {}
     if flexible_local:
@@ -3330,7 +3370,7 @@ def build_learning_and_innovation(
             for candidate_reason_key in aliases:
                 if candidate_reason_key in authored_learning:
                     result[candidate_reason_key] = authored_learning[candidate_reason_key]
-        return result
+        return _check_authored_advisory_imports(result, authored_learning, authored_reference)
     similar_cases = retrieval_context.get('similar_cases') or []
     imported_lessons = []
     for item in similar_cases[:3]:
@@ -3422,7 +3462,7 @@ def build_learning_and_innovation(
             reason = authored_learning.get(f'{key}_absence_reason')
             if reason is not None:
                 result[f'{key}_absence_reason'] = reason
-    return result
+    return _check_authored_advisory_imports(result, authored_learning, authored_reference)
 
 
 def build_experience_chain(
@@ -4212,6 +4252,10 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         if 'learning_and_innovation' in handoff
         else authored_memo.get('learning_and_innovation')
     )
+    # Bind to the SAME authored source selected above. A newer unrelated
+    # contract in the spec/handoff cannot launder a stale current-agent memo.
+    learning_owner = (current_researcher_memo_body if current_learning_declared
+                      else handoff if 'learning_and_innovation' in handoff else authored_memo)
     if not isinstance(authored_learning, dict):
         authored_learning = (
             {'authored_learning_and_innovation_invalid': deepcopy(authored_learning)}
@@ -4222,6 +4266,9 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             or contract.get('learning_and_innovation')
             or {}
         )
+        if not flexible_local:
+            spec = bundle.get('factor_spec_master') or {}
+            learning_owner = spec if spec.get('learning_and_innovation') else contract
     if current_policy_declared:
         retrieval_context['authored_program_search_policy'] = current_authored_policy
     elif 'program_search_policy' in handoff:
@@ -4237,6 +4284,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         retrieval_context,
         authored_learning=authored_learning,
         flexible_local=flexible_local,
+        authored_reference=learning_owner.get('knowledge_reference_contract'),
     )
     if compatibility_profile is not None:
         learning_and_innovation['research_compatibility_profile'] = compatibility_profile
@@ -4377,6 +4425,8 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     if researcher_agent_memo:
         research_memo = _project_authored_failure_regimes(research_memo, researcher_agent_memo)
         research_memo['researcher_agent_memo'] = researcher_agent_memo
+        if learning_and_innovation.get('advisory_import_status'):
+            research_memo['authored_advisory_import_status'] = learning_and_innovation['advisory_import_status']
         research_memo.setdefault('evidence_quality', {}).setdefault('notes', []).append(
             'External Step6 researcher-agent memo was loaded and preserved under research_memo.researcher_agent_memo.'
         )

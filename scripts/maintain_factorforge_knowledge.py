@@ -36,6 +36,7 @@ def _maintenance_projection(raw: dict[str, Any]) -> dict[str, Any]:
         "factor_id": raw.get("factor_id"), "status": raw.get("status"),
         "failure": raw.get("failure"),
         "formal_command_contract": raw.get("formal_command_contract"),
+        "contract_smoke_only": raw.get("contract_smoke_only") is True,
         "commands": [{key: row.get(key) for key in ("name", "status", "returncode")}
                      for row in commands if isinstance(row, dict)],
     }

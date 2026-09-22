@@ -71,6 +71,25 @@ def test_cli_projection_drops_command_tails() -> None:
     assert projected["commands"] == [{"name": "x", "status": "FAIL", "returncode": 1}]
 
 
+def test_maintenance_cli_preserves_smoke_boundary_without_episode_or_index(tmp_path, monkeypatch):
+    import json
+    workspace, repo = tmp_path / "workspace", tmp_path / "repo"
+    repo.mkdir()
+    proof = workspace / "objects/runtime_context/ultimate_run_report__SMOKE_LOCAL.json"
+    proof.parent.mkdir(parents=True)
+    proof.write_text(json.dumps({**_proof("PASS"), "execution_scope": "local_is_only", "contract_smoke_only": True}))
+    before = proof.read_bytes()
+    monkeypatch.setattr(maintenance_cli, "ROOT", repo)
+    monkeypatch.setattr("sys.argv", ["maintain", "--workspace-root", str(workspace), "--report-id", "SMOKE_LOCAL"])
+    assert maintenance_cli.main() == 0
+    report = json.loads((repo / "knowledge/maintenance/latest.json").read_text())
+    assert report["result"]["reason"] == "engineering_contract_smoke"
+    assert proof.read_bytes() == before
+    assert not (workspace / "knowledge").exists()
+    assert not (repo / "knowledge/因子工厂").exists()
+    assert _maintenance_projection({"contract_smoke_only": "true"})["contract_smoke_only"] is False
+
+
 def test_maintenance_cli_repairs_existing_proof_without_research_subprocess(
     tmp_path: Path, monkeypatch
 ) -> None:

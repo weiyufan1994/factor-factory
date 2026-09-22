@@ -15,7 +15,7 @@
 
 ## 安装与离线使用
 
-Python 3.10+；本次发布实际验证环境和结果见 [验证说明](docs/publish-verification.zh-CN.md)。
+Python 3.10+；本次发布实际验证环境和结果见 [验证说明](publish-verification.zh-CN.md)。
 
 ```bash
 python3 -m venv .venv

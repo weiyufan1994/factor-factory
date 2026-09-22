@@ -165,7 +165,7 @@ calendar
     "sample_sortedness_check": true
   },
   "source": {
-    "raw_s3_uri": "s3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/",
+    "raw_s3_uri": "s3://factorforge-example-data/tushares/分钟数据/raw/stk_mins_1min/",
     "raw_sync_command": "scripts/sync_tushare_raw_from_s3.py sync-minute-range",
     "build_script": "scripts/build_clean_minute_layer.py",
     "build_repo_sha": "<git-sha>",

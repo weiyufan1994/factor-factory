@@ -21,8 +21,8 @@ except ImportError as exc:
     raise SystemExit(1)
 
 
-DEFAULT_TOKEN_FILE = "/home/ubuntu/.openclaw/media/inbound/tushares_token---f5492736-ee8f-4214-b0de-0422f0cfa0a3"
-DEFAULT_BUCKET = "yufan-data-lake"
+DEFAULT_TOKEN_FILE = "/home/researcher/.openclaw/media/inbound/tushares_token---f5492736-ee8f-4214-b0de-0422f0cfa0a3"
+DEFAULT_BUCKET = "factorforge-example-data"
 DEFAULT_PREFIX = "tushares"
 DEFAULT_LOCAL_ROOT = Path(__file__).resolve().parent / "_tushare_index_topic_exports"
 DEFAULT_START_DATE = "19900101"

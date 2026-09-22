@@ -168,6 +168,23 @@ class AgentResumeTask:
     prior_output_archive_id: str = ""
 
 
+@dataclass(frozen=True)
+class PreOosRootSynthesisTask:
+    """Host-bound, single-output task for agent-authored pre-OOS synthesis."""
+
+    version: str
+    attempt_id: str
+    job_id: str
+    factor_id: str
+    research_id: str
+    report_id: str
+    trusted_proof_sha256: str
+    task_packet_relative: str
+    task_packet_sha256: str
+    expected_output_relative: str
+    read_only_input_sha256: tuple[tuple[str, str], ...]
+
+
 class ResearchAgentAdapter(Protocol):
     def validate_ready(self) -> str:
         ...
@@ -180,6 +197,16 @@ class ResearchAgentAdapter(Protocol):
         workspace: Path,
         resume: bool,
         resume_task: AgentResumeTask | None = None,
+    ) -> AgentRunResult:
+        ...
+
+    def run_pre_oos_root_synthesis(
+        self,
+        job: ResearchJob,
+        *,
+        worktree: Path,
+        workspace: Path,
+        task: PreOosRootSynthesisTask,
     ) -> AgentRunResult:
         ...
 
@@ -583,6 +610,7 @@ source of truth. Do not read whole skill files or validator/wrapper source.
 - formal sample: {job.request.sample_start} through {job.request.sample_end}
 - forward horizon: {job.request.forward_horizon}
 - transaction cost assumption: {job.request.transaction_cost_bps} bps
+- frozen trial budget: {job.request.trial_budget} total registered trials, including the base candidate
 - source material: {source_material}
 
 ## Read-only Data API inputs
@@ -603,6 +631,23 @@ lease and the formal Step3/4 scripts consume the pinned catalog and Data API.
 5. Never use fixtures, deterministic fallback, local mock, smoke evidence or dry-run output as formal research proof. A missing dataset must produce a precise BLOCK/data request, not invented evidence.
 6. On resume, write only the exact named research memo permitted by the current pause. The host owns Council dispatch, synthesis, evidence interpretation, and every formal wrapper invocation. Do not use the unimplemented `real_agent`/`remote_api` wrapper adapters.
 7. Keep preferred, null and alternative hypotheses distinct. Record economic payer, mathematical object, legal information set, falsifiers, component ablations, costs, long-side economics, IS/OOS boundary and proof-certificate status.
+   For `measurement_program.search_policy.registered_diagnostic_trials`, follow
+   the closed schema and scaffold in
+   `web_research_authoring_contract.json` exactly. For every
+   `measurement_program.implementation.components[]` item whose `binding_role`
+   is not `full_formula`, add exactly one `standalone_component` trial and one
+   `leave_one_out` trial, each using that item's exact `component_id`. If any
+   such component exists, add exactly one `sign_oracle` trial whose
+   `component_id` is the literal `full_formula`. Every diagnostic object has
+   exactly `trial_id`, `role`, `component_id`, `formula_or_law`,
+   `affects_acceptance`, and `multiple_testing_family`; set
+   `affects_acceptance` to false, keep trial IDs unique, use only parseable
+   Formula IR laws, and keep `1 + len(registered_diagnostic_trials)` within
+   `evidence_policy.trial_budget`. An empty diagnostic list is invalid whenever
+   a non-full-formula component exists.
+   For an authority-bearing v2 request, its submitted budget must equal
+   `evidence_policy.trial_budget`; the Host deterministically counts the one base
+   candidate plus the exact final diagnostic list.
    In the Web v2 pilot, a signal formed after close t is entered at close t+1
    and exited at close t+2, so the executable label is
    `close.shift(-2) / close.shift(-1) - 1`. The close-t to close-t+1 return
@@ -1252,7 +1297,7 @@ def _build_agent_resume_prompt(
    - `math_hypothesis.mechanism_equation_or_functional` must contain an explicit model equation, identity, functional, structural equation, or optimization problem. A prose restatement of formula operators is not a model.
    - `math_hypothesis.target_functional` must state the mechanism's actual estimand. For a valuation hypothesis this may be intrinsic value or `V_t/P_t-1`; it is not required to be a conditional-return distribution.
    - `math_hypothesis.market_outcome_projection` must separately map that estimand to this Pilot's executable payoff and legal timing: `E[close_{{i,t+2}}/close_{{i,t+1}}-1 | F_t, measured_object_{{i,t}}]`, entry t+1 close and exit t+2 close, with the predicted sign stated explicitly. Never put future fields in the conditioning information set.
-   - Put the formula or code observation equation in `math_hypothesis.observation_mapping` and `{object_mapping_field}.observation_mapping`; bind `{object_mapping_field}.mathematical_object` to the same selected object.
+   - Put the formula or code observation equation in `math_hypothesis.observation_mapping` and `{object_mapping_field}.observation_mapping`; bind `{object_mapping_field}.mathematical_object` to the same selected object. `component_links` must include `formula_root`, so the complete canonical formula and every active input remain bound. For every selected `component_link`, copy that component's exact canonical `formula_subexpression` as exactly one expression prefix. Write clauses as `exact_canonical_expression estimates plain semantic label`, separated by semicolons. Include no executable clause that is not selected by `component_links`; when two selected components have identical subexpressions, repeat the clause once for each component. Formula IR topology, nesting, arity, constants, and active dataflow must remain exact. Do not add comments or optional keyword arguments that the canonical expression does not contain. Reuse the domain terms already declared in `mathematical_object` for each label; never introduce another expression, function call, input, dependency, or future concept in label prose.
    - Fill both `math_hypothesis.expected_metric_signature` and the top-level `expected_metric_signature` as identical JSON objects. Preserve and fill every scaffolded key: `rank_ic`, `long_side`, `cost_adjusted`, `monotonicity`, and `turnover`. Each value must compare the model's expected sign or shape with the immutable observed metrics, including any contradiction; do not substitute differently named threshold keys.
    - Fill the top-level `falsification_tests` as a JSON list with at least two formula-specific, empirically decidable tests. Every list item must be one non-empty plain JSON string."""
     else:
@@ -1305,7 +1350,8 @@ subject to formal validation."""
    component identities/operators, permission flags, or contract version,
    except for the optional exact `component_id` transport anchor above.
 	   Set `{object_mapping_field}.component_links` to a non-empty, unique JSON
-   list of canonical `component_id` strings from the answer form; never use
+   list of canonical `component_id` strings from the answer form and always
+   include `formula_root`; never use
    objects, subexpressions, operators, or invented component IDs there.
    JSON-escape every quote, backslash, and line break inside string values.
    Serialize the top-level object exactly once: after the ledger's closing

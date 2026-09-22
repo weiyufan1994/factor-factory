@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取"
-PYTHON_BIN="/home/ubuntu/miniconda3/envs/rdagent/bin/python"
-LOG_ROOT="/home/ubuntu/tushare_logs"
+ROOT="/opt/factorforge/workspace/repos/quant_self/tushare数据获取"
+PYTHON_BIN="/home/researcher/miniconda3/envs/rdagent/bin/python"
+LOG_ROOT="/home/researcher/tushare_logs"
 TODAY="$(TZ=Asia/Shanghai date +%Y%m%d)"
 YEAR="$(TZ=Asia/Shanghai date +%Y)"
 LAST_YEAR_START="$((YEAR - 1))0101"

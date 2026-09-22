@@ -87,7 +87,7 @@ def base_catalog() -> dict:
 
 
 def real_data_api_catalog_path() -> Path:
-    return Path("/Users/humphrey/projects/factorforge-data-api-runtime/proofs/moneyflow-v7-production-contract-20260608/intraday_flow_state_v2.production_contract.catalog.json")
+    return Path("/Users/researcher/projects/factorforge-data-api-runtime/proofs/moneyflow-v7-production-contract-20260608/intraday_flow_state_v2.production_contract.catalog.json")
 
 
 def main() -> int:
@@ -207,7 +207,7 @@ def main() -> int:
 
     try:
         assert_no_raw_minute_full_window_scan(
-            input_paths=["s3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/"],
+            input_paths=["s3://factorforge-example-data/tushares/分钟数据/raw/stk_mins_1min/"],
             production=True,
         )
     except Exception as exc:
@@ -417,7 +417,7 @@ def main() -> int:
         "--state-catalog", str(catalog_path),
         "--state-resolution", str(root / "ultimate_raw_state_resolution.json"),
         "--state-data-request-dir", str(request_dir),
-        "--state-input-path", "s3://yufan-data-lake/tushares/分钟数据/raw/stk_mins_1min/",
+        "--state-input-path", "s3://factorforge-example-data/tushares/分钟数据/raw/stk_mins_1min/",
         "--council-mode", "off",
     ]), 1, BLOCK_RAW_MINUTE_FULL_WINDOW_FORBIDDEN))
 

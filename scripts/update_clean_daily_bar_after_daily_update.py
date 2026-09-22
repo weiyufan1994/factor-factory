@@ -21,16 +21,16 @@ from factor_factory.data_access import default_clean_daily_layer_root, default_l
 from factor_factory.data_access.mutation_guard import require_data_mutation_authority
 
 
-DEFAULT_BUCKET = "yufan-data-lake"
+DEFAULT_BUCKET = "factorforge-example-data"
 DEFAULT_DAILY_INCREMENTAL_PREFIX = "tushares/行情数据/daily_incremental"
 DEFAULT_DAILY_BASIC_PREFIX = "tushares/行情数据/daily_basic_incremental"
-DEFAULT_S3_URI = "s3://yufan-data-lake/factorforge/datamart/clean_daily_bar/v1/daily_clean.parquet"
-DEFAULT_FACTORFORGE_ROOT = Path(os.getenv("FACTORFORGE_ROOT", "/home/ubuntu/.openclaw/workspace/factorforge")).expanduser()
-DEFAULT_RUN_ROOT = Path(os.getenv("FACTORFORGE_RUN_ROOT", "/home/ubuntu/.openclaw/workspace/runs")).expanduser()
+DEFAULT_S3_URI = "s3://factorforge-example-data/factorforge/datamart/clean_daily_bar/v1/daily_clean.parquet"
+DEFAULT_FACTORFORGE_ROOT = Path(os.getenv("FACTORFORGE_ROOT", "/opt/factorforge/workspace/factorforge")).expanduser()
+DEFAULT_RUN_ROOT = Path(os.getenv("FACTORFORGE_RUN_ROOT", "/opt/factorforge/workspace/runs")).expanduser()
 DEFAULT_QLIB_PROVIDER_DIR = Path(os.getenv("QLIB_PROVIDER_URI") or (Path.home() / ".qlib" / "qlib_data" / "cn_data")).expanduser()
 DEFAULT_QLIB_PROVIDER_ENV = Path(os.getenv("FACTORFORGE_QLIB_PROVIDER_ENV") or (Path.home() / ".factorforge" / "qlib_provider.env")).expanduser()
-DEFAULT_QLIB_PROVIDER_S3_URI = "s3://yufan-data-lake/factorforge/datamart/qlib_data/cn_data/"
-DEFAULT_WORKER_QLIB_PYTHON = Path("/home/ubuntu/miniconda3/envs/rdagent4qlib/bin/python")
+DEFAULT_QLIB_PROVIDER_S3_URI = "s3://factorforge-example-data/factorforge/datamart/qlib_data/cn_data/"
+DEFAULT_WORKER_QLIB_PYTHON = Path("/home/researcher/miniconda3/envs/rdagent4qlib/bin/python")
 
 
 def run(cmd: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -142,7 +142,7 @@ def resolve_publisher_script() -> Path:
     candidates = [
         REPO_ROOT / "scripts" / "factorforge_data_api.py",
         REPO_ROOT.parent / "factor-factory-data-api" / "scripts" / "factorforge_data_api.py",
-        Path("/home/ubuntu/.openclaw/workspace/factorforge/scripts/factorforge_data_api.py"),
+        Path("/opt/factorforge/workspace/factorforge/scripts/factorforge_data_api.py"),
     ]
     for path in candidates:
         if path.exists():

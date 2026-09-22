@@ -119,6 +119,40 @@ def test_bare_generic_trader_label_and_formula_restatement_still_block() -> None
     assert "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING" in codes
 
 
+def test_derivation_preserves_explicit_reject_evidence_instead_of_forcing_iteration() -> None:
+    memo = {
+        "mechanism_qa": {
+            "metric_signature_answer": "Legacy summary that must not replace observed evidence.",
+            "falsification_answer": "Legacy fallback that must not replace observed evidence.",
+        },
+        "math_hypothesis": {},
+        "economic_hypothesis": {},
+        "formula_component_map": [],
+        "evidence_comparison": {
+            "observed_metrics": {"long_side_sharpe": -0.31},
+            "mechanism_supported": "not_supported_for_current_realization",
+            "contradictions": ["after-cost long side is negative"],
+            "revision_implications": ["Reject and preserve this realization."],
+            "kill_criteria_triggered": [
+                "negative net long-side payoff",
+                "incremental signal unsupported",
+            ],
+        },
+    }
+
+    derivation = formula_specific_derivation_from_main_agent_memo(memo)
+
+    assert derivation["kill_criteria"] == [
+        "negative net long-side payoff",
+        "incremental signal unsupported",
+    ]
+    assert derivation["revision_implication"] == "Reject and preserve this realization."
+    assert '"long_side_sharpe": -0.31' in derivation["observed_metric_comparison"]
+    assert derivation["metric_feedback_to_model"] == derivation[
+        "observed_metric_comparison"
+    ]
+
+
 def test_unqualified_generic_actor_combinations_still_block() -> None:
     for actor in ("traders and investors", "market participants or investors"):
         derivation = deepcopy(_overnight_reversal_derivation())

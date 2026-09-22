@@ -35,10 +35,11 @@ alpha_idea_master
 
 ## Current runner boundary
 
-The bundled runner is now an independent Step 2 controller:
-- it reads `alpha_idea_master`
-- resolves the original PDF path
-- reads Step 1 upstream thesis/report-map artifacts
-- generates primary spec, challenger spec, consistency audit, canonical `factor_spec_master`, and `handoff_to_step3`
-
-It no longer requires pre-existing Step 2 side artifacts for a fresh run.
+The runner consumes approved upstream inputs and materializes the spec/audit/
+handoff through Ultimate. It is not evidence that two independent agents ran.
+For local PDF studies, Step1 references actual agent-authored primary/challenger
+raw specs and an adjudicated canonical core; missing/conflicting inputs block
+rather than generating a generic correlation template. See
+[local-pdf-inputs.md](local-pdf-inputs.md). Non-PDF source adapters retain their
+own contracts and do not need an invented PDF. Agent invocation and substantive
+adjudication remain researcher responsibilities.

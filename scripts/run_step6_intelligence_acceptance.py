@@ -476,8 +476,8 @@ def installed_sync() -> dict[str, Any]:
         installed_root_path = Path(installed_root)
     else:
         candidates = [
-            Path('/Users/humphrey/.codex/skills'),
-            Path('/home/ubuntu/.openclaw/workspace/skills'),
+            Path('/Users/researcher/.codex/skills'),
+            Path('/opt/factorforge/workspace/skills'),
         ]
         installed_root_path = next((p for p in candidates if p.exists()), candidates[0])
     checks = {}

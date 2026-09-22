@@ -19,10 +19,10 @@ if str(REPO_ROOT) not in sys.path:
 from factor_factory.data_access.mutation_guard import require_data_mutation_authority
 
 
-DEFAULT_INSTANCE_ID = 'i-01c0ceb9c04ae270e'
-DEFAULT_REMOTE_ROOT = '/home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取'
-DEFAULT_REMOTE_PYTHON = '/home/ubuntu/miniconda3/envs/rdagent/bin/python'
-DEFAULT_BUCKET = 'yufan-data-lake'
+DEFAULT_INSTANCE_ID = 'i-00000000000000001'
+DEFAULT_REMOTE_ROOT = '/opt/factorforge/workspace/repos/quant_self/tushare数据获取'
+DEFAULT_REMOTE_PYTHON = '/home/researcher/miniconda3/envs/rdagent/bin/python'
+DEFAULT_BUCKET = 'factorforge-example-data'
 DEFAULT_DAILY_KEY = 'tushares/行情数据/daily.csv'
 DEFAULT_DAILY_INCREMENTAL_PREFIX = 'tushares/行情数据/daily_incremental'
 DEFAULT_DAILY_BASIC_PREFIX = 'tushares/行情数据/daily_basic_incremental'

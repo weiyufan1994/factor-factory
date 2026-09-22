@@ -19,7 +19,7 @@ from factor_factory.data_access import (
 from scripts.build_report_qlib_provider import build_source_snapshot, dump_provider
 
 
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 OUTPUT_ROOT = Path(
     os.getenv('FACTORFORGE_ROOT')
     or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT)

@@ -15,6 +15,10 @@ from factor_factory.metric_verifier import (
     VERIFIER_SPEC_VERSION as METRIC_SPEC_VERSION,
     metric_verifier_identities,
 )
+from factor_factory.evo_oos import validate_oos_release_authorization
+from factor_factory.oos_exposure_incident import (
+    oos_exposure_private_registry_guard,
+)
 from factor_factory.research_evidence import (
     resolve_workspace_evidence_path,
     sha256_file,
@@ -26,6 +30,7 @@ from factor_factory.research_obligation_verifier import (
 from factor_factory.research_release import (
     stable_hash,
     validate_evaluation_release_chain,
+    validate_evaluation_release_chain_current,
     validate_observed_oos_window,
     write_oos_release_manifest,
     write_search_trial_ledger,
@@ -128,6 +133,26 @@ def register_threshold(args: argparse.Namespace) -> dict[str, Any]:
 
 def release_oos(args: argparse.Namespace) -> dict[str, Any]:
     root = Path(args.workspace_root).expanduser().resolve(strict=False)
+    trust_root = Path(args.host_trust_root).expanduser().resolve(strict=True)
+    with oos_exposure_private_registry_guard(
+        trust_root,
+        installation_id=args.installation_id,
+    ) as incident_guard:
+        return _release_oos_guarded(
+            args,
+            root=root,
+            trust_root=trust_root,
+            incident_guard=incident_guard,
+        )
+
+
+def _release_oos_guarded(
+    args: argparse.Namespace,
+    *,
+    root: Path,
+    trust_root: Path,
+    incident_guard: object,
+) -> dict[str, Any]:
     panel = Path(args.panel).expanduser().resolve(strict=False)
     spec_path = require_workspace_path(root, args.spec, must_exist=True)
     spec = load_json(spec_path)
@@ -135,6 +160,19 @@ def release_oos(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "BLOCK_FACTORFORGE_RESEARCH_RELEASE_ALREADY_BOUND"
         )
+    authorization_reasons = validate_oos_release_authorization(
+        workspace_root=root,
+        report_id=str(spec.get("report_id") or ""),
+        oos_window=(spec.get("window_contract") or {}).get("oos_window"),
+        sealed_token_sha256=(spec.get("window_contract") or {}).get(
+            "oos_release_token_hash"
+        ),
+        incident_trust_root=trust_root,
+        incident_installation_id=args.installation_id,
+        _incident_guard=incident_guard,
+    )
+    if authorization_reasons:
+        raise ValueError(";".join(authorization_reasons))
     if spec.get("version") == METRIC_SPEC_VERSION:
         identities = metric_verifier_identities(
             workspace_root=root,
@@ -179,10 +217,6 @@ def release_oos(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(
             "BLOCK_FACTORFORGE_RESEARCH_RELEASE_MANIFEST_PATH_INVALID"
         )
-    if output.exists():
-        raise ValueError(
-            "BLOCK_FACTORFORGE_RESEARCH_RELEASE_ALREADY_RELEASED"
-        )
     write_oos_release_manifest(
         output,
         workspace_root=root,
@@ -190,14 +224,20 @@ def release_oos(args: argparse.Namespace) -> dict[str, Any]:
         identities=identities,
         threshold_path=threshold_path,
         release_sequence=args.release_sequence,
+        incident_trust_root=trust_root,
+        incident_installation_id=args.installation_id,
+        _incident_guard=incident_guard,
     )
     threshold_payload = load_json(threshold_path)
-    bindings = validate_evaluation_release_chain(
+    bindings = validate_evaluation_release_chain_current(
         workspace_root=root,
         spec=spec,
         identities=identities,
         threshold_path=threshold_path,
         threshold_payload=threshold_payload,
+        incident_trust_root=trust_root,
+        incident_installation_id=args.installation_id,
+        _incident_guard=incident_guard,
     )
     spec.update(identities)
     write_json_atomic(spec_path, spec)
@@ -239,6 +279,8 @@ def main() -> int:
     release.add_argument("--spec", required=True)
     release.add_argument("--threshold-registration")
     release.add_argument("--release-sequence", type=int, default=30)
+    release.add_argument("--host-trust-root", required=True)
+    release.add_argument("--installation-id", required=True)
     args = parser.parse_args()
     try:
         if args.command == "freeze-search":

@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-ROOT="/home/ubuntu/.openclaw/workspace/repos/quant_self/tushare数据获取"
-PYTHON_BIN="/home/ubuntu/miniconda3/envs/rdagent/bin/python"
-LOG="/home/ubuntu/tushare_logs/nonminute_missing_backfill_20240101_20260421.log"
-PID_FILE="/home/ubuntu/tushare_ec2_daily_self_update.pid"
+ROOT="/opt/factorforge/workspace/repos/quant_self/tushare数据获取"
+PYTHON_BIN="/home/researcher/miniconda3/envs/rdagent/bin/python"
+LOG="/home/researcher/tushare_logs/nonminute_missing_backfill_20240101_20260421.log"
+PID_FILE="/home/researcher/tushare_ec2_daily_self_update.pid"
 
-mkdir -p /home/ubuntu/tushare_logs
+mkdir -p /home/researcher/tushare_logs
 
 if [ -s "$PID_FILE" ]; then
   DAILY_PID="$(cat "$PID_FILE")"

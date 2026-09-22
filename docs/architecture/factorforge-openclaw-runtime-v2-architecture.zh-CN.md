@@ -130,11 +130,11 @@ Step skills 继续负责研究和生成：
 
 ```text
 Mac local repo
-  /Users/humphrey/projects/factor-factory
+  /Users/researcher/projects/factor-factory
   source of reviewed code
 
 OpenClaw EC2
-  /home/ubuntu/.openclaw/workspace/factor-factory-production-v2
+  /opt/factorforge/workspace/factor-factory-production-v2
   runs factorforgectl.py
   hosts OpenClaw PDF tool / LLM interaction
   owns active_run_registry
@@ -151,8 +151,8 @@ Production artifact archive
 旧路径只归档：
 
 ```text
-/home/ubuntu/.openclaw/workspace/archive/factor-factory-production-legacy-<timestamp>
-/home/ubuntu/.openclaw/workspace/archive/factor-forge-skills-legacy-<timestamp>
+/opt/factorforge/workspace/archive/factor-factory-production-legacy-<timestamp>
+/opt/factorforge/workspace/archive/factor-forge-skills-legacy-<timestamp>
 ```
 
 ## 6. 核心数据结构
@@ -178,7 +178,7 @@ Production artifact archive
       "artifact_root": "/var/lib/factorforge/artifacts/kaiyuan_smart_money_RTA_31/20260529T014000Z_kaiyuan_smart_money_RTA_31_5f02b7a0",
       "repo_sha": "af203a9e9f4000c73c62eb4a3785fa3a73b2510b",
       "report_pdf": {
-        "s3_uri": "s3://yufan-data-lake/reports/kaiyuan_smart_money_RTA_31.pdf",
+        "s3_uri": "s3://factorforge-example-data/reports/kaiyuan_smart_money_RTA_31.pdf",
         "sha256": "..."
       },
       "providers": {
@@ -293,7 +293,7 @@ Production artifact archive
     },
     "step3b": {
       "status": "PASS",
-      "worker_instance_id": "i-02cc0b6e93856fbb4",
+      "worker_instance_id": "i-00000000000000002",
       "ssm_command_id": "...",
       "validator_rc": 0
     },
@@ -750,7 +750,7 @@ python3 scripts/factorforgectl.py run-local \
 ```bash
 python3 scripts/factorforgectl.py run-worker \
   --report-id kaiyuan_smart_money_RTA_31 \
-  --worker-instance-id i-02cc0b6e93856fbb4 \
+  --worker-instance-id i-00000000000000002 \
   --start-step 3b \
   --end-step 5
 ```
@@ -760,7 +760,7 @@ python3 scripts/factorforgectl.py run-worker \
 ```bash
 python3 scripts/factorforgectl.py run-all \
   --report-id kaiyuan_smart_money_RTA_31 \
-  --worker-instance-id i-02cc0b6e93856fbb4
+  --worker-instance-id i-00000000000000002
 ```
 
 ### 13.5 status
@@ -818,7 +818,7 @@ Factor Forge run PASS:
 确认：
 
 ```bash
-cd /Users/humphrey/projects/factor-factory
+cd /Users/researcher/projects/factor-factory
 git status --short
 git rev-parse HEAD
 git diff --check
@@ -837,15 +837,15 @@ diff check PASS
 旧目录只移动：
 
 ```text
-/home/ubuntu/.openclaw/workspace/factor-factory-production
-  -> /home/ubuntu/.openclaw/workspace/archive/factor-factory-production-legacy-<timestamp>
+/opt/factorforge/workspace/factor-factory-production
+  -> /opt/factorforge/workspace/archive/factor-factory-production-legacy-<timestamp>
 ```
 
 旧 skill 只移动：
 
 ```text
-/home/ubuntu/.codex/skills/factor-forge-*
-  -> /home/ubuntu/.openclaw/workspace/archive/factor-forge-skills-legacy-<timestamp>/
+/home/researcher/.codex/skills/factor-forge-*
+  -> /opt/factorforge/workspace/archive/factor-forge-skills-legacy-<timestamp>/
 ```
 
 ### 15.3 EC2 clean deploy
@@ -853,7 +853,7 @@ diff check PASS
 新目录：
 
 ```text
-/home/ubuntu/.openclaw/workspace/factor-factory-production-v2
+/opt/factorforge/workspace/factor-factory-production-v2
 ```
 
 部署：

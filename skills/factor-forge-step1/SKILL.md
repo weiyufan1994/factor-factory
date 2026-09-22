@@ -1,6 +1,6 @@
 ---
 name: factor-forge-step1
-description: Run Step 1 of the Factor Factory pipeline — PDF report ingestion, dual-route reading (primary + challenger), chief merge, and canonical alpha_idea_master generation. Triggers when user provides a research report PDF and asks to extract the alpha factor, run the full Step 1 pipeline, or produce an alpha_idea_master object. Requires OpenClaw with google/gemini-3.1-pro-preview available via the pdf tool.
+description: Run Step 1 of the Factor Factory pipeline — PDF report ingestion, dual-route reading (primary + challenger), chief merge, and alpha_idea_master generation. Supports real local agent-authored reading through the selected Factor Forge checkout; OpenClaw/provider tooling is an optional hosted route, not a local prerequisite.
 ---
 
 # Factor Factory Step 1 Skill
@@ -14,10 +14,26 @@ Runs the complete Step 1 pipeline on a single research report PDF:
 3. **Report map + thesis** — both routes produce structured thesis objects
 4. **Diff** — intake_diff and thesis_diff compare primary vs challenger
 5. **Chief merge** — authoritative adjudication producing canonical alpha_idea_master
-6. **Research discipline standardization** — attach the selected mathematical object, target statistic hint, information-set hint, return-source hypothesis, and similar-case lessons
+6. **Research discipline preservation** — retain the chief-authored mathematical object, target statistic, information set, economic hypothesis and explicitly reviewed knowledge lessons; do not generate substitute semantics with a standardizer
 7. **Writeback** — all objects written to workspace; handoff file ready for Step 2
 
 ## Research Discipline
+
+### Source reconstruction versus discovery
+
+Set `research_subject_mode` to `report_replication` for ordinary report-led
+research, `source_extension` for an explicitly separate source-inspired idea,
+or `independent_hypothesis` for a new user hypothesis. Understand the actual
+source before retrieval. In report replication, `final_factor` and its
+components/assembly stay the author's construction, not the most attractive
+new detector. First recover the author's economic and psychological logic;
+then formalize and critique that logic without silently changing its estimator.
+Label source statements, analyst reconstruction assumptions and new inventions
+separately. Missing mechanism evidence stays an identification gap; do not
+fabricate a payer or replace the factor to make the mathematical story neat.
+An alternative estimator belongs to a separately named extension. In independent
+hypothesis mode, no fictional source baseline is required and model search is
+open. These distinctions qualify the model-search instructions below.
 
 Step 1 must not stop at report summary. It must identify:
 - the mathematical object the paper/report is trying to value, estimate,
@@ -71,9 +87,13 @@ The deterministic standardizer/validator is a developer-debug fallback after an 
 
 ## Factor Knowledge Network
 
-Step1 must treat the factor knowledge network as a prior/analogy source. During
-standardization, retrieve graph context from `knowledge/因子工厂/graph` and carry
-it forward under:
+Step1 must treat the factor knowledge network as a prior/analogy source. For an
+Ultimate/S6 new-source route, do not open the graph during the initial source
+reading or source-only standardization. First freeze the source-only
+understanding, source-faithful formalization and blind predictions; only then
+retrieve graph context from `knowledge/因子工厂/graph` and complete the
+knowledge-informed conjecture. For non-S6 routes, retrieve graph context during
+standardization. Carry the resulting context forward under:
 
 - `research_discipline.factor_knowledge_context`
 - `research_discipline.knowledge_reference_contract`
@@ -99,11 +119,38 @@ tool candidates only. They may expand the model-family set but cannot select the
 primary mechanism, override the estimand, or justify a convenient proxy without
 an explicit observation-error contract.
 
-## Prerequisites
+## Local agent-authored route
+
+For local IS research, use the checkout selected by Ultimate and one factor
+workspace. The older OpenClaw examples below describe hosted operation only;
+their provider and absolute paths are not prerequisites for local reading.
+Use real primary/challenger reader sessions and a chief decision. Read and
+adjudicate the source before knowledge consultation. Store original disagreements
+and reconstruction assumptions; do not make readers falsely claim they derived
+the same conventions independently.
+
+Run `scripts/run_factorforge_local_step1.py` in that checkout with
+`--factor-workspace`, `--report-id`, `--source-json`, `--primary-intake`,
+`--challenger-intake`, and `--chief-merge`. See its adjacent
+`tests/test_run_factorforge_local_step1.py` for the input envelopes. The source
+must reference the actual local PDF bytes. The chief must supply the complete
+`research_discipline` and measurement program; the CLI validates and preserves
+them, and must not infer economics/math, call a provider, or retrieve knowledge
+automatically. It preserves explicit downstream code/spec inputs as well.
+
+This is local artifact landing, not independent semantic certification or a
+completed Step2–6 run. Continue through Ultimate `--local-is-only`, not direct
+Step2 scripts. Do not use the debug standardizer to synthesize missing research.
+An already-exposed corrective reconstruction must disclose its prior results,
+source-reported outcomes and knowledge exposure; do not relabel it as blind A0,
+backdate source freezes, or use its knowledge consultation as clean-new-trial
+evidence. A genuinely new-source route still follows the source-first policy.
+
+## Prerequisites (hosted route only)
 
 - OpenClaw environment with `pdf` tool available
 - `google/gemini-3.1-pro-preview` configured as the PDF model
-- factorforge Python package accessible at `/home/ubuntu/.openclaw/workspace/factorforge`
+- factorforge Python package accessible at `/opt/factorforge/workspace/factorforge`
 
 ## How to Run
 
@@ -159,14 +206,14 @@ Save the returned JSON as `challenger_raw.txt`.
 Run the Python pipeline script:
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace/factorforge
+cd /opt/factorforge/workspace/factorforge
 python3 -c "
 import sys; sys.path.insert(0, '.')
 from skills.factor_forge_step1.modules.report_ingestion.orchestration.wiring import build_step1_pipeline
 from skills.factor_forge_step1.modules.report_ingestion.registry.report_registry import ReportRegistry
 from pathlib import Path
 
-project_root = Path('/home/ubuntu/.openclaw/workspace/factorforge')
+project_root = Path('/opt/factorforge/workspace/factorforge')
 report_id = 'YOUR_REPORT_ID'
 
 # Load primary and challenger JSON
@@ -189,7 +236,7 @@ print(result)
 
 After pipeline completes, use the `pdf` tool to run chief merge (feed all context JSON):
 
-Follow the prompt template in `references/chief_merge_prompt.md`.
+Follow the selected checkout's `skills/factor_forge_step1/prompts/step1_chief_merge.md`.
 
 ### Step 1e: Write alpha_idea_master
 
@@ -203,7 +250,7 @@ from pathlib import Path
 
 ## Output Locations
 
-All objects are written under `/home/ubuntu/.openclaw/workspace/factorforge/objects/`:
+All objects are written under `/opt/factorforge/workspace/factorforge/objects/`:
 
 | Object | Path pattern |
 |--------|-------------|
@@ -375,6 +422,12 @@ pretend that Step1 has validated metrics. A deterministic builder may preserve
 the current agent's authored packet, but it may not generate a payer, equation
 or route from a fixed family template and call that research.
 
-Knowledge retrieval occurs before this draft. Record matched cases, rejected
-analogies and cold-start status in the knowledge-reference contract; prior
-cases are priors and counterexample sources, never proof of the current factor.
+For a new source entering through Ultimate's epistemic advisory route, first
+freeze the source-only understanding, source-faithful formalization and blind
+predictions required by
+`skills/factor-forge-ultimate/references/epistemic-advisory-operating-delta-v1.md`.
+Only then run A0 retrieval and complete the knowledge-informed conjecture draft.
+For other current routes, retrieval still occurs before this draft. Record
+matched cases, rejected analogies and cold-start status in the
+knowledge-reference contract; prior cases are priors and counterexample
+sources, never proof of the current factor.

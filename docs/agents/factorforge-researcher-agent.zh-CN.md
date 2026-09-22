@@ -19,11 +19,11 @@ Canonical source：
 
 Mac 本地权威源：
 
-- `/Users/humphrey/projects/factor-factory/objects/factor_library_all/`
-- `/Users/humphrey/projects/factor-factory/objects/factor_library_official/`
-- `/Users/humphrey/projects/factor-factory/objects/research_knowledge_base/`
-- `/Users/humphrey/projects/factor-factory/objects/research_iteration_master/`
-- `/Users/humphrey/projects/factor-factory/objects/research_journal/`
+- `/Users/researcher/projects/factor-factory/objects/factor_library_all/`
+- `/Users/researcher/projects/factor-factory/objects/factor_library_official/`
+- `/Users/researcher/projects/factor-factory/objects/research_knowledge_base/`
+- `/Users/researcher/projects/factor-factory/objects/research_iteration_master/`
+- `/Users/researcher/projects/factor-factory/objects/research_journal/`
 
 EC2 运行缓存：
 
@@ -33,7 +33,7 @@ EC2 运行缓存：
 - `factorforge/objects/research_iteration_master/`
 - `factorforge/objects/research_journal/`
 
-不要在 Mac 上使用 repo-local `/Users/humphrey/projects/factor-factory/factorforge/objects/` 作为新知识入口；它只保留 legacy residue，正式同步走 Mac `objects/` 与 S3 bundle。
+不要在 Mac 上使用 repo-local `/Users/researcher/projects/factor-factory/factorforge/objects/` 作为新知识入口；它只保留 legacy residue，正式同步走 Mac `objects/` 与 S3 bundle。
 
 Human workspace：
 
@@ -83,8 +83,8 @@ Bernard，用 FactorForge Researcher Agent 研究 <report_id/PDF/公式>，走 r
 ## 标准执行骨架
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace  # EC2 重计算时
-# 或 cd /Users/humphrey/projects/factor-factory  # Mac 研究/知识维护时
+cd /opt/factorforge/workspace  # EC2 重计算时
+# 或 cd /Users/researcher/projects/factor-factory  # Mac 研究/知识维护时
 
 python3 skills/factor-forge-researcher/scripts/build_researcher_dossier.py --report-id <report_id>
 python3 skills/factor-forge-step6-researcher/scripts/build_researcher_packet.py --report-id <report_id>
@@ -99,7 +99,7 @@ Obsidian vault 名称：`因子工厂`
 路径：
 
 ```text
-/Users/humphrey/projects/factor-factory/knowledge/因子工厂
+/Users/researcher/projects/factor-factory/knowledge/因子工厂
 ```
 
 必须包含：

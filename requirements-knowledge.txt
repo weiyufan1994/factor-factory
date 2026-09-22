@@ -1,0 +1,2 @@
+# Optional isolated local retrieval environment; research dependencies unchanged.
+sentence-transformers>=5.7,<6

@@ -35,6 +35,15 @@ REVIEW_CONTRACT_VERSION = "factorforge_researcher_memory_review_v1"
 CANONICAL_RECORD_CONTRACT_VERSION = "factorforge_researcher_memory_record_v1"
 OUTCOME_EVENT_CONTRACT_VERSION = "factorforge_researcher_outcome_event_v1"
 STORE_TRANSACTION_CONTRACT_VERSION = "factorforge_researcher_memory_transaction_v1"
+EVO_V2_MEMORY_ADMISSION_CONTRACT_VERSION = (
+    "factorforge_researcher_memory_evo_v2_admission_v1"
+)
+EVO_V2_MEMORY_ADMISSION_RECEIPT_TYPE = (
+    "RESEARCHER_MEMORY_EVO_V2_PAYLOAD_ADMITTED"
+)
+EVO_V2_TRANSFER_USE_CHANGE_RECEIPT_TYPE = (
+    "factorforge_researcher_memory_evo_v2_transfer_use_change_receipt_v1"
+)
 
 BLOCK_MEMORY_ROOT_INVALID = "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_ROOT_INVALID"
 BLOCK_MEMORY_STORE_INVALID = "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_STORE_INVALID"
@@ -43,6 +52,9 @@ BLOCK_MEMORY_CANDIDATE_INVALID = "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_CANDIDATE_
 BLOCK_MEMORY_REVIEW_INVALID = "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_REVIEW_INVALID"
 BLOCK_MEMORY_PROMOTION_FORBIDDEN = "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_PROMOTION_FORBIDDEN"
 BLOCK_MEMORY_WRITE_CONFLICT = "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_WRITE_CONFLICT"
+BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID = (
+    "BLOCK_FACTORFORGE_RESEARCHER_MEMORY_EVO_V2_ADMISSION_INVALID"
+)
 
 MEMORY_KINDS = {
     "economic_mechanism",
@@ -672,6 +684,7 @@ def _source_runtime_provenance_reasons(
             "adapter_build_sha256",
             "container_image_digest",
             "isolation_profile_sha256",
+            "runtime",
             "parent_session_uid",
             "lease_epoch",
         }
@@ -688,6 +701,19 @@ def _source_runtime_provenance_reasons(
         )
     ):
         reasons.append("source_runtime_session")
+    adapter_runtime = (
+        adapter_session.get("runtime")
+        if isinstance(adapter_session.get("runtime"), Mapping)
+        else {}
+    )
+    if adapter_runtime != {
+        "provider": "deepseek",
+        "model": "deepseek/deepseek-v4-flash",
+        "transport": "openclaw_disposable_container",
+        "isolation_class": "container_staged_context",
+        "owned_termination_supported": True,
+    }:
+        reasons.append("source_runtime_execution_profile")
     adapter_bindings = adapter.get("bindings") if isinstance(adapter.get("bindings"), Mapping) else {}
     if (
         set(adapter_bindings)
@@ -4337,3 +4363,1079 @@ def promote_reviewed_candidate(
             "generation": manifest["generation"],
             "idempotent": idempotent,
         }
+
+
+# EVO V2 semantic truth lives exclusively in factor_factory.evo_v2.  The
+# following API is a Host-private persistence envelope: it never redefines an
+# experience, transfer mapping, or use receipt and never grants factor proof.
+_EVO_V2_ADMISSION_AUTHORITY_GUARD = {
+    "semantic_authority": "factor_factory.evo_v2",
+    "payload_mutation_allowed": False,
+    "skill_or_validator_mutation_allowed": False,
+    "threshold_or_oos_mutation_allowed": False,
+    "estimand_or_trial_budget_mutation_allowed": False,
+    "current_factor_proof_authority": False,
+    "canonical_factor_write_authority": False,
+    "host_private_persistence_only": True,
+}
+_EVO_V2_ADMISSION_ROOT_ENTRIES = {
+    _LOCK_NAME,
+    _TEMP_DIR_NAME,
+    "admissions",
+}
+
+
+def _evo_v2_sidecar_layout_reasons(resolved: Path) -> list[str]:
+    reasons: list[str] = []
+    try:
+        root_entries = {path.name for path in resolved.iterdir()}
+    except OSError as exc:
+        return [f"root_read:{exc}"]
+    if root_entries != _EVO_V2_ADMISSION_ROOT_ENTRIES:
+        reasons.append("root_entries")
+    for name in ("admissions", _TEMP_DIR_NAME):
+        path = resolved / name
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            reasons.append(f"{name}_directory:{exc}")
+            continue
+        if (
+            stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or metadata.st_uid != os.geteuid()
+            or stat.S_IMODE(metadata.st_mode) != _PRIVATE_DIR_MODE
+        ):
+            reasons.append(f"{name}_directory")
+    temporary_root = resolved / _TEMP_DIR_NAME
+    try:
+        if any(temporary_root.iterdir()):
+            reasons.append("temporary_directory_not_empty")
+    except OSError as exc:
+        reasons.append(f"temporary_directory:{exc}")
+    return reasons
+
+
+def _evo_v2_workspace_payload(
+    *,
+    workspace: Path,
+    reference: Mapping[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    if not isinstance(reference, Mapping) or set(reference) != {"path", "sha256"}:
+        _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, f"{label}_ref_fields")
+    relative = normalize_workspace_relative_path(
+        reference.get("path"),
+        workspace=workspace,
+        label=label,
+    )
+    path = workspace / relative
+    if (
+        not path.is_file()
+        or path.is_symlink()
+        or sha256_file(path) != reference.get("sha256")
+    ):
+        _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, f"{label}_ref_readback")
+    payload = read_workspace_json(workspace, relative)
+    if not isinstance(payload, dict):
+        _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, f"{label}_object")
+    return payload
+
+
+def _evo_v2_transfer_use_change_receipt_reasons(
+    receipt: Any,
+    *,
+    transfer_bundle: Mapping[str, Any],
+    transfer_receipt: Mapping[str, Any],
+    trust_store: Any,
+    workspace: Path | None,
+    verify_refs: bool,
+) -> list[str]:
+    """Validate actual before/after research changes claimed by transfer use."""
+
+    reasons: list[str] = []
+    if not isinstance(receipt, Mapping):
+        return ["transfer_use_change_receipt_object"]
+    expected_fields = {
+        "contract_version",
+        "authority",
+        "artifact_identity",
+        "transfer_bundle_ref",
+        "transfer_use_receipt_ref",
+        "before_research_plan_ref",
+        "after_research_plan_ref",
+        "question_and_test_diff",
+        "mapping_uses",
+        "protected_contracts",
+        "host_change_attestation",
+        "authority_guard",
+        "change_receipt_sha256",
+    }
+    if set(receipt) != expected_fields:
+        reasons.append("transfer_use_change_receipt_fields")
+    if (
+        receipt.get("contract_version") != EVO_V2_TRANSFER_USE_CHANGE_RECEIPT_TYPE
+        or receipt.get("authority")
+        != "host_attested_question_and_test_change_only"
+        or receipt.get("artifact_identity")
+        != transfer_bundle.get("artifact_identity")
+    ):
+        reasons.append("transfer_use_change_receipt_identity")
+    expected_transfer_bundle_ref = {
+        "path": transfer_receipt.get("transfer_bundle_ref", {}).get("path"),
+        "sha256": transfer_receipt.get("transfer_bundle_ref", {}).get("sha256"),
+    }
+    if (
+        receipt.get("transfer_bundle_ref") != expected_transfer_bundle_ref
+        or receipt.get("transfer_use_receipt_ref")
+        != {
+            "path": (
+                f"objects/research_organization/"
+                f"{transfer_bundle.get('artifact_identity', {}).get('report_id')}"
+                "/evo_v2/transfer_use_receipt.json"
+            ),
+            "sha256": transfer_receipt.get("content_sha256"),
+        }
+    ):
+        reasons.append("transfer_use_change_receipt_core_binding")
+    before_ref = receipt.get("before_research_plan_ref")
+    after_ref = receipt.get("after_research_plan_ref")
+    before_plan: Mapping[str, Any] = {}
+    after_plan: Mapping[str, Any] = {}
+    for label, reference in (("before", before_ref), ("after", after_ref)):
+        if (
+            not isinstance(reference, Mapping)
+            or set(reference) != {"path", "sha256"}
+            or not SHA256_RE.fullmatch(str(reference.get("sha256") or ""))
+        ):
+            reasons.append(f"transfer_use_change_{label}_ref")
+            continue
+        if workspace is not None and verify_refs:
+            try:
+                observed = _evo_v2_workspace_payload(
+                    workspace=workspace,
+                    reference=reference,
+                    label=f"transfer_use_change_{label}",
+                )
+            except ResearchOrganizationError as exc:
+                reasons.extend(exc.reasons)
+            else:
+                if label == "before":
+                    before_plan = observed
+                else:
+                    after_plan = observed
+    diff = receipt.get("question_and_test_diff")
+    if (
+        not isinstance(diff, Mapping)
+        or set(diff)
+        != {
+            "before_sha256",
+            "after_sha256",
+            "added_question_ids",
+            "added_test_ids",
+            "removed_question_ids",
+            "removed_test_ids",
+        }
+        or diff.get("before_sha256") != (before_ref or {}).get("sha256")
+        or diff.get("after_sha256") != (after_ref or {}).get("sha256")
+        or diff.get("before_sha256") == diff.get("after_sha256")
+        or not isinstance(diff.get("added_question_ids"), list)
+        or not isinstance(diff.get("added_test_ids"), list)
+        or not isinstance(diff.get("removed_question_ids"), list)
+        or not isinstance(diff.get("removed_test_ids"), list)
+        or diff.get("removed_question_ids")
+        or diff.get("removed_test_ids")
+        or not (diff.get("added_question_ids") or diff.get("added_test_ids"))
+        or any(
+            not SAFE_ID_RE.fullmatch(str(identifier or ""))
+            for field in ("added_question_ids", "added_test_ids")
+            for identifier in diff.get(field) or []
+        )
+    ):
+        reasons.append("transfer_use_change_diff")
+    if before_plan and after_plan:
+        before_questions = before_plan.get("research_questions")
+        after_questions = after_plan.get("research_questions")
+        before_tests = before_plan.get("registered_tests")
+        after_tests = after_plan.get("registered_tests")
+        if not all(
+            isinstance(items, list)
+            for items in (
+                before_questions,
+                after_questions,
+                before_tests,
+                after_tests,
+            )
+        ):
+            reasons.append("transfer_use_change_plan_shape")
+        else:
+            def ids(items: list[Any], field: str) -> set[str]:
+                output: set[str] = set()
+                for item in items:
+                    if not isinstance(item, Mapping) or set(item) != {field, "text"}:
+                        reasons.append(f"transfer_use_change_plan_{field}_entry")
+                        continue
+                    identifier = str(item.get(field) or "")
+                    if not SAFE_ID_RE.fullmatch(identifier):
+                        reasons.append(f"transfer_use_change_plan_{field}_id")
+                    output.add(identifier)
+                return output
+
+            before_question_ids = ids(before_questions, "question_id")
+            after_question_ids = ids(after_questions, "question_id")
+            before_test_ids = ids(before_tests, "test_id")
+            after_test_ids = ids(after_tests, "test_id")
+            if (
+                sorted(after_question_ids - before_question_ids)
+                != sorted(diff.get("added_question_ids") or [])
+                or sorted(after_test_ids - before_test_ids)
+                != sorted(diff.get("added_test_ids") or [])
+                or before_question_ids - after_question_ids
+                or before_test_ids - after_test_ids
+            ):
+                reasons.append("transfer_use_change_plan_diff_binding")
+    mapping_uses = receipt.get("mapping_uses")
+    expected_uses = transfer_receipt.get("uses") or []
+    if not isinstance(mapping_uses, list) or len(mapping_uses) != len(expected_uses):
+        reasons.append("transfer_use_change_mapping_uses")
+    else:
+        expected_mapping_ids = [str(item.get("mapping_id") or "") for item in expected_uses]
+        observed_mapping_ids: list[str] = []
+        added_question_ids = set((diff or {}).get("added_question_ids") or [])
+        added_test_ids = set((diff or {}).get("added_test_ids") or [])
+        for item in mapping_uses:
+            if (
+                not isinstance(item, Mapping)
+                or set(item)
+                != {
+                    "mapping_id",
+                    "research_effect",
+                    "generated_question_ids",
+                    "generated_test_ids",
+                }
+                or not isinstance(item.get("generated_question_ids"), list)
+                or not isinstance(item.get("generated_test_ids"), list)
+                or not set(item.get("generated_question_ids") or [])
+                <= added_question_ids
+                or not set(item.get("generated_test_ids") or []) <= added_test_ids
+            ):
+                reasons.append("transfer_use_change_mapping_use_entry")
+                continue
+            observed_mapping_ids.append(str(item["mapping_id"]))
+            source_use = next(
+                (
+                    use
+                    for use in expected_uses
+                    if use.get("mapping_id") == item.get("mapping_id")
+                ),
+                None,
+            )
+            if (
+                source_use is None
+                or item.get("research_effect") != source_use.get("research_effect")
+                or (
+                    source_use.get("changed_research_question_or_test") is True
+                    and not (
+                        item.get("generated_question_ids")
+                        or item.get("generated_test_ids")
+                    )
+                )
+                or (
+                    source_use.get("generated_test_id")
+                    not in (item.get("generated_test_ids") or [])
+                )
+            ):
+                reasons.append("transfer_use_change_mapping_use_binding")
+        if observed_mapping_ids != expected_mapping_ids:
+            reasons.append("transfer_use_change_mapping_order")
+    protected = receipt.get("protected_contracts")
+    if (
+        not isinstance(protected, Mapping)
+        or set(protected)
+        != {
+            "skill_sha256",
+            "validator_sha256",
+            "thresholds_sha256",
+            "oos_policy_sha256",
+            "estimand_sha256",
+            "trial_budget_sha256",
+            "unchanged",
+        }
+        or protected.get("unchanged") is not True
+        or any(
+            not SHA256_RE.fullmatch(str(protected.get(field) or ""))
+            for field in set(protected) - {"unchanged"}
+        )
+    ):
+        reasons.append("transfer_use_change_protected_contracts")
+    host_attestation = receipt.get("host_change_attestation")
+    if trust_store is None or not hasattr(trust_store, "verify"):
+        reasons.append("transfer_use_change_trust_store")
+    elif not isinstance(host_attestation, Mapping):
+        reasons.append("transfer_use_change_host_attestation")
+    else:
+        reasons.extend(
+            f"transfer_use_change_signature:{reason}"
+            for reason in trust_store.verify(
+                host_attestation,
+                expected_issuer="host_admission",
+            )
+        )
+        if (
+            host_attestation.get("receipt_type")
+            != "RESEARCHER_MEMORY_EVO_V2_TRANSFER_USE_CHANGE_ADMITTED"
+            or host_attestation.get("identity")
+            != transfer_bundle.get("artifact_identity")
+            or host_attestation.get("bindings")
+            != {
+                "transfer_bundle_ref": receipt.get("transfer_bundle_ref"),
+                "transfer_use_receipt_ref": receipt.get(
+                    "transfer_use_receipt_ref"
+                ),
+                "before_research_plan_ref": before_ref,
+                "after_research_plan_ref": after_ref,
+                "question_and_test_diff": diff,
+                "mapping_uses": mapping_uses,
+                "protected_contracts": protected,
+            }
+            or host_attestation.get("outcome")
+            != {
+                "change_verified": True,
+                "question_and_test_change_only": True,
+                "current_factor_proof_authority": False,
+                "canonical_memory_write_authority": False,
+            }
+        ):
+            reasons.append("transfer_use_change_host_binding")
+    if receipt.get("authority_guard") != {
+        "actual_before_after_readback_required": True,
+        "protected_contracts_unchanged": True,
+        "current_factor_proof_authority": False,
+        "canonical_memory_write_authority": False,
+    }:
+        reasons.append("transfer_use_change_authority_guard")
+    reasons.extend(
+        validate_content_hash(
+            receipt,
+            hash_field="change_receipt_sha256",
+            label="evo_v2_transfer_use_change_receipt",
+        )
+    )
+    if _contains_absolute_path(receipt):
+        reasons.append("transfer_use_change_absolute_path")
+    return list(dict.fromkeys(reasons))
+
+
+def build_evo_v2_transfer_use_change_receipt(
+    *,
+    workspace: Path,
+    transfer_bundle: Mapping[str, Any],
+    transfer_receipt: Mapping[str, Any],
+    before_research_plan_ref: Mapping[str, Any],
+    after_research_plan_ref: Mapping[str, Any],
+    mapping_uses: Sequence[Mapping[str, Any]],
+    protected_contracts: Mapping[str, Any],
+    trust_store: Any,
+) -> dict[str, Any]:
+    """Host-attest exact question/test changes and protected-hash invariance."""
+
+    workspace = Path(workspace).expanduser().resolve(strict=True)
+    before_plan = _evo_v2_workspace_payload(
+        workspace=workspace,
+        reference=before_research_plan_ref,
+        label="before_research_plan",
+    )
+    after_plan = _evo_v2_workspace_payload(
+        workspace=workspace,
+        reference=after_research_plan_ref,
+        label="after_research_plan",
+    )
+    def plan_ids(plan: Mapping[str, Any], list_field: str, id_field: str) -> set[str]:
+        values = plan.get(list_field)
+        if not isinstance(values, list):
+            _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, f"{list_field}_list")
+        return {
+            str(item.get(id_field) or "")
+            for item in values
+            if isinstance(item, Mapping)
+        }
+
+    before_questions = plan_ids(before_plan, "research_questions", "question_id")
+    after_questions = plan_ids(after_plan, "research_questions", "question_id")
+    before_tests = plan_ids(before_plan, "registered_tests", "test_id")
+    after_tests = plan_ids(after_plan, "registered_tests", "test_id")
+    diff = {
+        "before_sha256": before_research_plan_ref.get("sha256"),
+        "after_sha256": after_research_plan_ref.get("sha256"),
+        "added_question_ids": sorted(after_questions - before_questions),
+        "added_test_ids": sorted(after_tests - before_tests),
+        "removed_question_ids": sorted(before_questions - after_questions),
+        "removed_test_ids": sorted(before_tests - after_tests),
+    }
+    transfer_bundle_ref = dict(transfer_receipt.get("transfer_bundle_ref") or {})
+    transfer_use_receipt_ref = {
+        "path": (
+            f"objects/research_organization/"
+            f"{transfer_bundle.get('artifact_identity', {}).get('report_id')}"
+            "/evo_v2/transfer_use_receipt.json"
+        ),
+        "sha256": transfer_receipt.get("content_sha256"),
+    }
+    host_attestation = trust_store.sign(
+        "host_admission",
+        {
+            "receipt_type": (
+                "RESEARCHER_MEMORY_EVO_V2_TRANSFER_USE_CHANGE_ADMITTED"
+            ),
+            "identity": dict(transfer_bundle.get("artifact_identity") or {}),
+            "bindings": {
+                "transfer_bundle_ref": transfer_bundle_ref,
+                "transfer_use_receipt_ref": transfer_use_receipt_ref,
+                "before_research_plan_ref": dict(before_research_plan_ref),
+                "after_research_plan_ref": dict(after_research_plan_ref),
+                "question_and_test_diff": diff,
+                "mapping_uses": [dict(item) for item in mapping_uses],
+                "protected_contracts": dict(protected_contracts),
+            },
+            "outcome": {
+                "change_verified": True,
+                "question_and_test_change_only": True,
+                "current_factor_proof_authority": False,
+                "canonical_memory_write_authority": False,
+            },
+        },
+    )
+    change_receipt = with_content_hash(
+        {
+            "contract_version": EVO_V2_TRANSFER_USE_CHANGE_RECEIPT_TYPE,
+            "authority": "host_attested_question_and_test_change_only",
+            "artifact_identity": dict(transfer_bundle.get("artifact_identity") or {}),
+            "transfer_bundle_ref": transfer_bundle_ref,
+            "transfer_use_receipt_ref": transfer_use_receipt_ref,
+            "before_research_plan_ref": dict(before_research_plan_ref),
+            "after_research_plan_ref": dict(after_research_plan_ref),
+            "question_and_test_diff": diff,
+            "mapping_uses": [dict(item) for item in mapping_uses],
+            "protected_contracts": dict(protected_contracts),
+            "host_change_attestation": host_attestation,
+            "authority_guard": {
+                "actual_before_after_readback_required": True,
+                "protected_contracts_unchanged": True,
+                "current_factor_proof_authority": False,
+                "canonical_memory_write_authority": False,
+            },
+        },
+        hash_field="change_receipt_sha256",
+    )
+    reasons = _evo_v2_transfer_use_change_receipt_reasons(
+        change_receipt,
+        transfer_bundle=transfer_bundle,
+        transfer_receipt=transfer_receipt,
+        trust_store=trust_store,
+        workspace=workspace,
+        verify_refs=True,
+    )
+    if reasons:
+        _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, *reasons)
+    return change_receipt
+
+
+def validate_evo_v2_memory_admission(
+    admission: Any,
+    *,
+    trust_store: Any,
+    workspace: Path | None = None,
+    verify_refs: bool = True,
+) -> list[str]:
+    """Validate an EVO V2 persistence envelope against the core contracts."""
+
+    from factor_factory.evo_v2 import (
+        EXPERIENCE_TRANSFER_BUNDLE_VERSION,
+        TRANSFER_USE_RECEIPT_VERSION,
+        evo_v2_relative_paths,
+        validate_experience_transfer_bundle,
+        validate_transfer_use_receipt,
+    )
+    from factor_factory.researcher_memory_review import (
+        build_evo_v2_memory_review_projection,
+        validate_evo_v2_memory_review_decision,
+    )
+
+    if not isinstance(admission, Mapping):
+        return [f"{BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID}:object"]
+    expected_fields = {
+        "contract_version",
+        "admission_id",
+        "state",
+        "authority",
+        "artifact_identity",
+        "experience_transfer_bundle_ref",
+        "transfer_use_receipt_ref",
+        "core_payloads",
+        "admitted_experience_ids",
+        "review_gate",
+        "authority_guard",
+        "host_admission_receipt",
+        "admission_sha256",
+    }
+    reasons: list[str] = []
+    if set(admission) != expected_fields:
+        reasons.append("fields")
+    if admission.get("contract_version") != EVO_V2_MEMORY_ADMISSION_CONTRACT_VERSION:
+        reasons.append("contract_version")
+    if admission.get("state") != "host_private_admitted_historical_advisory":
+        reasons.append("state")
+    if admission.get("authority") != "core_evo_v2_payload_only":
+        reasons.append("authority")
+    if admission.get("authority_guard") != _EVO_V2_ADMISSION_AUTHORITY_GUARD:
+        reasons.append("authority_guard")
+    core_payloads = admission.get("core_payloads")
+    if not isinstance(core_payloads, Mapping) or set(core_payloads) != {
+        "experience_transfer_bundle",
+        "transfer_use_receipt",
+    }:
+        reasons.append("core_payloads_fields")
+        core_payloads = {}
+    transfer_bundle = core_payloads.get("experience_transfer_bundle")
+    transfer_receipt = core_payloads.get("transfer_use_receipt")
+    if not isinstance(transfer_bundle, Mapping):
+        reasons.append("experience_transfer_bundle_object")
+        transfer_bundle = {}
+    if not isinstance(transfer_receipt, Mapping):
+        reasons.append("transfer_use_receipt_object")
+        transfer_receipt = {}
+    if transfer_bundle.get("contract_version") != EXPERIENCE_TRANSFER_BUNDLE_VERSION:
+        reasons.append("experience_transfer_bundle_contract")
+    if transfer_receipt.get("contract_version") != TRANSFER_USE_RECEIPT_VERSION:
+        reasons.append("transfer_use_receipt_contract")
+    reasons.extend(
+        f"core_experience_transfer_bundle:{reason}"
+        for reason in validate_experience_transfer_bundle(
+            transfer_bundle,
+            workspace_root=workspace,
+            verify_refs=verify_refs,
+        )
+    )
+    reasons.extend(
+        f"core_transfer_use_receipt:{reason}"
+        for reason in validate_transfer_use_receipt(
+            transfer_receipt,
+            transfer_bundle=transfer_bundle,
+            workspace_root=workspace,
+            verify_refs=verify_refs,
+        )
+    )
+    identity = transfer_bundle.get("artifact_identity")
+    if (
+        admission.get("artifact_identity") != identity
+        or transfer_receipt.get("artifact_identity") != identity
+    ):
+        reasons.append("artifact_identity_binding")
+    report_id = str((identity or {}).get("report_id") or "")
+    try:
+        expected_paths = evo_v2_relative_paths(report_id)
+    except Exception:
+        expected_paths = {}
+        reasons.append("report_id")
+    bundle_ref = admission.get("experience_transfer_bundle_ref")
+    receipt_ref = admission.get("transfer_use_receipt_ref")
+    for label, reference, expected_path in (
+        (
+            "experience_transfer_bundle",
+            bundle_ref,
+            expected_paths.get("experience_transfer_bundle"),
+        ),
+        (
+            "transfer_use_receipt",
+            receipt_ref,
+            expected_paths.get("transfer_use_receipt"),
+        ),
+    ):
+        if (
+            not isinstance(reference, Mapping)
+            or set(reference) != {"path", "sha256"}
+            or reference.get("path") != expected_path
+            or not SHA256_RE.fullmatch(str(reference.get("sha256") or ""))
+        ):
+            reasons.append(f"{label}_ref")
+    if workspace is not None and verify_refs:
+        try:
+            observed_bundle = _evo_v2_workspace_payload(
+                workspace=workspace,
+                reference=bundle_ref if isinstance(bundle_ref, Mapping) else {},
+                label="experience_transfer_bundle",
+            )
+            observed_receipt = _evo_v2_workspace_payload(
+                workspace=workspace,
+                reference=receipt_ref if isinstance(receipt_ref, Mapping) else {},
+                label="transfer_use_receipt",
+            )
+        except ResearchOrganizationError as exc:
+            reasons.extend(exc.reasons)
+        else:
+            if observed_bundle != transfer_bundle:
+                reasons.append("experience_transfer_bundle_payload_binding")
+            if observed_receipt != transfer_receipt:
+                reasons.append("transfer_use_receipt_payload_binding")
+    experiences = transfer_bundle.get("experiences")
+    expected_experience_ids = (
+        [str(item.get("experience_id") or "") for item in experiences]
+        if isinstance(experiences, list)
+        and all(isinstance(item, Mapping) for item in experiences)
+        else []
+    )
+    if admission.get("admitted_experience_ids") != expected_experience_ids:
+        reasons.append("admitted_experience_ids")
+    review_gate = admission.get("review_gate")
+    if not isinstance(review_gate, Mapping) or set(review_gate) != {
+        "decision_receipt",
+        "cold_start_search_receipt_ref",
+        "cold_start_search_receipt",
+        "transfer_use_change_receipt",
+    }:
+        reasons.append("review_gate_fields")
+        review_gate = {}
+    decision_receipt = review_gate.get("decision_receipt")
+    cold_start_search_receipt_ref = review_gate.get(
+        "cold_start_search_receipt_ref"
+    )
+    cold_start_search_receipt = review_gate.get("cold_start_search_receipt")
+    transfer_use_change_receipt = review_gate.get(
+        "transfer_use_change_receipt"
+    )
+    review_projection: Mapping[str, Any] = {}
+    try:
+        review_projection = build_evo_v2_memory_review_projection(
+            experience_transfer_bundle=transfer_bundle,
+            transfer_use_receipt=transfer_receipt,
+            experience_transfer_bundle_ref=(
+                bundle_ref if isinstance(bundle_ref, Mapping) else {}
+            ),
+            transfer_use_receipt_ref=(
+                receipt_ref if isinstance(receipt_ref, Mapping) else {}
+            ),
+            trust_store=trust_store,
+            source_workspace=(workspace if verify_refs else None),
+            cold_start_search_receipt_ref=(
+                cold_start_search_receipt_ref
+                if isinstance(cold_start_search_receipt_ref, Mapping)
+                else None
+            ),
+            cold_start_search_receipt=(
+                cold_start_search_receipt
+                if isinstance(cold_start_search_receipt, Mapping)
+                else None
+            ),
+        )
+    except (ResearchOrganizationError, KeyError, TypeError, ValueError) as exc:
+        detail = exc.token if isinstance(exc, ResearchOrganizationError) else type(exc).__name__
+        reasons.append(f"review_projection:{detail}")
+    else:
+        reasons.extend(
+            f"review_decision:{reason}"
+            for reason in validate_evo_v2_memory_review_decision(
+                decision_receipt,
+                projection=review_projection,
+                trust_store=trust_store,
+            )
+        )
+    cold_start = (
+        isinstance(transfer_bundle.get("retrieval_policy"), Mapping)
+        and transfer_bundle["retrieval_policy"].get("memory_state")
+        == "COLD_START_NO_ADMISSIBLE_MEMORY"
+    )
+    if cold_start:
+        if transfer_use_change_receipt is not None:
+            reasons.append("transfer_use_change_receipt_for_cold_start")
+    else:
+        reasons.extend(
+            f"transfer_use_change:{reason}"
+            for reason in _evo_v2_transfer_use_change_receipt_reasons(
+                transfer_use_change_receipt,
+                transfer_bundle=transfer_bundle,
+                transfer_receipt=transfer_receipt,
+                trust_store=trust_store,
+                workspace=workspace,
+                verify_refs=verify_refs,
+            )
+        )
+    host_receipt = admission.get("host_admission_receipt")
+    host_receipt_reasons: list[str] = []
+    if trust_store is None or not hasattr(trust_store, "verify"):
+        host_receipt_reasons.append("host_admission_trust_store")
+    elif not isinstance(host_receipt, Mapping):
+        host_receipt_reasons.append("host_admission_receipt_object")
+    else:
+        host_receipt_reasons.extend(
+            trust_store.verify(
+                host_receipt,
+                expected_issuer="host_admission",
+            )
+        )
+        if (
+            set(host_receipt)
+            != {
+                "contract_version",
+                "receipt_type",
+                "identity",
+                "bindings",
+                "outcome",
+                "issuer",
+                "receipt_id",
+                "signature",
+            }
+            or host_receipt.get("receipt_type")
+            != EVO_V2_MEMORY_ADMISSION_RECEIPT_TYPE
+            or host_receipt.get("identity") != identity
+            or host_receipt.get("bindings")
+            != {
+                "experience_transfer_bundle_ref": bundle_ref,
+                "experience_transfer_bundle_content_sha256": transfer_bundle.get(
+                    "content_sha256"
+                ),
+                "transfer_use_receipt_ref": receipt_ref,
+                "transfer_use_receipt_content_sha256": transfer_receipt.get(
+                    "content_sha256"
+                ),
+                "admitted_experience_ids": expected_experience_ids,
+                "review_projection_sha256": review_projection.get(
+                    "projection_sha256"
+                ),
+                "review_decision_sha256": (
+                    decision_receipt.get("decision_sha256")
+                    if isinstance(decision_receipt, Mapping)
+                    else None
+                ),
+                "reviewer_adapter_completion_receipt_id": (
+                    (
+                        (decision_receipt.get("runtime_evidence") or {}).get(
+                            "adapter_completion_receipt"
+                        )
+                        or {}
+                    ).get("receipt_id")
+                    if isinstance(decision_receipt, Mapping)
+                    else None
+                ),
+                "reviewer_session_id": (
+                    (decision_receipt.get("reviewer") or {}).get(
+                        "reviewer_session_id"
+                    )
+                    if isinstance(decision_receipt, Mapping)
+                    else None
+                ),
+                "reviewer_runtime_instance_id": (
+                    (decision_receipt.get("reviewer") or {}).get(
+                        "runtime_instance_id"
+                    )
+                    if isinstance(decision_receipt, Mapping)
+                    else None
+                ),
+                "cold_start_search_receipt_id": (
+                    cold_start_search_receipt.get("receipt_id")
+                    if isinstance(cold_start_search_receipt, Mapping)
+                    else None
+                ),
+                "transfer_use_change_receipt_sha256": (
+                    transfer_use_change_receipt.get("change_receipt_sha256")
+                    if isinstance(transfer_use_change_receipt, Mapping)
+                    else None
+                ),
+            }
+            or host_receipt.get("outcome")
+            != {
+                "state": "host_private_admitted_historical_advisory",
+                "authority": "core_evo_v2_payload_only",
+                "review_gate": "RUNTIME_ATTESTED_PASS",
+                "current_factor_proof_authority": False,
+                "canonical_factor_write_authority": False,
+            }
+        ):
+            host_receipt_reasons.append("host_admission_receipt_binding")
+    reasons.extend(host_receipt_reasons)
+    core = {
+        key: value
+        for key, value in admission.items()
+        if key not in {"contract_version", "admission_id", "admission_sha256"}
+    }
+    if admission.get("admission_id") != f"evo2_admission_{stable_json_hash(core)[:24]}":
+        reasons.append("admission_id_content_binding")
+    if _contains_absolute_path(admission):
+        reasons.append("absolute_path_disclosure")
+    reasons.extend(
+        validate_content_hash(
+            admission,
+            hash_field="admission_sha256",
+            label="evo_v2_memory_admission",
+        )
+    )
+    return [f"{BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID}:{reason}" for reason in reasons]
+
+
+def build_evo_v2_memory_admission(
+    *,
+    workspace: Path,
+    experience_transfer_bundle_ref: Mapping[str, Any],
+    transfer_use_receipt_ref: Mapping[str, Any],
+    review_decision_receipt: Mapping[str, Any],
+    trust_store: Any,
+    cold_start_search_receipt_ref: Mapping[str, Any] | None = None,
+    cold_start_search_receipt: Mapping[str, Any] | None = None,
+    transfer_use_change_receipt: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    workspace = Path(workspace).expanduser().resolve(strict=True)
+    transfer_bundle = _evo_v2_workspace_payload(
+        workspace=workspace,
+        reference=experience_transfer_bundle_ref,
+        label="experience_transfer_bundle",
+    )
+    transfer_receipt = _evo_v2_workspace_payload(
+        workspace=workspace,
+        reference=transfer_use_receipt_ref,
+        label="transfer_use_receipt",
+    )
+    experiences = transfer_bundle.get("experiences") or []
+    admitted_experience_ids = [
+        str(item.get("experience_id") or "")
+        for item in experiences
+        if isinstance(item, Mapping)
+    ]
+    from factor_factory.researcher_memory_review import (
+        build_evo_v2_memory_review_projection,
+        validate_evo_v2_memory_review_decision,
+    )
+
+    review_projection = build_evo_v2_memory_review_projection(
+        experience_transfer_bundle=transfer_bundle,
+        transfer_use_receipt=transfer_receipt,
+        experience_transfer_bundle_ref=experience_transfer_bundle_ref,
+        transfer_use_receipt_ref=transfer_use_receipt_ref,
+        trust_store=trust_store,
+        source_workspace=workspace,
+        cold_start_search_receipt_ref=cold_start_search_receipt_ref,
+        cold_start_search_receipt=cold_start_search_receipt,
+    )
+    review_reasons = validate_evo_v2_memory_review_decision(
+        review_decision_receipt,
+        projection=review_projection,
+        trust_store=trust_store,
+    )
+    if review_reasons:
+        _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, *review_reasons)
+    cold_start = (
+        transfer_bundle.get("retrieval_policy", {}).get("memory_state")
+        == "COLD_START_NO_ADMISSIBLE_MEMORY"
+    )
+    if cold_start:
+        if transfer_use_change_receipt is not None:
+            _raise(
+                BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID,
+                "transfer_use_change_receipt_for_cold_start",
+            )
+    else:
+        change_reasons = _evo_v2_transfer_use_change_receipt_reasons(
+            transfer_use_change_receipt,
+            transfer_bundle=transfer_bundle,
+            transfer_receipt=transfer_receipt,
+            trust_store=trust_store,
+            workspace=workspace,
+            verify_refs=True,
+        )
+        if change_reasons:
+            _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, *change_reasons)
+    if trust_store is None or not hasattr(trust_store, "sign"):
+        _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, "host_admission_trust_store")
+    host_admission_receipt = trust_store.sign(
+        "host_admission",
+        {
+            "receipt_type": EVO_V2_MEMORY_ADMISSION_RECEIPT_TYPE,
+            "identity": dict(transfer_bundle.get("artifact_identity") or {}),
+            "bindings": {
+                "experience_transfer_bundle_ref": dict(
+                    experience_transfer_bundle_ref
+                ),
+                "experience_transfer_bundle_content_sha256": transfer_bundle.get(
+                    "content_sha256"
+                ),
+                "transfer_use_receipt_ref": dict(transfer_use_receipt_ref),
+                "transfer_use_receipt_content_sha256": transfer_receipt.get(
+                    "content_sha256"
+                ),
+                "admitted_experience_ids": admitted_experience_ids,
+                "review_projection_sha256": review_projection[
+                    "projection_sha256"
+                ],
+                "review_decision_sha256": review_decision_receipt[
+                    "decision_sha256"
+                ],
+                "reviewer_adapter_completion_receipt_id": (
+                    review_decision_receipt["runtime_evidence"][
+                        "adapter_completion_receipt"
+                    ]["receipt_id"]
+                ),
+                "reviewer_session_id": review_decision_receipt["reviewer"][
+                    "reviewer_session_id"
+                ],
+                "reviewer_runtime_instance_id": review_decision_receipt[
+                    "reviewer"
+                ]["runtime_instance_id"],
+                "cold_start_search_receipt_id": (
+                    cold_start_search_receipt.get("receipt_id")
+                    if isinstance(cold_start_search_receipt, Mapping)
+                    else None
+                ),
+                "transfer_use_change_receipt_sha256": (
+                    transfer_use_change_receipt.get("change_receipt_sha256")
+                    if isinstance(transfer_use_change_receipt, Mapping)
+                    else None
+                ),
+            },
+            "outcome": {
+                "state": "host_private_admitted_historical_advisory",
+                "authority": "core_evo_v2_payload_only",
+                "review_gate": "RUNTIME_ATTESTED_PASS",
+                "current_factor_proof_authority": False,
+                "canonical_factor_write_authority": False,
+            },
+        },
+    )
+    core = {
+        "state": "host_private_admitted_historical_advisory",
+        "authority": "core_evo_v2_payload_only",
+        "artifact_identity": dict(transfer_bundle.get("artifact_identity") or {}),
+        "experience_transfer_bundle_ref": dict(experience_transfer_bundle_ref),
+        "transfer_use_receipt_ref": dict(transfer_use_receipt_ref),
+        "core_payloads": {
+            "experience_transfer_bundle": dict(transfer_bundle),
+            "transfer_use_receipt": dict(transfer_receipt),
+        },
+        "admitted_experience_ids": admitted_experience_ids,
+        "review_gate": {
+            "decision_receipt": dict(review_decision_receipt),
+            "cold_start_search_receipt_ref": (
+                dict(cold_start_search_receipt_ref)
+                if isinstance(cold_start_search_receipt_ref, Mapping)
+                else None
+            ),
+            "cold_start_search_receipt": (
+                dict(cold_start_search_receipt)
+                if isinstance(cold_start_search_receipt, Mapping)
+                else None
+            ),
+            "transfer_use_change_receipt": (
+                dict(transfer_use_change_receipt)
+                if isinstance(transfer_use_change_receipt, Mapping)
+                else None
+            ),
+        },
+        "authority_guard": dict(_EVO_V2_ADMISSION_AUTHORITY_GUARD),
+        "host_admission_receipt": host_admission_receipt,
+    }
+    admission = with_content_hash(
+        {
+            "contract_version": EVO_V2_MEMORY_ADMISSION_CONTRACT_VERSION,
+            "admission_id": f"evo2_admission_{stable_json_hash(core)[:24]}",
+            **core,
+        },
+        hash_field="admission_sha256",
+    )
+    reasons = validate_evo_v2_memory_admission(
+        admission,
+        trust_store=trust_store,
+        workspace=workspace,
+        verify_refs=True,
+    )
+    if reasons:
+        _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, *reasons)
+    return admission
+
+
+def persist_evo_v2_memory_admission(
+    *,
+    root: Path,
+    admission: Mapping[str, Any],
+    repo_root: Path,
+    workspace: Path,
+    trust_store: Any,
+) -> dict[str, Any]:
+    """Persist one immutable envelope in a v1-disjoint Host-private sidecar."""
+
+    resolved = _assert_private_root(
+        root,
+        repo_root=repo_root,
+        workspace=workspace,
+        create=True,
+    )
+    reasons = validate_evo_v2_memory_admission(
+        admission,
+        trust_store=trust_store,
+        workspace=workspace,
+        verify_refs=True,
+    )
+    if reasons:
+        _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, *reasons)
+    _ensure_private_directory(resolved, "admissions")
+    _ensure_private_directory(resolved, _TEMP_DIR_NAME)
+    relative = f"admissions/{admission['admission_id']}.json"
+    with _store_lock(resolved):
+        layout_reasons = _evo_v2_sidecar_layout_reasons(resolved)
+        if layout_reasons:
+            _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, *layout_reasons)
+        path, written = _atomic_store_json(
+            resolved,
+            relative,
+            admission,
+            replace=False,
+        )
+        observed = _read_store_json(resolved, relative)
+        if observed != admission:
+            _raise(BLOCK_MEMORY_WRITE_CONFLICT, "evo_v2_admission_readback")
+    return {
+        "admission_id": admission["admission_id"],
+        "admission_sha256": admission["admission_sha256"],
+        "relative_path": relative,
+        "file_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        "written": written,
+        "semantic_authority": "factor_factory.evo_v2",
+    }
+
+
+def load_evo_v2_memory_admissions(
+    *,
+    root: Path,
+    repo_root: Path,
+    trust_store: Any,
+    source_workspace: Path | None = None,
+) -> list[dict[str, Any]]:
+    resolved = _assert_private_root(
+        root,
+        repo_root=repo_root,
+        workspace=source_workspace,
+        create=False,
+    )
+    with _store_lock(resolved, create=False):
+        layout_reasons = _evo_v2_sidecar_layout_reasons(resolved)
+        if layout_reasons:
+            _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, *layout_reasons)
+        admission_root = resolved / "admissions"
+        admissions: list[dict[str, Any]] = []
+        for path in sorted(admission_root.iterdir(), key=lambda item: item.name):
+            if (
+                not path.is_file()
+                or path.is_symlink()
+                or not re.fullmatch(r"evo2_admission_[0-9a-f]{24}\.json", path.name)
+            ):
+                _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, "admission_file")
+            relative = path.relative_to(resolved).as_posix()
+            admission = _read_store_json(resolved, relative)
+            reasons = validate_evo_v2_memory_admission(
+                admission,
+                trust_store=trust_store,
+                workspace=source_workspace,
+                verify_refs=source_workspace is not None,
+            )
+            if reasons:
+                _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, *reasons)
+            if path.name != f"{admission['admission_id']}.json":
+                _raise(BLOCK_MEMORY_EVO_V2_ADMISSION_INVALID, "admission_path_binding")
+            admissions.append(admission)
+    return admissions

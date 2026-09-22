@@ -61,6 +61,113 @@ def _canonical_bytes(payload: Mapping[str, Any]) -> bytes:
         ) from exc
 
 
+def validate_public_trust_manifest(manifest: Any) -> list[str]:
+    """Validate the public half of a research-runtime trust store.
+
+    The manifest is safe to project into a factor workspace.  It does not grant
+    authority by itself; formal callers still bind it to the Host-private
+    runtime ledger.  This validator exists so downstream artifacts can verify
+    signatures without ever loading a private key.
+    """
+
+    reasons: list[str] = []
+    fields = {"contract_version", "installation_id", "keys", "manifest_sha256"}
+    if not isinstance(manifest, dict) or set(manifest) != fields:
+        return ["trust_manifest.fields"]
+    if manifest.get("contract_version") != TRUST_MANIFEST_CONTRACT_VERSION:
+        reasons.append("trust_manifest.contract_version")
+    if not _SAFE_INSTALLATION_ID.fullmatch(str(manifest.get("installation_id") or "")):
+        reasons.append("trust_manifest.installation_id")
+    keys = manifest.get("keys")
+    expected_kinds = {"runtime_adapter", "host_admission"}
+    if not isinstance(keys, dict) or set(keys) != expected_kinds:
+        reasons.append("trust_manifest.keys")
+        keys = {}
+    for issuer_kind in sorted(expected_kinds):
+        key = keys.get(issuer_kind)
+        if (
+            not isinstance(key, dict)
+            or set(key) != {"algorithm", "key_id", "public_key_b64"}
+            or key.get("algorithm") != "Ed25519"
+        ):
+            reasons.append(f"trust_manifest.key:{issuer_kind}")
+            continue
+        try:
+            raw = base64.b64decode(str(key.get("public_key_b64") or ""), validate=True)
+        except (ValueError, TypeError):
+            raw = b""
+        if (
+            len(raw) != 32
+            or key.get("key_id") != hashlib.sha256(raw).hexdigest()
+        ):
+            reasons.append(f"trust_manifest.key_material:{issuer_kind}")
+    unsigned = dict(manifest)
+    digest = unsigned.pop("manifest_sha256", None)
+    if digest != stable_json_hash(unsigned):
+        reasons.append("trust_manifest.manifest_sha256")
+    return list(dict.fromkeys(reasons))
+
+
+def verify_signed_receipt_with_manifest(
+    receipt: Any,
+    *,
+    trust_manifest: Any,
+    expected_issuer: str,
+) -> list[str]:
+    """Verify a signed runtime receipt from only its public trust manifest."""
+
+    reasons = validate_public_trust_manifest(trust_manifest)
+    if expected_issuer not in {"runtime_adapter", "host_admission"}:
+        return [*reasons, "signed_receipt.expected_issuer"]
+    if not isinstance(receipt, dict):
+        return [*reasons, "signed_receipt.object_required"]
+    if receipt.get("contract_version") != SIGNED_RECEIPT_CONTRACT_VERSION:
+        reasons.append("signed_receipt.contract_version")
+    keys = trust_manifest.get("keys") if isinstance(trust_manifest, dict) else {}
+    key = keys.get(expected_issuer) if isinstance(keys, dict) else None
+    issuer = receipt.get("issuer") if isinstance(receipt.get("issuer"), dict) else {}
+    expected_key_id = key.get("key_id") if isinstance(key, dict) else None
+    if issuer != {"kind": expected_issuer, "key_id": expected_key_id}:
+        reasons.append("signed_receipt.issuer")
+    unsigned = dict(receipt)
+    signature = unsigned.pop("signature", None)
+    receipt_id = unsigned.pop("receipt_id", None)
+    try:
+        expected_id = hashlib.sha256(_canonical_bytes(unsigned)).hexdigest()
+    except ResearchOrganizationError:
+        reasons.append("signed_receipt.canonical_json")
+        return list(dict.fromkeys(reasons))
+    if receipt_id != expected_id:
+        reasons.append("signed_receipt.receipt_id")
+    if (
+        not isinstance(signature, dict)
+        or set(signature) != {"algorithm", "value_b64"}
+        or signature.get("algorithm") != "Ed25519"
+    ):
+        reasons.append("signed_receipt.signature")
+        return list(dict.fromkeys(reasons))
+    try:
+        signature_bytes = base64.b64decode(
+            str(signature.get("value_b64") or ""), validate=True
+        )
+        public_bytes = base64.b64decode(
+            str((key or {}).get("public_key_b64") or ""), validate=True
+        )
+    except (ValueError, TypeError):
+        reasons.append("signed_receipt.signature_encoding")
+        return list(dict.fromkeys(reasons))
+    _serialization, _private_cls, public_cls, invalid_signature, _encoding = _crypto()
+    try:
+        public_key = public_cls.from_public_bytes(public_bytes)
+        public_key.verify(
+            signature_bytes,
+            _canonical_bytes({**unsigned, "receipt_id": receipt_id}),
+        )
+    except (ValueError, invalid_signature):
+        reasons.append("signed_receipt.signature_invalid")
+    return list(dict.fromkeys(reasons))
+
+
 def _safe_private_directory(path: Path) -> Path:
     candidate = Path(path).expanduser()
     if candidate.exists() or candidate.is_symlink():

@@ -51,7 +51,7 @@ Console 首页应展示：
 Factor Forge Console
 
 当前状态
-- Factor Factory repo: /Users/humphrey/projects/factor-factory
+- Factor Factory repo: /Users/researcher/projects/factor-factory
 - Active workspace: factor_research/miner/current_data_api_catalog_20260626
 - Worktree: clean / dirty
 - 最近 run: Miner campaign
@@ -165,13 +165,13 @@ factor_research/console/tasks/<task_id>.json
   "task_type": "factorforge_miner_campaign",
   "created_at_utc": "2026-06-29T00:00:00Z",
   "created_by": "factorforge_console",
-  "repo_root": "/Users/humphrey/projects/factor-factory",
+  "repo_root": "/Users/researcher/projects/factor-factory",
   "execution_workspace": "/tmp/factorforge-miner-workspace",
   "campaign_id": "current_data_api_catalog_20260629",
   "workspace_root": "factor_research/miner/current_data_api_catalog_20260629",
   "inputs": {
     "catalogs": [
-      "/Users/humphrey/projects/factorforge-data-api-runtime/catalogs/manus_data_catalog.json"
+      "/Users/researcher/projects/factorforge-data-api-runtime/catalogs/manus_data_catalog.json"
     ],
     "screen_window": "2016-01-01..2025-07-11",
     "universe": "current_data_api_catalog"

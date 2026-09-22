@@ -11,7 +11,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 LEGACY_FACTORFORGE = LEGACY_WORKSPACE / 'factorforge'
 LEGACY_REPO = LEGACY_WORKSPACE / 'repos' / 'factor-factory'
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_FACTORFORGE if LEGACY_FACTORFORGE.exists() else REPO_ROOT))

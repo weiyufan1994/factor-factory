@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 from factor_factory.data_access.mutation_guard import require_data_mutation_authority
 
 
-DEFAULT_BUCKET = 'yufan-data-lake'
+DEFAULT_BUCKET = 'factorforge-example-data'
 DEFAULT_DAILY_KEY = 'tushares/行情数据/daily.csv'
 DEFAULT_ADJ_FACTOR_KEY = 'tushares/行情数据/adj_factor.csv'
 DEFAULT_DAILY_BASIC_PREFIX = 'tushares/行情数据/daily_basic_incremental'
@@ -26,7 +26,7 @@ DEFAULT_TRADE_CAL_KEY = 'tushares/基础数据/trade_cal.csv'
 DEFAULT_STOCK_BASIC_KEY = 'tushares/基础数据/stock_basic.csv'
 DEFAULT_STOCK_ST_KEY = 'tushares/基础数据/stock_st.csv'
 DEFAULT_STOCK_ST_DAILY_KEY = 'tushares/基础数据/stock_st_daily_20160101_current.csv'
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 DEFAULT_LOCAL_ROOT = Path.home() / '.qlib' / 'raw_tushare'
 DEFAULT_EC2_PERSISTENT_ROOT = LEGACY_WORKSPACE / 'factorforge' / 'data' / 'raw_tushare'
 

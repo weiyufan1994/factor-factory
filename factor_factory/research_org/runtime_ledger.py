@@ -983,6 +983,7 @@ class ResearchOrgRuntimeLedger:
             "adapter_build_sha256",
             "container_image_digest",
             "isolation_profile_sha256",
+            "runtime",
             "parent_session_uid",
             "lease_epoch",
         }
@@ -1008,6 +1009,66 @@ class ResearchOrgRuntimeLedger:
             or not isinstance(session.get("container_image_digest"), str)
         ):
             reasons.append("adapter_receipt.session")
+        runtime = (
+            session.get("runtime")
+            if isinstance(session.get("runtime"), dict)
+            else {}
+        )
+        expected_runtime_fields = {
+            "provider",
+            "model",
+            "transport",
+            "isolation_class",
+            "owned_termination_supported",
+        }
+        runtime_profile = (
+            runtime.get("provider"),
+            runtime.get("model"),
+            runtime.get("transport"),
+            runtime.get("isolation_class"),
+            runtime.get("owned_termination_supported"),
+        )
+        container_runtime_profile = (
+            "deepseek",
+            "deepseek/deepseek-v4-flash",
+            "openclaw_disposable_container",
+            "container_staged_context",
+            True,
+        )
+        codex_runtime_profile_valid = (
+            runtime.get("provider") == "codex"
+            and isinstance(runtime.get("model"), str)
+            and 0 < len(runtime["model"]) <= 128
+            and runtime.get("transport") == "codex_exec_ephemeral"
+            and runtime.get("isolation_class") == "codex_subagent_isolated"
+            and runtime.get("owned_termination_supported") is True
+        )
+        if (
+            set(runtime) != expected_runtime_fields
+            or not all(
+                isinstance(runtime.get(field), str) and runtime[field].strip()
+                for field in (
+                    "provider",
+                    "model",
+                    "transport",
+                    "isolation_class",
+                )
+            )
+            or type(runtime.get("owned_termination_supported")) is not bool
+            or (
+                runtime_profile != container_runtime_profile
+                and not codex_runtime_profile_valid
+            )
+        ):
+            reasons.append("adapter_receipt.runtime")
+        session_requirement = str(
+            self.tasks[attempt["role_id"]]["session_policy"]["requirement"]
+        )
+        if (
+            session_requirement in {"isolated_session", "independent_session"}
+            and runtime_profile != container_runtime_profile
+        ):
+            reasons.append("adapter_receipt.runtime_strong_isolation")
         outcome = receipt.get("outcome") if isinstance(receipt.get("outcome"), dict) else {}
         expected_outcome_fields = {
             "returncode",
@@ -1022,10 +1083,55 @@ class ResearchOrgRuntimeLedger:
             or type(outcome.get("returncode")) is not int
             or type(outcome.get("cancelled")) is not bool
             or type(outcome.get("termination_confirmed")) is not bool
+            or outcome.get("termination_confirmed") is not True
+            or (
+                outcome.get("private_output_sha256") is None
+                and outcome.get("private_output_size_bytes") is not None
+            )
+            or (
+                outcome.get("private_output_sha256") is not None
+                and (
+                    not isinstance(outcome.get("private_output_sha256"), str)
+                    or re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        str(outcome.get("private_output_sha256")),
+                    )
+                    is None
+                    or type(outcome.get("private_output_size_bytes")) is not int
+                    or int(outcome.get("private_output_size_bytes") or 0) <= 0
+                )
+            )
         ):
             reasons.append("adapter_receipt.outcome")
+        receipt_type = receipt.get("receipt_type")
+        if receipt_type == "COMPLETED" and (
+            outcome.get("returncode") != 0
+            or outcome.get("cancelled") is not False
+            or outcome.get("error_class") is not None
+            or outcome.get("private_output_sha256") is None
+        ):
+            reasons.append("adapter_receipt.completed_semantics")
+        elif receipt_type == "FAILED" and (
+            outcome.get("returncode") == 0
+            or outcome.get("cancelled") is not False
+            or not isinstance(outcome.get("error_class"), str)
+            or not outcome.get("error_class")
+        ):
+            reasons.append("adapter_receipt.failed_semantics")
+        elif receipt_type == "TERMINATED" and (
+            (
+                outcome.get("returncode"),
+                outcome.get("cancelled"),
+                outcome.get("error_class"),
+            )
+            not in {
+                (124, False, "timeout"),
+                (130, True, "cancelled"),
+            }
+        ):
+            reasons.append("adapter_receipt.terminated_semantics")
         if canonical_result is not None and (
-            receipt.get("receipt_type") != "COMPLETED"
+            receipt_type != "COMPLETED"
             or outcome.get("returncode") != 0
             or outcome.get("cancelled") is not False
             or not isinstance(outcome.get("private_output_sha256"), str)
@@ -1038,7 +1144,7 @@ class ResearchOrgRuntimeLedger:
             != observed_private_output_size_bytes
         ):
             reasons.append("adapter_receipt.completed_outcome")
-        if canonical_result is None and receipt.get("receipt_type") not in {
+        if canonical_result is None and receipt_type not in {
             "FAILED",
             "TERMINATED",
             "COMPLETED",

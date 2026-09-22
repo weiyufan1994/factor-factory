@@ -1,0 +1,142 @@
+{
+  "research_subject_mode": "report_replication",
+  "construction_id": "MSZQ_20250508_PF_VV_EQUAL_WEIGHT_RECONSTRUCTION_V1",
+  "status": "SOURCE_RECONSTRUCTION_FOR_IMPLEMENTATION_VALIDATION_NOT_COMPLETED_STEP1_6",
+  "source": {
+    "title": "日内动量脉冲与股价过度反应的精细刻画",
+    "published_at": "2025-05-08",
+    "definition_pages": [
+      4,
+      5,
+      7,
+      8,
+      9
+    ],
+    "visual_definition_pages_checked": [
+      4,
+      7
+    ],
+    "original_source_included": false,
+    "note": "Original private report is not distributed. Construction is paraphrased and numerical choices are explicitly analyst assumptions."
+  },
+  "exposure": {
+    "root_is_blind": false,
+    "reason": "Continuation context already contains old EVENT_U results and prior knowledge. This reconstruction re-reads the source; it is not a newly blind trial.",
+    "current_pf_vv_composite_backtest_inspected": false,
+    "parameters_selected_by_returns": false,
+    "independent_source_challenger": "pfvv_source_challenger: source-only isolated session; not an independent mathematical proof"
+  },
+  "study_scope": {
+    "start": "2016-01-04",
+    "end": "2025-07-11",
+    "markets": [
+      "SH",
+      "SZ"
+    ],
+    "excluded_market": "BJ",
+    "oos_allowed": false,
+    "signal_known_at": "After the close of the final input day",
+    "source_report_rebalance": "monthly",
+    "source_report_target": "future 20 trading-day return",
+    "trading_note": "Source-comparison monthly diagnostics and Ultimate local-IS execution must be reported separately if the existing evaluator uses a different rebalance/holding rule. Do not compound overlapping 20-day labels as daily returns.",
+    "warmup": "20 consecutive market trading days; no pre-2016 data assumed; no compressed rolling over missing stock-days"
+  },
+  "source_native": {
+    "economic_hypothesis": "Intraday relative return bursts and dispersion between volume-defined trading episodes may reflect overreaction; stocks with more stable measured intraday behavior have higher subsequent returns.",
+    "pf_steps": [
+      "Same-minute arithmetic mean of positive and negative stock returns separately",
+      "Subtract the same-sign mean, zero return maps to zero deviation",
+      "Select minutes with strictly positive cross-sectional skewness of deviations",
+      "Sum each stock's log deviation over selected minutes into ONE daily value",
+      "Compute 20-day standard deviation of that daily value"
+    ],
+    "vv_steps": [
+      "Remove the first 10 trading minutes",
+      "Recursively split each stock's remaining volume sequence for six rounds",
+      "For length >= 3 choose maximum volume excluding the two endpoints; peak belongs to left segment",
+      "Length 2 splits into singleton segments; length 1 stops",
+      "Standard deviation across final segment returns gives daily value",
+      "Standardize daily value, then compute 20-day standard deviation"
+    ],
+    "composite": "Equal weight PF and VV",
+    "direction": "PF, VV and composite are negative factors; smaller raw statistic is preferred",
+    "neutralization": "Market-cap and industry neutralization in report's single-factor tests"
+  },
+  "reconstruction_assumptions": {
+    "return_definition": "Simple close-to-previous-close within day; first minute close/open; no overnight return. Lunch is a trading-clock adjacency.",
+    "pf_log_deviation_primary": "log1p(simple_return - same_sign_mean_simple_return)",
+    "pf_log_deviation_sensitivity": "log1p(simple_return) - log1p(same_sign_mean_simple_return), evaluated numerically without selecting by returns",
+    "pf_benchmark_includes_self": true,
+    "pf_skewness": "Population central moment m3 / m2**1.5 over finite same-minute deviations; at least 3 finite stocks; zero variance gives skew 0",
+    "pf_zero_rule": "Valid complete day with no selected minutes gives genuine zero; missing observations or invalid log domain are not zeros",
+    "vv_opening_rule": "The explicit remove-first-10 instruction and 230-minute example take precedence over the later 240-minute prose slip",
+    "vv_validity_domain": "Only retained slots are checked; an invalid retained return remains invalid even if caused by the boundary close of a discarded minute",
+    "vv_peak_tie_break": "First internal maximum in chronological trading-clock order",
+    "vv_segment_return": "Compound all simple minute returns in the segment, including its first minute; singleton return is that minute's return, not zero",
+    "vv_daily_standardization": "Same-day equal-weight cross-sectional z-score over valid daily VV values, ddof=1",
+    "std_ddof": 1,
+    "rolling_min_periods": 20,
+    "composite_scaling": "At each signal date, cross-sectional z-score PF and VV separately on the common finite stock universe, then equal weight; no partial one-component composite",
+    "output_sign": "Preserve nonnegative PF/VV raw values; high-is-preferred scores are negatives of their common-universe z-scores; composite score is their half sum",
+    "constant_cross_section": "With at least two finite identical observations return z=0; fewer than two gives NaN",
+    "missing_policy": "No price/volume forward fill; missing or invalid inputs within a factor's measurement domain invalidate the affected stock-day. A day with unavailable PF cross-sectional gate is not a no-event zero.",
+    "calculation_universe": "Historical SH/SZ input universe, not today's survivors and not the final portfolio. Same-minute benchmark uses observed finite inputs. Trading restrictions are applied by the existing daily execution layer, not an invented minute-state dataset.",
+    "scope_limit": "These explicit choices make a reproducible source reconstruction, not byte-identical author code or a claim that all source ambiguities are solved. No extra winsorization, rank transform or neutralization is hidden inside the raw kernel."
+  },
+  "mathematical_mechanism": {
+    "classification": "behavioral_feedback_research_conjecture_not_identity",
+    "equation_attribution": "Analyst reconstruction of the source-inspired mechanism, not an equation asserted by the report author",
+    "primary": {
+      "object": "Transient belief/price-pressure disturbance b and heterogeneity of episode price impacts",
+      "mechanism": "Observed log price p = latent reference value v + temporary deviation b; b may partially decay after a behavioral/information shock",
+      "projection": "E[p(t+h)-p(t) | b(t)] = E[v(t+h)-v(t)] - lambda(h)*b(t), with lambda>0 a falsifiable assumption, not an estimated fact",
+      "observation_map": "PF and VV are source-defined multi-scale dispersion functionals, not direct identification of b; the final rolling standard deviation loses level/sign, requiring an additional empirical link between dispersion and future return",
+      "counterparty": "Overreacting or heterogeneous short-horizon traders are a source-inspired candidate; their identity, mandatory participation and persistence are not established",
+      "identification_gaps": [
+        "Positive skewness measures asymmetric tails, not the fraction of rising stocks",
+        "Low rolling dispersion is not algebraically equivalent to low current overpricing",
+        "Volume peaks do not uniquely identify investor emotion"
+      ]
+    },
+    "alternative": {
+      "object": "Permanent information arrival and heterogeneous price discovery",
+      "mechanism": "Volume bursts and return dispersion may reflect persistent fundamental information rather than temporary pressure",
+      "discriminating_prediction": "Non-reversing or continuing post-event returns undermine a pure overreaction interpretation"
+    },
+    "null_alias": {
+      "object": "Volatility, liquidity, size exposures and missing/stale-price artifacts",
+      "mechanism": "PF/VV can mechanically proxy ordinary risk/liquidity or sparse observation rather than an additional behavioral state",
+      "discriminating_prediction": "Inspect residual association against prespecified controls and compare component/gate/partition ablations on the same sample; disappearance does not alone identify a unique cause"
+    },
+    "tools_selected": [
+      "Conditional cross-sectional moments",
+      "Trading-path partition functionals",
+      "Noncommutativity and invariance checks"
+    ],
+    "tools_not_substituted": [
+      "Wavelet",
+      "Kalman",
+      "Convolution detector",
+      "EVENT_U"
+    ],
+    "knowledge_role": "Later references can suggest tests and alternatives; they cannot replace this source baseline"
+  },
+  "deterministic_checks_before_performance": [
+    "Independent hand oracle for sign means, deviations, skew gate and daily sum",
+    "Counterexample: std(up_daily+down_daily) differs from separate rolling std aggregation",
+    "Volume partition covers every retained minute exactly once, peak-left and singleton rules",
+    "Singleton segment return is nonzero when its minute return is nonzero",
+    "Future-day mutation leaves earlier daily and rolling output unchanged",
+    "Missing stock-day occupies its calendar slot; it is not removed from the 20-day window",
+    "Valid no-event zero distinguished from missing or invalid input",
+    "Composite equal weights apply to explicitly standardized common-universe components",
+    "Numerical sensitivity records both log-deviation conventions without return-based choice"
+  ],
+  "completion_limits": {
+    "step1_canonical_rebuilt": false,
+    "step2_canonical_rebuilt": false,
+    "full_is_computed": false,
+    "step4_6_complete": false,
+    "paper_performance_reproduced": false
+  }
+}

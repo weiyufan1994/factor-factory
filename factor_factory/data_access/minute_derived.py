@@ -102,7 +102,7 @@ def default_minute_derived_root() -> Path:
     cache_root = os.getenv("FACTORFORGE_DATA_CACHE")
     if cache_root:
         return Path(cache_root).expanduser() / "minute_derived" / MINUTE_DERIVED_FLOW_STATE_V1
-    worker_cache = Path("/home/ubuntu/factorforge_data_api_cache/minute_derived") / MINUTE_DERIVED_FLOW_STATE_V1
+    worker_cache = Path("/home/researcher/factorforge_data_api_cache/minute_derived") / MINUTE_DERIVED_FLOW_STATE_V1
     if worker_cache.parent.exists():
         return worker_cache
     return Path.home() / ".cache" / "factorforge_data_api" / "minute_derived" / MINUTE_DERIVED_FLOW_STATE_V1
@@ -115,7 +115,7 @@ def candidate_minute_derived_roots(explicit_root: str | Path | None = None) -> l
     candidates.append(default_minute_derived_root())
     if os.getenv("FACTORFORGE_DATA_CACHE"):
         candidates.append(Path(os.environ["FACTORFORGE_DATA_CACHE"]).expanduser() / "minute_derived" / MINUTE_DERIVED_FLOW_STATE_V1)
-    candidates.append(Path("/home/ubuntu/factorforge_data_api_cache/minute_derived") / MINUTE_DERIVED_FLOW_STATE_V1)
+    candidates.append(Path("/home/researcher/factorforge_data_api_cache/minute_derived") / MINUTE_DERIVED_FLOW_STATE_V1)
     candidates.append(Path.home() / ".cache" / "factorforge_data_api" / "minute_derived" / MINUTE_DERIVED_FLOW_STATE_V1)
     out: list[Path] = []
     seen: set[str] = set()

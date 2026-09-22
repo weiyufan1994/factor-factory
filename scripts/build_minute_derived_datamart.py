@@ -43,8 +43,8 @@ def candidate_minute_roots(explicit: str | None = None) -> list[Path]:
     if os.getenv("FACTORFORGE_DATA_CACHE"):
         candidates.append(Path(os.environ["FACTORFORGE_DATA_CACHE"]).expanduser() / "s3_parquet" / "minute_bar-raw_v1-0b2b836c57d763c6")
     candidates.extend([
-        Path("/home/ubuntu/factorforge_data_api_cache/s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6"),
-        Path("/home/ubuntu/.qlib/raw_tushare/分钟数据/raw/stk_mins_1min"),
+        Path("/home/researcher/factorforge_data_api_cache/s3_parquet/minute_bar-raw_v1-0b2b836c57d763c6"),
+        Path("/home/researcher/.qlib/raw_tushare/分钟数据/raw/stk_mins_1min"),
         Path.home() / ".qlib" / "raw_tushare" / "分钟数据" / "raw" / "stk_mins_1min",
     ])
     out: list[Path] = []

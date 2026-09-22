@@ -8,7 +8,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 WORKSPACE = FF.parent
 OBJ = FF / 'objects'
@@ -23,6 +23,16 @@ DIRECT_CODE_ALLOWED_SOURCE_DERIVATIONS = {
 }
 
 from factor_factory.formula.field_aliases import validate_standard_formula_fields_contract
+from factor_factory.formula.extension_registry import EXTENSION_OPERATORS, extension_output_unit
+from factor_factory.formula.semantics import operator_lookback as shared_operator_lookback
+from factor_factory.data_api import default_catalog_path
+from factor_factory.evo_data_boundary import (
+    BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID,
+    BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING,
+    canonical_step3_sample_query,
+    resolve_evo_pre_release_research_windows,
+    validate_closed_pre_release_data_resolution,
+)
 
 
 def validate_sort_contract(contract: dict) -> None:
@@ -249,12 +259,14 @@ def _field_unit(field: str) -> str:
     if field == 'amount':
         return 'documented_amount_unit'
     if field in {'returns', 'return', 'ret', 'pct_chg'}:
-        return 'decimal_return'
+        return 'documented_return_unit'
     return 'numeric'
 
 
 def _operator_output_unit(operator: str, child_units: list[str]) -> str:
     operator = str(operator or '').lower()
+    if operator in EXTENSION_OPERATORS:
+        return extension_output_unit(operator, child_units)
     if operator in {'rank', 'ts_rank'}:
         return 'rank_score'
     if operator in {'correlation', 'corr'}:
@@ -308,7 +320,10 @@ def expected_formula_operator_contracts(formula_ir: dict) -> list[dict]:
             'sources': fields,
             'output_unit': _operator_output_unit(operator, child_units),
         }
-        lookback = _operator_lookback(operator, _formula_ir_constants(node))
+        lookback = (
+            shared_operator_lookback(node) if operator in EXTENSION_OPERATORS
+            else _operator_lookback(operator, _formula_ir_constants(node))
+        )
         if lookback is not None:
             item['lookback_window'] = lookback
         if operator == 'rank':
@@ -462,6 +477,66 @@ def _data_api_resolution(prep: dict, qcfg: dict) -> dict:
     return {}
 
 
+def _is_prepared_derived_state_route(local_inputs: dict) -> bool:
+    """Identify the explicit local-IS state route, never by missing catalog data."""
+    return (
+        isinstance(local_inputs, dict)
+        and local_inputs.get('input_mode') == 'derived_state_with_daily'
+        and bool(local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv'))
+        and bool(local_inputs.get('derived_state_root'))
+    )
+
+
+def _sample_required_daily_fields(fsm: dict | None) -> list[str]:
+    if not isinstance(fsm, dict):
+        return []
+    canonical = (
+        fsm.get('canonical_spec')
+        if isinstance(fsm.get('canonical_spec'), dict)
+        else {}
+    )
+    formula_ir = (
+        canonical.get('formula_ir')
+        if isinstance(canonical.get('formula_ir'), dict)
+        else {}
+    )
+    implementation = (
+        fsm.get('implementation_contract')
+        if isinstance(fsm.get('implementation_contract'), dict)
+        else {}
+    )
+    code_contract = (
+        implementation.get('code_contract')
+        if isinstance(implementation.get('code_contract'), dict)
+        else {}
+    )
+    candidates = (
+        list(formula_ir.get('required_fields') or [])
+        + list(canonical.get('required_inputs') or [])
+        + list(code_contract.get('required_fields') or [])
+        + list(implementation.get('required_fields') or [])
+        + list(fsm.get('required_inputs') or [])
+    )
+    return list(
+        dict.fromkeys(
+            str(field).strip().lower()
+            for field in candidates
+            if str(field).strip()
+        )
+    )
+
+
+def _canonical_step3_sample_query(
+    *,
+    fsm: dict,
+    frozen_windows: dict,
+) -> dict:
+    return canonical_step3_sample_query(
+        fsm=fsm,
+        research_windows=frozen_windows,
+    )
+
+
 def _step4_data_contract(prep: dict, qcfg: dict, handoff: dict) -> dict:
     local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
     for candidate in [
@@ -497,9 +572,12 @@ def validate_step3_readiness_contract(
     handoff: dict,
     *,
     workspace: Path | None = None,
+    factorforge_root: Path | None = None,
+    fsm: dict | None = None,
 ) -> None:
     del impl
     workspace = workspace or WORKSPACE
+    factorforge_root = factorforge_root or FF
     feasibility = prep.get('feasibility')
     expected_step3a_ready = feasibility in {'ready', 'proxy_ready'}
     if handoff.get('step3a_ready') is not None:
@@ -515,36 +593,122 @@ def validate_step3_readiness_contract(
 
     data_api = _data_api_resolution(prep, qcfg)
     local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
+    prepared_derived_state = _is_prepared_derived_state_route(local_inputs)
     snapshot_source = str(local_inputs.get('snapshot_source') or '')
+    if isinstance(prep.get('research_windows'), dict) and not prepared_derived_state:
+        report_id = str(prep.get('report_id') or '')
+        try:
+            frozen_windows = resolve_evo_pre_release_research_windows(
+                workspace_root=factorforge_root,
+                report_id=report_id,
+            )
+        except ValueError as exc:
+            raise AssertionError(
+                f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:frozen_window_authority:{exc}'
+            ) from exc
+        assert frozen_windows is not None, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING}:frozen_window_authority'
+        )
+        assert prep.get('research_windows') == frozen_windows, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:frozen_is_window_mismatch'
+        )
+        required_fields = _sample_required_daily_fields(fsm)
+        assert required_fields, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING}:formula_required_fields'
+        )
+        assert snapshot_source != 'data_api_moneyflow', (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+            'primary_dataset.moneyflow_unsupported'
+        )
+        primary_dataset = 'clean_daily_bar'
+        contract = _step4_data_contract(prep, qcfg, handoff)
+        expected_sample_query = _canonical_step3_sample_query(
+            fsm=fsm or {},
+            frozen_windows=frozen_windows,
+        )
+        daily_rel = (
+            local_inputs.get('daily_df_parquet')
+            or local_inputs.get('daily_df_csv')
+        )
+        assert isinstance(daily_rel, str) and daily_rel, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING}:consumer_artifact'
+        )
+        try:
+            factorforge_relative = factorforge_root.relative_to(workspace)
+        except ValueError as exc:
+            raise AssertionError(
+                f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+                'consumer_artifact.factorforge_scope'
+            ) from exc
+        expected_base = (
+            factorforge_relative
+            / 'runs'
+            / report_id
+            / 'step3a_local_inputs'
+            / f'daily_input__{report_id}'
+        )
+        expected_artifacts = {
+            str(expected_base.with_suffix(suffix))
+            for suffix in ('.parquet', '.csv')
+        }
+        assert daily_rel in expected_artifacts, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+            'consumer_artifact.expected_path'
+        )
+        catalog_path = default_catalog_path()
+        evidence_reasons = validate_closed_pre_release_data_resolution(
+            data_api,
+            research_windows=frozen_windows,
+            workspace_root=workspace,
+            factorforge_root=factorforge_root,
+            catalog_path=catalog_path,
+            required_fields=required_fields,
+            report_id=report_id,
+            factor_id=str(prep.get('factor_id') or ''),
+            expected_sample_query=expected_sample_query,
+            step4_data_contract=contract,
+            expected_artifact_relative=daily_rel,
+            primary_dataset=primary_dataset,
+        )
+        assert not evidence_reasons, ';'.join(evidence_reasons)
+        assert qcfg.get('data_api_resolution') == data_api, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+            'qlib.data_api_resolution_binding'
+        )
+        assert qcfg.get('step4_data_contract') == contract, (
+            f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
+            'qlib.step4_data_contract_binding'
+        )
     clean_daily = data_api.get('clean_daily_bar') if isinstance(data_api.get('clean_daily_bar'), dict) else {}
     moneyflow = data_api.get('moneyflow') if isinstance(data_api.get('moneyflow'), dict) else {}
     if snapshot_source == 'data_api_moneyflow':
         assert moneyflow.get('status') == 'ready', (
             'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: moneyflow Step3A requires ready moneyflow Data API resolution'
         )
-    else:
+    elif not prepared_derived_state:
         assert clean_daily.get('status') == 'ready', (
             'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: executable Step3A requires ready clean_daily_bar Data API resolution'
         )
-    contract = _step4_data_contract(prep, qcfg, handoff)
-    assert contract.get('version') == 'factorforge_step4_data_contract_v1', (
-        'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: Step3A must emit Step4-readable Data API query contract'
-    )
-    assert contract.get('data_api_package') == 'factorforge_data_api', (
-        'BLOCK_STEP3A_DATA_API_PACKAGE_BOUNDARY: Step3A must target independent factorforge_data_api package'
-    )
-    assert isinstance(contract.get('full_queries'), dict) and contract['full_queries'], (
-        'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: full_queries are required'
-    )
-    assert isinstance(contract.get('sample_queries'), dict) and contract['sample_queries'], (
-        'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: sample_queries are required for Step3B executability proof'
-    )
-    assert contract.get('formal_factor_values_owner') == 'Step4', (
-        'BLOCK_STEP3A_STEP4_OWNER_INVALID: formal factor_values owner must be Step4'
-    )
+    if not prepared_derived_state:
+        contract = _step4_data_contract(prep, qcfg, handoff)
+        assert contract.get('version') == 'factorforge_step4_data_contract_v1', (
+            'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: Step3A must emit Step4-readable Data API query contract'
+        )
+        assert contract.get('data_api_package') == 'factorforge_data_api', (
+            'BLOCK_STEP3A_DATA_API_PACKAGE_BOUNDARY: Step3A must target independent factorforge_data_api package'
+        )
+        assert isinstance(contract.get('full_queries'), dict) and contract['full_queries'], (
+            'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: full_queries are required'
+        )
+        assert isinstance(contract.get('sample_queries'), dict) and contract['sample_queries'], (
+            'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: sample_queries are required for Step3B executability proof'
+        )
+        assert contract.get('formal_factor_values_owner') == 'Step4', (
+            'BLOCK_STEP3A_STEP4_OWNER_INVALID: formal factor_values owner must be Step4'
+        )
 
     policy = _daily_filter_policy(prep, qcfg)
-    if snapshot_source != 'data_api_moneyflow':
+    if snapshot_source != 'data_api_moneyflow' and not prepared_derived_state:
         assert policy.get('drop_suspended') is True and policy.get('drop_limit_events') is True, (
             'BLOCK_STEP3A_DAILY_FILTER_POLICY_MISSING: clean daily policy must explicitly drop suspended and limit-event days'
         )
@@ -606,7 +770,15 @@ if __name__ == '__main__':
     if 'step4_contract' in impl:
         assert impl['step4_contract'].get('execution_mode') == impl_mode
 
-    validate_step3_readiness_contract(prep, qcfg, impl, handoff, workspace=WORKSPACE)
+    validate_step3_readiness_contract(
+        prep,
+        qcfg,
+        impl,
+        handoff,
+        workspace=WORKSPACE,
+        factorforge_root=FF,
+        fsm=fsm,
+    )
     canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
     formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
     standard_contract = fsm.get('standard_formula_fields_contract') or canonical.get('standard_formula_fields_contract')
@@ -638,10 +810,32 @@ if __name__ == '__main__':
         assert not missing_snapshot_fields, (
             f'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: missing fields in Step3A local snapshot {missing_snapshot_fields}'
         )
-        validate_daily_io_contract(prep['local_input_paths'])
         if input_mode == 'daily_only':
+            validate_daily_io_contract(prep['local_input_paths'])
             assert not minute_rel, 'daily_only Step 3A output must not claim minute snapshot'
+        elif input_mode == 'derived_state_with_daily':
+            derived_root = prep['local_input_paths'].get('derived_state_root')
+            step3b_daily = prep['local_input_paths'].get('step3b_daily_df_parquet')
+            step3b_root = prep['local_input_paths'].get('step3b_derived_state_root')
+            actual_window = prep['local_input_paths'].get('sample_window_actual') or {}
+            sample_window = prep['local_input_paths'].get('step3b_sample_window') or {}
+            full_calendar = prep['local_input_paths'].get('calendar_dates')
+            full_config = prep['local_input_paths'].get('run_config_path')
+            sample_calendar = prep['local_input_paths'].get('step3b_calendar_dates')
+            sample_config = prep['local_input_paths'].get('step3b_run_config_path')
+            assert not minute_rel, 'prepared derived-state route must not claim a raw minute snapshot'
+            assert derived_root and (WORKSPACE / derived_root).is_dir(), 'prepared derived-state root missing'
+            assert step3b_daily and (WORKSPACE / step3b_daily).exists(), 'prepared Step3B daily input missing'
+            assert step3b_root and (WORKSPACE / step3b_root).is_dir(), 'prepared Step3B derived-state root missing'
+            assert (full_calendar is None) != (full_config is None), 'prepared full route needs exactly one explicit calendar selector'
+            assert (sample_calendar is None) != (sample_config is None), 'prepared Step3B route needs exactly one explicit calendar selector'
+            assert (
+                str(actual_window.get('start')) == str(prep['sample_window'].get('start'))
+                and str(actual_window.get('end')) == str(prep['sample_window'].get('end'))
+            ), 'prepared actual IS window must be the Step3 sample window'
+            assert sample_window.get('start') and sample_window.get('end'), 'prepared Step3B sample window missing'
         else:
+            validate_daily_io_contract(prep['local_input_paths'])
             assert minute_rel and (WORKSPACE / minute_rel).exists(), 'missing local input snapshot: minute_df_(parquet/csv)'
 
             # Step 3A must not silently package a full-minute snapshot together with a tiny sample daily layer.

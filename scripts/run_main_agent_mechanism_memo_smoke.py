@@ -630,7 +630,7 @@ def main() -> None:
             str(Path(__file__).relative_to(REPO_ROOT)),
             "--fresh",
             "--root",
-            "/Users/humphrey/tmp_factorforge_bad",
+            "/Users/researcher/tmp_factorforge_bad",
         ],
         cwd=REPO_ROOT,
         text=True,

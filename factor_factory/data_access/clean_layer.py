@@ -17,7 +17,7 @@ from .paths import (
     resolve_local_tushare_paths,
 )
 
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_FACTORFORGE_ROOT = (
     Path(os.getenv('FACTORFORGE_ROOT'))

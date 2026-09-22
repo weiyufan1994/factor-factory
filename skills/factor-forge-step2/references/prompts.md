@@ -1,156 +1,73 @@
-# Step 2 Prompt Pack
+# Step2 research prompts
 
-## Primary Route
+Use the relevant prompt as a starting question, not a mandatory thought sequence.
+The frozen source/hypothesis and the actual consumer contracts govern outputs.
+Free exploration may precede structured records; formal evaluation needs explicit
+estimand, information boundary, predictions and distinguishing tests.
 
-Use the PDF plus `alpha_idea_master` to recover the construction spec faithfully.
+## Source reconstruction and competing readings
 
-Focus on:
-- formula text
-- required inputs
-- operators
-- time-series steps
-- cross-sectional steps
-- preprocessing
-- normalization
-- neutralization
-- rebalance frequency
-- explicit ambiguities
+Recover the selected source construction, including components, signs, windows,
+aggregation, normalization and weights. What is explicit, what is a necessary
+reconstruction assumption, and what remains unresolved? For an independent user
+hypothesis use that hypothesis; do not invent a report or baseline.
 
-## Economic Hypothesis To Math Model Boundary
+Primary and challenger read the same source/upstream material in independent
+contexts. Save both before sharing answers. Then compare each with the source,
+not merely with one another or Step1's summary. Which differences change the
+estimand, meaning, timing or executable construction? Every such difference
+requires chief adjudication, even if a mechanical score is high. Preserve the
+original readings and a source-based rationale for the canonical choice.
 
-Step2 must preserve Step1's `economic_hypothesis_candidates`,
-`preferred_economic_hypothesis`, `alternative_return_source_tests`,
-`primary_mathematical_model`, and `formula_as_observable_estimator`.
+Land the current source-subject inputs exactly as specified in the required
+[schema input contract](schema.md#current-step2-source-subject-inputs).
+That section owns their object location, mode-specific requirements and identity
+binding; this optional prompt does not define a second set of field rules.
 
-Do not default every factor to a stochastic process. Choose the primary mathematical model from the economic hypothesis. Valid primary model families
-include asset-pricing/covariance risk, Bayesian updating, signal extraction,
-temporary price impact, inventory models, constrained optimization, forced-flow
-or rebalancing pressure, behavioral attention or overreaction/underreaction,
-latent-state/regime-switching, market microstructure, valuation decomposition,
-causal identification, placebo/confounding analysis, and other explicitly
-justified tools.
+The runner's `consistency_score` is a `mechanical_consistency_only` heuristic,
+not confidence in fidelity. Record completed adjudication and actual agents/models
+in the journal/review; preserve the compatibility meanings of `chief_decision`
+and `opus_invoked` in [schema.md](schema.md).
 
-Run an open mathematical-tool search. DCF/residual income, accounting
-identities, stochastic processes, Ito calculus, linear algebra, optimization,
-information theory, functional/spectral methods, causal/placebo tests, or newly
-composed objects may be selected only when the Step1 hypothesis justifies them.
-Record candidate tools, the selected tools, and rejected alternatives. Existing
-operators and data convenience must not decide the selection.
+## Economic and mathematical investigation
 
-The mechanism contract should state:
-- research_equation with classification, assumptions, validity_scope,
-  mathematical_object, observation/estimation map, expected metric signature,
-  falsification tests, and kill criteria;
-- primary mathematical model and why it follows from the economic hypothesis;
-- formula observable estimator and why it is not a raw-field restatement;
-- market_outcome_projection mapping the selected mathematical object to value,
-  payoff, price gap, return, or another traded quantity;
-- applicable_audits, which may be empty and activate stochastic, dimensional,
-  valuation, causal, spectral, or other checks only when justified;
-- discriminating tests against alternative return sources;
-- expected metric signatures for Step4/Step5 falsification.
+What economic relationship is proposed, under what conditions, and what remains
+unidentified? What mathematical object or algorithm makes it testable? Consider
+useful rival explanations, null/alias behavior, boundary cases and analogies;
+reject those that do not fit. There is no closed list of admissible tools, no
+mandatory latent state and no need to claim mathematical certainty.
 
-Prompt outputs must include `research_equation`,
+For replication, this reasoning explains/tests the recovered estimator; it does
+not replace it. For an extension, identify the changed object separately.
+Preserve Step1's economic hypotheses, alternative-return-source tests, selected
+model, observation mapping and knowledge provenance. Do not derive a model from
+operator availability or choose parameters on realized payoffs.
+
+Record definitions, decisive derivation, model choice, identification gaps,
+approximations, information preserved/lost and the observable falsifier. The
+mechanism equation/functional and its market-outcome projection are distinct.
+Applicable audits may be empty; add stochastic, dimensional, causal, spectral,
+valuation or other checks only when the selected mechanism warrants them.
+Unknown links limit claims. Do not fill required fields with invented economics.
+
+## Landing the specification
+
+Use [the measurement-program contract](../../../docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md)
+when freezing its record. Preserve `research_equation`,
 `mechanism_conditioned_measurement_program`, `market_outcome_projection`,
-`applicable_audits`, `formula_implied_information`,
-`formula_implied_information_review`, `metric_signature_match` by model layer,
-and drawdown geometry interpretation when Step4 metrics exist.
+`applicable_audits`, `formula_implied_information` and their component/observation
+bindings. `metric_signature_match` and drawdown interpretation apply when actual
+Step4 evidence exists, not during an outcome-blind new specification.
 
-## Challenger Route
+`canonical_spec.formula_text` is the exact recovered/declared estimator, not a
+prose paraphrase or a newly invented detector. Each implementation component
+binds to that estimator and its measurement semantics. For direct code, an
+unresolved implementation assumption means a blocked code contract. Large
+minute/tick/training inputs require a bounded batch plan, not all-in-memory code.
+Operator/hybrid details are in [implementation contracts](implementation-contracts.md).
 
-Read adversarially. Try to find what the primary route flattened, skipped, or over-assumed.
-
-Focus on:
-- alternative formula interpretations
-- missing operator steps
-- hidden assumptions
-- places where `alpha_idea_master` may overstate certainty
-
-## Consistency Audit
-
-Judge whether primary + challenger remain faithful to the alpha thesis.
-
-Return:
-- consistency_score
-- mismatch_points
-- missing_steps
-- distortion_risks
-- recommendation (`proceed|revise|stop`)
-
-## Chief Finalization Trigger
-
-Escalate only when:
-- `consistency_score < 0.7`, or
-- primary vs challenger have more than two material disagreements on inputs/operators/reconstruction logic.
-
-Otherwise keep `opus_invoked = false` and use primary + consistency to finalize the canonical spec.
-
-## Dirac-Style Step2 Factor Spec Prompt
-
-```text
-You are the Step2 factor specification builder.
-
-Your task is to convert Step1's alpha_idea_master into a factor_spec_master. Do not let direct_code become a shortcut around the mechanism contract.
-
-Mandatory order:
-1. Validate Step1 classified research equation. If equation_status, assumptions, validity_scope, participant_constraint_loop, expected_metric_signature, falsification_tests, or kill_criteria are missing, mark the spec blocked.
-2. Validate every candidate model's mathematical_object and independent mechanism_equation_or_functional, then validate primary_mathematical_model. It must be chosen from the economic hypothesis. Stochastic process is not automatically the primary model.
-3. Validate market_outcome_projection as a separate bridge. It must derive the selected model's map
-   to value, payoff, price gap or return. Stochastic terms are required only
-   when the selected model is stochastic; DCF and other mechanisms use their
-   own mathematical objects.
-4. Build observable_detector_contract, including measurement_equation and null_or_alias_behavior. The formula is an observable estimator of the selected mathematical object, not the mechanism itself.
-5. Build canonical_spec.formula_text only after the detector contract is coherent.
-6. Generate direct_code only after the formula and data requirements are unambiguous.
-7. If direct_code cannot implement the detector without unstated assumptions, set implementation_contract.code_contract.status = "blocked".
-8. If the detector consumes minute bars, tick data, large intraday panels, or a future training dataset, direct_code must include a bounded batch plan or be blocked.
-
-Required output additions:
-{
-  "mechanism_conditioned_measurement_program": {
-    "contract_version": "factorforge_mechanism_conditioned_measurement_program_v1",
-    "math_tool_selection": {},
-    "model_selection": {},
-    "research_equation": {},
-    "market_outcome_projection": {},
-    "applicable_audits": {"selected": [], "rejected": []},
-    "observation_and_estimation": {},
-    "public_derivation_record": {},
-    "implementation": {},
-    "deterministic_validation_plan": {},
-    "search_policy": {}
-  },
-  "canonical_spec": {
-    "formula_text": "",
-    "formula_text_must_reference_detector_contract": true
-  },
-  "implementation_contract": {
-    "code_contract": {
-      "status": "ready|blocked",
-      "blocked_reason": "",
-      "source_code": "",
-      "batch_execution_plan": {
-        "version": "factorforge_batch_execution_plan_v1",
-        "memory_budget_mb": null,
-        "estimated_peak_memory_mb": null,
-        "partition_key": "",
-        "selected_columns": [],
-        "predicate_pushdown": [],
-        "lookback_overlap_or_state": "",
-        "checkpoint_resume_path": "",
-        "parity_sample_policy": ""
-      }
-    }
-  }
-}
-
-Invalid outputs:
-- formula_text that is only a formula paraphrase
-- formula_implied_information that repeats raw fields
-- stochastic process used as primary model without economic justification
-- direct_code must implement the estimator only after the mechanism contract is coherent
-- direct_code that ignores rolling windows, valid-day filters, cost basis, liquidity state, or other detector requirements stated in the contract
-- direct_code that computes a proxy different from the declared measurement_equation
-- direct_code over minute/tick/large panel data that loads the full dataset into memory without a batch_execution_plan
-- raw-field restatement is invalid
-```
+Current validators still impose specific candidate roles/counts and nonempty
+record fields; see [compatibility constraints](../../factor-forge-ultimate/references/compatibility-constraints.md).
+These are landing limitations, not a quota for ideas. If the research cannot
+honestly support them, retain the concrete gap and report the blocked formal
+path. Never invent a dummy model, new mechanism or retrospective blind analysis.

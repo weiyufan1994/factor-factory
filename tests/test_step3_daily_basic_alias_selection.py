@@ -32,8 +32,8 @@ def test_rank_formula_requires_cross_sectional_sample_universe():
 
 
 def test_step3_repo_root_falls_back_when_legacy_checkout_is_inaccessible(monkeypatch):
-    legacy_repo = Path("/home/ubuntu/.openclaw/workspace/repos/factor-factory")
-    legacy_runtime = Path("/home/ubuntu/.openclaw/workspace/factorforge")
+    legacy_repo = Path("/opt/factorforge/workspace/repos/factor-factory")
+    legacy_runtime = Path("/opt/factorforge/workspace/factorforge")
     original_exists = Path.exists
 
     def guarded_exists(path):

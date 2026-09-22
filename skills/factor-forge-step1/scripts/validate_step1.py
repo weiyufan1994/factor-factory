@@ -12,13 +12,14 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 OBJ = FF / 'objects'
 
 from factor_factory.knowledge_reference import build_legacy_knowledge_reference_contract, validate_knowledge_reference_contract
 from factor_factory.measurement_program import (
     BLOCK_MEASUREMENT_PROGRAM_INVALID,
+    ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE,
     validate_measurement_program,
 )
 
@@ -185,17 +186,23 @@ def valid_market_outcome_projection(value) -> bool:
     )
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--report-id', required=True)
-    args = ap.parse_args()
-    rid = args.report_id
-    path = OBJ / 'alpha_idea_master' / f'alpha_idea_master__{rid}.json'
-    checks = [check('alpha_idea_master_exists', path.exists(), f'missing {path}')]
+def build_step1_validation_payload(
+    rid: str,
+    *,
+    aim: dict | None = None,
+    alpha_path: Path | None = None,
+) -> dict:
+    """Build the exact Step1 receipt so downstream validators can replay it."""
+    path = alpha_path or (
+        OBJ / 'alpha_idea_master' / f'alpha_idea_master__{rid}.json'
+    )
+    alpha_exists = aim is not None or path.exists()
+    checks = [check('alpha_idea_master_exists', alpha_exists, f'missing {path}')]
     errors = []
     warnings = []
-    if path.exists():
-        aim = json.loads(path.read_text(encoding='utf-8'))
+    if alpha_exists:
+        if aim is None:
+            aim = json.loads(path.read_text(encoding='utf-8'))
         discipline = aim.get('research_discipline') or {}
         math_review = aim.get('math_discipline_review') or {}
         learning = aim.get('learning_and_innovation') or {}
@@ -203,6 +210,9 @@ def main() -> None:
         discipline_measurement_program = discipline.get('mechanism_conditioned_measurement_program')
         knowledge_context = discipline.get('factor_knowledge_context') if isinstance(discipline.get('factor_knowledge_context'), dict) else {}
         knowledge_reference = discipline.get('knowledge_reference_contract') if isinstance(discipline.get('knowledge_reference_contract'), dict) else {}
+        compatibility_profile = discipline.get('research_compatibility_profile') or aim.get('research_compatibility_profile')
+        local_is_only = os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+        flexible_local = local_is_only and compatibility_profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
         available_knowledge_node_ids = {
             str(item.get('id'))
             for item in knowledge_context.get('nodes') or []
@@ -217,6 +227,8 @@ def main() -> None:
             aim_measurement_program,
             available_knowledge_node_ids=available_knowledge_node_ids,
             require_web_executable=False,
+            compatibility_profile=compatibility_profile,
+            scope='local_is_only' if local_is_only else 'hosted_formal',
         )
         measurement_route = (
             (aim_measurement_program.get('implementation') or {}).get('route')
@@ -254,7 +266,17 @@ def main() -> None:
             check('measurement_program_consistent', isinstance(aim_measurement_program, dict) and aim_measurement_program == discipline_measurement_program, f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: alpha_idea_master/research_discipline mismatch'),
             check('measurement_program_valid', not measurement_program_failures, f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: {measurement_program_failures}'),
             check('measurement_program_route_match', measurement_route == aim.get('implementation_mode'), f'{BLOCK_MEASUREMENT_PROGRAM_INVALID}: implementation route mismatch'),
-            check('similar_case_lessons_imported_present', nonempty_list(discipline.get('similar_case_lessons_imported') or learning.get('similar_case_lessons_imported')), 'similar_case_lessons_imported missing'),
+            check(
+                'similar_case_lessons_imported_present',
+                nonempty_list(discipline.get('similar_case_lessons_imported') or learning.get('similar_case_lessons_imported'))
+                or (
+                    flexible_local
+                    and isinstance(discipline.get('similar_case_lessons_imported'), list)
+                    and not discipline.get('similar_case_lessons_imported')
+                    and nonempty_str(discipline.get('similar_case_lessons_absence_reason'))
+                ),
+                'similar_case_lessons_imported missing',
+            ),
             check(
                 'knowledge_reference_contract_present',
                 valid_knowledge_reference_contract(
@@ -273,8 +295,22 @@ def main() -> None:
         elif item['status'] == 'WARN':
             warnings.append(item['error'])
     result = 'BLOCK' if errors else 'WARN' if warnings else 'PASS'
-    print(json.dumps({'report_id': rid, 'result': result, 'checks': checks, 'errors': errors, 'warnings': warnings}, ensure_ascii=False, indent=2))
-    if result == 'BLOCK':
+    return {
+        'report_id': rid,
+        'result': result,
+        'checks': checks,
+        'errors': errors,
+        'warnings': warnings,
+    }
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--report-id', required=True)
+    args = ap.parse_args()
+    payload = build_step1_validation_payload(args.report_id)
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+    if payload['result'] == 'BLOCK':
         raise SystemExit(1)
 
 

@@ -10,4 +10,4 @@
   - raw code/date aliases may remain (`ts_code`, `trade_date`, `trade_time`)
   - but downstream semantic targets (`instrument`, `datetime`) must be explicit in adapter/config artifacts rather than inferred ad hoc in Step 4
 - append-only feature growth is allowed and expected; new columns such as `pe`, `pb`, `market_cap`, `industry_code`, or custom alpha/risk fields should extend the contract rather than replace it
-- if a Step 3 run depends on user-selectable parameters not already frozen in artifacts (for example sample vs wider window, benchmark assumptions embedded into data prep, universe restriction, or special proxy approval), the skill must ask for confirmation before execution
+- preserve frozen artifacts and existing user authorization; ask only when a material choice (such as a wider window, new proxy, benchmark or universe) remains unresolved and cannot be settled within that authority

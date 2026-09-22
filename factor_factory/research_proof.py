@@ -18,6 +18,11 @@ from factor_factory.metric_verifier import (
     validate_metric_verifier_report,
     verifier_source_sha256,
 )
+from factor_factory.evo_oos import formal_oos_incident_reasons
+from factor_factory.oos_exposure_incident import (
+    oos_exposure_private_registry_guard,
+    validate_oos_exposure_private_registry_guard,
+)
 from factor_factory.research_release import (
     METRIC_ALLOWED_DECISION_PATHS as ALLOWED_DECISION_PATHS,
     METRIC_CLAIM_CLASSES as CLAIM_CLASSES,
@@ -129,6 +134,9 @@ def _validate_evidence_bindings(
     *,
     workspace_root: Path | None,
     required_metrics: set[str],
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    _incident_guard: object | None = None,
 ) -> list[str]:
     reasons: list[str] = []
     bindings = payload.get("evidence_bindings")
@@ -406,6 +414,9 @@ def _validate_evidence_bindings(
                 for replay_reason in validate_metric_verifier_report(
                     evidence_payload,
                     workspace_root=workspace_root,
+                    incident_trust_root=incident_trust_root,
+                    incident_installation_id=incident_installation_id,
+                    _incident_guard=_incident_guard,
                 ):
                     reasons.append(f"{replay_reason}:{metric_name}")
     return reasons
@@ -646,6 +657,44 @@ def _validate_icir(payload: dict[str, Any]) -> list[str]:
         reasons.append("BLOCK_FACTORFORGE_FACTOR_PROOF_ICIR_RECONCILIATION_FAILED")
     if icir.get("evidence_role") != PROMOTION_EVIDENCE_ROLE:
         reasons.append("BLOCK_FACTORFORGE_FACTOR_PROOF_ICIR_EVIDENCE_ROLE_INVALID")
+    return reasons
+
+
+def _validate_control_residualization(payload: dict[str, Any]) -> list[str]:
+    data_contract = (
+        payload.get("data_contract")
+        if isinstance(payload.get("data_contract"), dict)
+        else {}
+    )
+    controls = data_contract.get("control_columns") or []
+    metric = _metric(payload, "control_residualization")
+    if not controls:
+        if metric and metric.get("required_for_acceptance") is True:
+            return ["BLOCK_FACTORFORGE_CONTROL_RESIDUALIZATION_UNDECLARED"]
+        return []
+    reasons: list[str] = []
+    if metric.get("required_for_acceptance") is not True:
+        reasons.append(
+            "BLOCK_FACTORFORGE_CONTROL_RESIDUALIZATION_NOT_REQUIRED"
+        )
+    if metric.get("control_columns") != controls:
+        reasons.append(
+            "BLOCK_FACTORFORGE_CONTROL_RESIDUALIZATION_CONTROLS_MISMATCH"
+        )
+    if number(metric.get("residual_rank_ic_mean")) is None:
+        reasons.append(
+            "BLOCK_FACTORFORGE_CONTROL_RESIDUALIZATION_VALUE_MISSING"
+        )
+    if metric.get("period_count") != _metric(payload, "ic").get("period_count"):
+        reasons.append(
+            "BLOCK_FACTORFORGE_CONTROL_RESIDUALIZATION_SAMPLE_MISMATCH"
+        )
+    if metric.get("method") != (
+        "daily_cross_sectional_ols_signal_on_controls_with_intercept"
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_CONTROL_RESIDUALIZATION_METHOD_INVALID"
+        )
     return reasons
 
 
@@ -1195,6 +1244,20 @@ def _derive_verdict(
                 "BLOCK_FACTORFORGE_FACTOR_PROOF_DECISION_RULE_COVERAGE_MISSING:"
                 f"{family}"
             )
+    control_columns = (
+        (payload.get("data_contract") or {}).get("control_columns")
+        if isinstance(payload.get("data_contract"), dict)
+        else []
+    )
+    if (
+        control_columns
+        and "metrics.control_residualization.residual_rank_ic_mean"
+        not in rule_paths
+    ):
+        reasons.append(
+            "BLOCK_FACTORFORGE_FACTOR_PROOF_DECISION_RULE_COVERAGE_MISSING:"
+            "control_residualization"
+        )
     if claim_class != "risk_premium":
         for forbidden_prefix in (
             "metrics.fama_macbeth.",
@@ -1237,8 +1300,63 @@ def validate_factor_proof_certificate(
     workspace_root: Path | None = None,
     expected_report_id: str | None = None,
     expected_factor_id: str | None = None,
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    _incident_guard: object | None = None,
 ) -> dict[str, Any]:
+    current_replay = bool(
+        incident_trust_root is not None and incident_installation_id
+    )
+    if bool(incident_trust_root is not None) != bool(incident_installation_id):
+        return {
+            "certificate_version": CERTIFICATE_VERSION,
+            "report_id": payload.get("report_id"),
+            "factor_id": payload.get("factor_id"),
+            "verdict": "BLOCK",
+            "declared_verdict": payload.get("declared_verdict"),
+            "block_reasons": [
+                "BLOCK_FACTORFORGE_FACTOR_PROOF_INCIDENT_HOST_CONTEXT_INCOMPLETE"
+            ],
+            "decision_rule_outcomes": [],
+            "current_formal_authority_verified": False,
+        }
+    if current_replay and _incident_guard is None:
+        trust_root = incident_trust_root.expanduser().resolve(strict=True)
+        with oos_exposure_private_registry_guard(
+            trust_root,
+            installation_id=str(incident_installation_id),
+        ) as guard:
+            return validate_factor_proof_certificate(
+                payload,
+                workspace_root=workspace_root,
+                expected_report_id=expected_report_id,
+                expected_factor_id=expected_factor_id,
+                incident_trust_root=trust_root,
+                incident_installation_id=incident_installation_id,
+                _incident_guard=guard,
+            )
     reasons: list[str] = []
+    if current_replay:
+        assert incident_trust_root is not None
+        assert incident_installation_id is not None
+        validate_oos_exposure_private_registry_guard(
+            _incident_guard,
+            trust_root=incident_trust_root,
+            installation_id=incident_installation_id,
+        )
+        if workspace_root is None:
+            reasons.append(
+                "BLOCK_FACTORFORGE_FACTOR_PROOF_CURRENT_WORKSPACE_REQUIRED"
+            )
+        else:
+            reasons.extend(
+                formal_oos_incident_reasons(
+                    workspace_root=workspace_root,
+                    report_id=str(payload.get("report_id") or ""),
+                    trust_root=incident_trust_root,
+                    installation_id=incident_installation_id,
+                )
+            )
     if payload.get("certificate_version") != CERTIFICATE_VERSION:
         reasons.append("BLOCK_FACTORFORGE_FACTOR_PROOF_VERSION_INVALID")
     for field in ("report_id", "factor_id"):
@@ -1262,6 +1380,13 @@ def validate_factor_proof_certificate(
     metrics = payload.get("metrics")
     metrics = metrics if isinstance(metrics, dict) else {}
     required_metrics = set(COMMON_REQUIRED_METRICS)
+    control_columns = (
+        (payload.get("data_contract") or {}).get("control_columns")
+        if isinstance(payload.get("data_contract"), dict)
+        else []
+    )
+    if control_columns:
+        required_metrics.add("control_residualization")
     if claim_class == "risk_premium":
         required_metrics.update(RISK_PREMIUM_REQUIRED_METRICS)
     missing_metrics = sorted(name for name in required_metrics if not isinstance(metrics.get(name), dict))
@@ -1275,10 +1400,16 @@ def validate_factor_proof_certificate(
             payload,
             workspace_root=workspace_root,
             required_metrics=required_metrics,
+            incident_trust_root=(incident_trust_root if current_replay else None),
+            incident_installation_id=(
+                incident_installation_id if current_replay else None
+            ),
+            _incident_guard=(_incident_guard if current_replay else None),
         )
     )
     reasons.extend(_validate_ic(payload))
     reasons.extend(_validate_icir(payload))
+    reasons.extend(_validate_control_residualization(payload))
     reasons.extend(_validate_fama_macbeth(payload, claim_class))
     reasons.extend(_validate_volatility_cost(payload))
     reasons.extend(_validate_transaction_cost(payload))
@@ -1311,6 +1442,7 @@ def validate_factor_proof_certificate(
         "declared_verdict": declared_verdict,
         "block_reasons": list(dict.fromkeys(reasons)),
         "decision_rule_outcomes": rule_outcomes,
+        "current_formal_authority_verified": bool(current_replay and not reasons),
         "risk_premium_specific": {
             "fama_macbeth_required": claim_class == "risk_premium",
             "quintile_or_decile_monotonicity_required": claim_class == "risk_premium",

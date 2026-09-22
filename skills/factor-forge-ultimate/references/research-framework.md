@@ -1,2 +1,1 @@
-See:
-- /Users/humphrey/projects/factor-factory/docs/operations/factor-investing-framework.zh-CN.md
+Read the selected checkout's [factor research framework](../../../docs/operations/factor-investing-framework.zh-CN.md).

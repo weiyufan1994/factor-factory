@@ -78,14 +78,15 @@ Lessons should not be generic status lines. They should be useful retrieval hook
 4. Final status must match real outputs.
 5. Step 5 must emit `math_discipline_review` so Step6 can judge information-set legality, spec stability, signal/portfolio gaps, and overfit risk before promotion.
 6. `information_set_legality=illegal*` is a hard BLOCK. `requires_researcher_confirmation_no_forward_leakage` is a WARN that Step6 must resolve before official promotion.
-7. Step 5 must run a Step4 quality gate before archive/close. If required Step4 metrics/plots are missing, non-finite, internally inconsistent, or obviously implausible, Step5 must set `final_status=failed`, record the suspected bug, and instruct a Step4 rerun instead of passing evidence to Step6.
+7. Step 5 must run a Step4 quality gate before archive/close. If required Step4 metrics/plots are missing, non-finite, internally inconsistent, or obviously implausible, Step5 must set `final_status=failed`, record the suspected defect, and return it through Ultimate to Step4 and Step2/3 for classification. An implementation repair needs Step2 re-review and new Step3 tests before an affected Step4 rerun; do not immediately rerun or pass invalid evidence to Step6.
 
 ## Execution chain
 
 ```bash
-cd /home/ubuntu/.openclaw/workspace
-python3 repos/factor-factory/scripts/build_factorforge_runtime_context.py --report-id <report_id> --write
-python3 repos/factor-factory/scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 5 --end-step 5
+# Ordinary local IS, from the study's pinned checkout:
+python3 scripts/run_factorforge_ultimate.py --local-is-only \
+  --report-id <report_id> --factor-workspace <factor_workspace> \
+  --start-step 5 --end-step 5
 ```
 
 Direct `run_step5.py` / `validate_step5.py` commands are developer-debug only and are blocked for formal writes by default. Official agent-led runs must use `scripts/run_factorforge_ultimate.py` so Step5 consumes exactly the Step4 outputs declared by the orchestrator and emits an `ultimate_run_report__<report_id>.json` proof.

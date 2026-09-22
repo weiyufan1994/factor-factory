@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 W = FF.parent
 if str(REPO_ROOT) not in sys.path:
@@ -29,7 +30,12 @@ from factor_factory.mechanism_math.validator import (
     validate_mechanism_math_contract,
     validate_mechanism_math_contract_v2,
 )
-from factor_factory.measurement_program import validate_measurement_program
+from factor_factory.measurement_program import (
+    research_compatibility_profile_from_spec,
+    validate_measurement_program,
+)
+from factor_factory.evo_child_execution import validate_evo_child_execution_gate
+from factor_factory.primary_evaluator import primary_evaluator_plan, recovery_evidence_complete
 
 OBJ = FF / 'objects'
 ARCH = FF / 'archive'
@@ -52,6 +58,76 @@ def nonempty_str(value) -> bool:
 
 def nonempty_list(value) -> bool:
     return isinstance(value, list) and bool(value)
+
+
+def measurement_program_failures_for_step5(case: dict, fsm: dict) -> list[str]:
+    measurement_program = case.get('mechanism_conditioned_measurement_program') or {}
+    if not isinstance(measurement_program, dict) or not measurement_program:
+        return []
+    declared_node_ids = {
+        str(node_id)
+        for component in ((measurement_program.get('implementation') or {}).get('components') or [])
+        if isinstance(component, dict)
+        for node_id in (component.get('knowledge_node_ids') or [])
+        if str(node_id).strip()
+    }
+    return validate_measurement_program(
+        measurement_program,
+        available_knowledge_node_ids=declared_node_ids,
+        require_web_executable=False,
+        compatibility_profile=research_compatibility_profile_from_spec(fsm),
+        scope='local_is_only' if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1' else 'hosted_formal',
+    )
+
+
+def _finite_number(value) -> bool:
+    if isinstance(value, bool) or value is None:
+        return False
+    try:
+        return math.isfinite(float(value))
+    except (TypeError, ValueError):
+        return False
+
+
+def custom_primary_evidence(frm: dict, evaluation: dict) -> tuple[dict | None, dict, list[str]]:
+    """Return declared-primary metrics and missing evidence without inferring alpha.
+
+    A custom primary evaluator is a local-IS evidence interface. Its negative
+    return may be the study finding, so this checks only declared backend
+    identity and observed finite metrics. Gross must be the evaluator's
+    explicit same-rule zero-cost counterfactual, never net return plus COGS.
+    """
+    try:
+        plan = primary_evaluator_plan(frm.get('evaluation_plan'))
+    except ValueError:
+        return None, {}, []
+    if plan is None:
+        return None, {}, []
+    backend = plan['backend']
+    summaries = [
+        item for item in (evaluation.get('backend_summary') or [])
+        if isinstance(item, dict) and item.get('backend') == backend
+    ]
+    metrics: dict = {}
+    for item in summaries:
+        if isinstance(item.get('key_metrics'), dict):
+            metrics.update(item['key_metrics'])
+    missing = []
+    if not any(item.get('status') == 'success' for item in summaries):
+        missing.append('declared_primary_backend_success')
+    required_finite = [
+        'long_side_annual_return', 'long_side_annual_volatility',
+        'long_side_sharpe', 'long_side_max_drawdown',
+        'long_side_turnover_mean_daily', 'trading_cogs_daily',
+        'trading_cogs_annual', 'cost_adjusted_annual_return',
+        'cost_adjusted_long_side_sharpe',
+        'gross_zero_cost_counterfactual_annual_return',
+        'gross_zero_cost_counterfactual_sharpe',
+    ]
+    missing.extend(key for key in required_finite if not _finite_number(metrics.get(key)))
+    if not recovery_evidence_complete(metrics):
+        missing.append('long_side_recovery_evidence')
+    return plan, metrics, missing
 
 
 def artifact_identity_checks(left_label: str, left: dict, right_label: str, right: dict):
@@ -128,13 +204,16 @@ def evidence_identity_checks(case: dict, ev: dict, frm: dict):
     else:
         checks.append(check('evidence_identity_factor_run_identity_match', False, 'factor_run_master identity missing from evidence_identity'))
 
+    primary_plan, _, _ = custom_primary_evidence(frm, ev)
     required_quality = [
         'step4_has_successful_backend',
-        'self_quant_required_and_present',
         'long_side_metrics_present',
         'identity_chain_verified',
         'mode_decision_present',
     ]
+    required_quality.append(
+        'primary_evaluator_required_and_present' if primary_plan else 'self_quant_required_and_present'
+    )
     checks.append(check('evidence_quality_required_flags_present', all(key in evidence_quality for key in required_quality), f'evidence_quality missing required flags: {evidence_quality}'))
     if case.get('final_status') == 'validated':
         for key in required_quality:
@@ -146,6 +225,7 @@ def evidence_identity_checks(case: dict, ev: dict, frm: dict):
 if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id', required=True)
+    ap.add_argument('--expected-host-trust-manifest-sha256', default=None)
     a = ap.parse_args()
     rid = a.report_id
 
@@ -177,6 +257,19 @@ if __name__ == '__main__':
         ev = load_json(eval_path)
         frm = load_json(frm_path)
         fsm = load_json(fsm_path)
+        evo_gate_reasons = validate_evo_child_execution_gate(
+            workspace_root=FF,
+            report_id=rid,
+            factor_run_master=frm,
+            expected_host_trust_manifest_sha256=(
+                a.expected_host_trust_manifest_sha256
+            ),
+        )
+        checks.append(check(
+            'evo_child_execution_gate',
+            not evo_gate_reasons,
+            ';'.join(evo_gate_reasons) if evo_gate_reasons else None,
+        ))
         checks.extend(artifact_identity_checks('factor_case_master', case, 'factor_evaluation', ev))
         checks.extend(check_identity_transition('factor_run_master', frm, 'factor_case_master', case, 'factor_case_master'))
         checks.extend(check_identity_transition('factor_run_master', frm, 'factor_evaluation', ev, 'factor_evaluation'))
@@ -231,26 +324,12 @@ if __name__ == '__main__':
             ]
             if isinstance(item, dict) and item
         ]
-        declared_node_ids = {
-            str(node_id)
-            for component in ((measurement_program.get('implementation') or {}).get('components') or [])
-            if isinstance(component, dict)
-            for node_id in (component.get('knowledge_node_ids') or [])
-            if str(node_id).strip()
-        } if isinstance(measurement_program, dict) else set()
-        measurement_program_failures = (
-            validate_measurement_program(
-                measurement_program,
-                available_knowledge_node_ids=declared_node_ids,
-                require_web_executable=False,
-            )
-            if isinstance(measurement_program, dict) and measurement_program
-            else []
-        )
+        measurement_program_failures = measurement_program_failures_for_step5(case, fsm)
         adoption_constraints = case.get('adoption_constraints') or {}
         long_side_review = case.get('long_side_review') or math_review.get('long_side_objective') or {}
         information_set_legality = str(math_review.get('information_set_legality') or '').lower()
         overfit_risk = math_review.get('overfit_risk')
+        primary_plan, primary_metrics, primary_missing = custom_primary_evidence(frm, ev)
 
         checks.append(check('math_discipline_review_present', isinstance(math_review, dict) and bool(math_review), 'Step5 factor_case_master.math_discipline_review missing'))
         checks.append(check('mechanism_conditioned_measurement_program_present', isinstance(measurement_program, dict) and bool(measurement_program), 'Step5 factor_case_master.mechanism_conditioned_measurement_program missing'))
@@ -278,12 +357,16 @@ if __name__ == '__main__':
         ))
         checks.append(check(
             'validated_case_requires_supportive_long_side_review',
-            final_status != 'validated' or long_side_review.get('status') in {'supportive', 'official_ready'},
+            final_status != 'validated' or bool(primary_plan) or long_side_review.get('status') in {'supportive', 'official_ready'},
             'validated Step5 case requires supportive or official_ready long-side risk-adjusted evidence',
+        ))
+        checks.append(check(
+            'validated_case_requires_complete_declared_primary_evidence',
+            final_status != 'validated' or not primary_plan or not primary_missing,
+            f'validated custom-primary case missing declared evaluator evidence: {primary_missing}',
         ))
         quality = (factor_business or {}).get('factor_business_quality') if isinstance(factor_business, dict) else {}
         required_business_fields = [
-            'gross_revenue',
             'trading_cogs',
             'net_revenue_after_cogs',
             'volatility',
@@ -291,6 +374,8 @@ if __name__ == '__main__':
             'capital_impairment',
             'economic_net_alpha',
         ]
+        if not primary_plan:
+            required_business_fields.insert(0, 'gross_revenue')
         missing_business_fields = [
             key for key in required_business_fields
             if not isinstance(quality, dict) or quality.get(key) is None

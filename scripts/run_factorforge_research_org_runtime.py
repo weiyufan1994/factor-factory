@@ -17,6 +17,7 @@ from factor_factory.console.config import ConsoleConfig
 from factor_factory.console.container_agent_adapter import (
     ContainerizedOpenClawResearchAgentAdapter,
 )
+from factor_factory.console.codex_research_org_adapter import CodexResearchOrgAdapter
 from factor_factory.research_org import (
     ResearchOrganizationError,
     load_research_organization_plan,
@@ -41,6 +42,8 @@ def main() -> int:
     parser.add_argument("--max-attempts", type=int, default=2)
     parser.add_argument("--max-concurrency", type=int, default=1)
     parser.add_argument("--timeout-seconds", type=int, default=1800)
+    parser.add_argument("--runner", choices=["container", "codex"], default="container")
+    parser.add_argument("--codex-model", default="gpt-5.6-sol")
     parser.add_argument("--validate-only", action="store_true")
     parser.add_argument("--require-complete", action="store_true")
     parser.add_argument("--require-formal", action="store_true")
@@ -89,21 +92,28 @@ def main() -> int:
                 require_formal=args.require_formal,
             )
         else:
-            config = ConsoleConfig.from_env(
-                source_repo=worktree,
-                state_root=state_root,
-                worktree_root=(
-                    Path(args.worktree_root).expanduser().resolve(strict=False)
-                    if args.worktree_root
-                    else worktree.parent
-                ),
-                data_catalogs=[],
-                auth_disabled=False,
-            )
-            if args.installation_id:
-                config = replace(config, installation_id=installation_id)
-            runner = ContainerizedOpenClawResearchAgentAdapter(config)
-            runner.validate_ready()
+            if args.runner == "codex":
+                runner = CodexResearchOrgAdapter(
+                    trust_root=trust_root,
+                    installation_id=installation_id,
+                    model=args.codex_model,
+                )
+            else:
+                config = ConsoleConfig.from_env(
+                    source_repo=worktree,
+                    state_root=state_root,
+                    worktree_root=(
+                        Path(args.worktree_root).expanduser().resolve(strict=False)
+                        if args.worktree_root
+                        else worktree.parent
+                    ),
+                    data_catalogs=[],
+                    auth_disabled=False,
+                )
+                if args.installation_id:
+                    config = replace(config, installation_id=installation_id)
+                runner = ContainerizedOpenClawResearchAgentAdapter(config)
+                runner.validate_ready()
             result = run_research_organization_runtime(
                 workspace=workspace,
                 worktree=worktree,
@@ -113,7 +123,11 @@ def main() -> int:
                 max_concurrency=args.max_concurrency,
                 timeout_seconds=args.timeout_seconds,
                 trust_root=trust_root,
-                installation_id=config.installation_id,
+                installation_id=(
+                    installation_id
+                    if args.runner == "codex"
+                    else config.installation_id
+                ),
             )
     except (
         OSError,

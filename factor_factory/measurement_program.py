@@ -4,9 +4,25 @@ import hashlib
 import json
 from typing import Any, Iterable
 
+from factor_factory.mechanism_math.equation_quality import (
+    VALID_DEMOTION_TRIGGERS,
+    VALID_EVIDENCE_TIERS,
+    score_research_equation,
+)
+from factor_factory.mechanism_math.schema import VALID_RESEARCH_EQUATION_STATUSES
 
-MEASUREMENT_PROGRAM_VERSION = (
+
+MEASUREMENT_PROGRAM_VERSION_V1 = (
     "factorforge_mechanism_conditioned_measurement_program_v1"
+)
+MEASUREMENT_PROGRAM_VERSION_V2 = (
+    "factorforge_mechanism_conditioned_measurement_program_v2"
+)
+# Backward-compatible name used by legacy migration code.  New callers must
+# opt in to V2 explicitly; changing this alias would silently relabel V1 bytes.
+MEASUREMENT_PROGRAM_VERSION = MEASUREMENT_PROGRAM_VERSION_V1
+MEASUREMENT_PROGRAM_VERSIONS = frozenset(
+    {MEASUREMENT_PROGRAM_VERSION_V1, MEASUREMENT_PROGRAM_VERSION_V2}
 )
 IMPLEMENTATION_ROUTES = frozenset({"operator", "direct_code", "hybrid"})
 KNOWLEDGE_AUTHORITY = "advisory_prior_and_counterexample_only"
@@ -14,7 +30,10 @@ MATH_AUTHORITY = "economic_hypothesis_and_math_mechanism"
 MODEL_CANDIDATE_ROLES = frozenset(
     {"primary", "mechanism_alternative", "null_alias"}
 )
-AUTHORITY_ORDER = [
+ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE = (
+    "factorforge_ordinary_local_is_flexible_v1"
+)
+AUTHORITY_ORDER_V1 = [
     "economic_hypothesis",
     "open_math_tool_selection",
     "competing_model_selection",
@@ -26,9 +45,44 @@ AUTHORITY_ORDER = [
     "data_and_implementation",
     "empirical_falsification",
 ]
+# V2 makes the classified, falsifiable market relation explicit before model
+# selection.  It does not displace the selected model's mechanism functional as
+# the sole formula carried by the downstream measurement-program binding.
+AUTHORITY_ORDER_V2 = [
+    "economic_hypothesis",
+    "classified_research_equation",
+    *AUTHORITY_ORDER_V1[1:],
+]
+# Legacy public name remains byte-for-byte V1.
+AUTHORITY_ORDER = AUTHORITY_ORDER_V1
 BLOCK_MEASUREMENT_PROGRAM_INVALID = (
     "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID"
 )
+INVALID_RESEARCH_COMPATIBILITY_PROFILE_BINDING = (
+    "__invalid_research_compatibility_profile_binding__"
+)
+
+
+def research_compatibility_profile_from_spec(spec: Any) -> str | None:
+    """Return only the profile consistently bound on the current Step2 spec."""
+    if not isinstance(spec, dict):
+        return None
+    contract = spec.get("research_contract")
+    contract_has_profile = (
+        isinstance(contract, dict) and "research_compatibility_profile" in contract
+    )
+    top_has_profile = "research_compatibility_profile" in spec
+    contract_profile = (
+        contract.get("research_compatibility_profile")
+        if isinstance(contract, dict)
+        else None
+    )
+    if top_has_profile and (
+        not contract_has_profile
+        or spec.get("research_compatibility_profile") != contract_profile
+    ):
+        return INVALID_RESEARCH_COMPATIBILITY_PROFILE_BINDING
+    return contract_profile if contract_has_profile else None
 PUBLIC_DERIVATION_FIELDS = frozenset(
     {
         "record_type",
@@ -40,7 +94,7 @@ PUBLIC_DERIVATION_FIELDS = frozenset(
         "overclaim_guard",
     }
 )
-PUBLIC_MEASUREMENT_PROGRAM_FIELDS = frozenset(
+PUBLIC_MEASUREMENT_PROGRAM_FIELDS_V1 = frozenset(
     {
         "contract_version",
         "authority_order",
@@ -53,9 +107,15 @@ PUBLIC_MEASUREMENT_PROGRAM_FIELDS = frozenset(
         "public_derivation_record",
         "implementation",
         "deterministic_validation_plan",
+        "evaluation_design",
         "search_policy",
     }
 )
+PUBLIC_MEASUREMENT_PROGRAM_FIELDS_V2 = frozenset(
+    {*PUBLIC_MEASUREMENT_PROGRAM_FIELDS_V1, "research_equation"}
+)
+# Preserve the public V1 name for callers that inspect the legacy closed shape.
+PUBLIC_MEASUREMENT_PROGRAM_FIELDS = PUBLIC_MEASUREMENT_PROGRAM_FIELDS_V1
 PUBLIC_MEASUREMENT_SECTION_FIELDS = {
     "knowledge_role": frozenset(
         {"authority", "uses", "cannot_override", "conflict_resolution"}
@@ -97,6 +157,7 @@ PUBLIC_MEASUREMENT_SECTION_FIELDS = {
         {
             "estimand",
             "observation_map",
+            "executable_formula_projection",
             "estimator",
             "identification_assumptions",
             "bias_variance_and_noise",
@@ -117,10 +178,15 @@ PUBLIC_MEASUREMENT_SECTION_FIELDS = {
             "implementation_parity",
         }
     ),
+    "evaluation_design": frozenset(
+        {"primary_metrics", "portfolio_contract", "proof_plan"}
+    ),
     "search_policy": frozenset(
         {
             "invariant_estimand",
             "allowed_model_or_estimator_variations",
+            "registered_diagnostic_trials",
+            "quarantined_sensitivities",
             "forbidden_shortcuts",
             "objective_vector",
             "stop_rules",
@@ -173,6 +239,271 @@ PUBLIC_MEASUREMENT_COMPONENT_FIELDS = frozenset(
         "knowledge_node_ids",
     }
 )
+PUBLIC_RESEARCH_EQUATION_FIELDS = frozenset(
+    {
+        "equation_status",
+        "equation_text",
+        "assumptions",
+        "validity_scope",
+        "symmetry_or_constraint",
+        "symmetry_breaking_mechanism",
+        "participant_constraint_loop",
+        "equation_quality",
+        # These three fields are compatibility mirrors of equation_quality.
+        # V2 requires exact equality so they cannot become another authority.
+        "evidence_tier",
+        "audit_basis",
+        "demotion_triggers",
+        "mathematical_object",
+        "observation_or_estimation_map",
+        "observable_estimator",
+        "expected_metric_signature",
+        "falsification_tests",
+        "kill_criteria",
+        "identity_contract",
+    }
+)
+PUBLIC_RESEARCH_EQUATION_VALIDITY_SCOPE_FIELDS = frozenset(
+    {"market", "frequency", "regime", "participant_structure"}
+)
+PUBLIC_PARTICIPANT_CONSTRAINT_LOOP_FIELDS = frozenset(
+    {"payer", "constraint", "repeat_mechanism", "failure_condition"}
+)
+PUBLIC_EQUATION_QUALITY_FIELDS = frozenset(
+    {"evidence_tier", "audit_basis", "demotion_triggers"}
+)
+STRICT_IDENTITY_MIN_QUALITY_SCORE = 60
+STRICT_IDENTITY_TYPES = frozenset(
+    {
+        "accounting_identity",
+        "cash_flow_identity",
+        "market_clearing_identity",
+        "no_arbitrage_identity",
+        "sdf_euler_identity",
+        "balance_sheet_identity",
+    }
+)
+STRICT_IDENTITY_RELATIONS = frozenset({"EQUAL_BY_DEFINITION"})
+STRICT_IDENTITY_PROOF_STATUSES = frozenset(
+    {
+        "DERIVED_BY_DEFINITION",
+        "DERIVED_FROM_ACCOUNTING_CLOSURE",
+        "DERIVED_FROM_MARKET_CLEARING",
+        "DERIVED_FROM_NO_ARBITRAGE",
+    }
+)
+PUBLIC_STRICT_IDENTITY_CONTRACT_FIELDS = frozenset(
+    {
+        "identity_profile_id",
+        "identity_type",
+        "left_hand_side",
+        "right_hand_side",
+        "relation",
+        "canonical_form",
+        "normalization_or_units",
+        "derivation_basis",
+        "proof_steps",
+        "proof_status",
+        "empirical_claim_boundary",
+        "audit_basis_sha256",
+        "identity_expression_sha256",
+    }
+)
+STRICT_IDENTITY_PROFILES = {
+    "ACCOUNTING_PROFIT_EQ_REVENUE_MINUS_EXPENSE_V1": {
+        "identity_type": "accounting_identity",
+        "left_hand_side": "profit_t",
+        "right_hand_side": "revenue_t - expense_t",
+        "canonical_form": "profit_t - revenue_t + expense_t = 0",
+        "proof_status": "DERIVED_FROM_ACCOUNTING_CLOSURE",
+    },
+    "CASH_FLOW_CLOSING_EQ_OPENING_PLUS_NET_FLOW_V1": {
+        "identity_type": "cash_flow_identity",
+        "left_hand_side": "closing_cash_t",
+        "right_hand_side": "opening_cash_t + net_cash_flow_t",
+        "canonical_form": (
+            "closing_cash_t - opening_cash_t - net_cash_flow_t = 0"
+        ),
+        "proof_status": "DERIVED_FROM_ACCOUNTING_CLOSURE",
+    },
+    "MARKET_CLEARING_AGG_DEMAND_EQ_AGG_SUPPLY_V1": {
+        "identity_type": "market_clearing_identity",
+        "left_hand_side": "aggregate_executed_demand_t",
+        "right_hand_side": "aggregate_executed_supply_t",
+        "canonical_form": (
+            "aggregate_executed_demand_t - aggregate_executed_supply_t = 0"
+        ),
+        "proof_status": "DERIVED_FROM_MARKET_CLEARING",
+    },
+    "NO_ARBITRAGE_ZERO_COST_ZERO_PAYOFF_V1": {
+        "identity_type": "no_arbitrage_identity",
+        "left_hand_side": "zero_cost_portfolio_value_t",
+        "right_hand_side": "zero_payoff_value_t",
+        "canonical_form": (
+            "zero_cost_portfolio_value_t - zero_payoff_value_t = 0"
+        ),
+        "proof_status": "DERIVED_FROM_NO_ARBITRAGE",
+    },
+    "SDF_PRICE_EQ_EXPECTED_DISCOUNTED_PAYOFF_V1": {
+        "identity_type": "sdf_euler_identity",
+        "left_hand_side": "price_t",
+        "right_hand_side": "conditional_expectation_t(sdf_t1 * payoff_t1)",
+        "canonical_form": (
+            "price_t - conditional_expectation_t(sdf_t1 * payoff_t1) = 0"
+        ),
+        "proof_status": "DERIVED_FROM_NO_ARBITRAGE",
+    },
+    "BALANCE_SHEET_ASSETS_EQ_LIABILITIES_PLUS_EQUITY_V1": {
+        "identity_type": "balance_sheet_identity",
+        "left_hand_side": "assets_t",
+        "right_hand_side": "liabilities_t + equity_t",
+        "canonical_form": "assets_t - liabilities_t - equity_t = 0",
+        "proof_status": "DERIVED_FROM_ACCOUNTING_CLOSURE",
+    },
+}
+
+
+def _canonical_sha256(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _strict_identity_expression_preimage(contract: dict[str, Any]) -> dict[str, Any]:
+    return {
+        field: contract.get(field)
+        for field in (
+            "identity_profile_id",
+            "identity_type",
+            "left_hand_side",
+            "right_hand_side",
+            "relation",
+            "canonical_form",
+            "normalization_or_units",
+            "derivation_basis",
+            "proof_steps",
+            "proof_status",
+            "empirical_claim_boundary",
+        )
+    }
+
+
+def build_strict_identity_contract(
+    *,
+    identity_profile_id: str,
+    normalization_or_units: str,
+    derivation_basis: list[str],
+    proof_steps: list[str],
+    audit_basis: list[str],
+) -> dict[str, Any]:
+    """Build the closed V2 identity proof object; it grants no authority."""
+    profile = STRICT_IDENTITY_PROFILES.get(identity_profile_id)
+    if not isinstance(profile, dict):
+        raise ValueError("unknown strict identity profile")
+    contract = {
+        "identity_profile_id": identity_profile_id,
+        "identity_type": profile["identity_type"],
+        "left_hand_side": profile["left_hand_side"],
+        "right_hand_side": profile["right_hand_side"],
+        "relation": "EQUAL_BY_DEFINITION",
+        "canonical_form": profile["canonical_form"],
+        "normalization_or_units": normalization_or_units,
+        "derivation_basis": list(derivation_basis),
+        "proof_steps": list(proof_steps),
+        "proof_status": profile["proof_status"],
+        "empirical_claim_boundary": "DEFINITIONAL_NOT_ESTIMATED",
+        "audit_basis_sha256": _canonical_sha256({"audit_basis": audit_basis}),
+    }
+    contract["identity_expression_sha256"] = _canonical_sha256(
+        _strict_identity_expression_preimage(contract)
+    )
+    return contract
+
+
+def _strict_identity_contract_failures(
+    equation: dict[str, Any],
+    *,
+    prefix: str,
+) -> list[str]:
+    contract = equation.get("identity_contract")
+    if not isinstance(contract, dict):
+        return [f"{prefix}.strict_identity_contract_missing"]
+    reasons: list[str] = []
+    actual_fields = set(contract)
+    if actual_fields != PUBLIC_STRICT_IDENTITY_CONTRACT_FIELDS:
+        reasons.append(
+            f"{prefix}.identity_contract.unexpected_or_missing_fields"
+        )
+    identity_type = contract.get("identity_type")
+    if identity_type not in STRICT_IDENTITY_TYPES:
+        reasons.append(f"{prefix}.identity_contract.identity_type_invalid")
+    identity_profile_id = contract.get("identity_profile_id")
+    identity_profile = STRICT_IDENTITY_PROFILES.get(identity_profile_id)
+    if not isinstance(identity_profile, dict):
+        reasons.append(f"{prefix}.identity_contract.identity_profile_id_invalid")
+    else:
+        for field, expected in identity_profile.items():
+            if contract.get(field) != expected:
+                reasons.append(
+                    f"{prefix}.identity_contract.profile_{field}_mismatch"
+                )
+    if contract.get("relation") not in STRICT_IDENTITY_RELATIONS:
+        reasons.append(f"{prefix}.identity_contract.relation_invalid")
+    if contract.get("proof_status") not in STRICT_IDENTITY_PROOF_STATUSES:
+        reasons.append(f"{prefix}.identity_contract.proof_status_invalid")
+    if contract.get("empirical_claim_boundary") != "DEFINITIONAL_NOT_ESTIMATED":
+        reasons.append(
+            f"{prefix}.identity_contract.empirical_claim_boundary_invalid"
+        )
+    for field in (
+        "left_hand_side",
+        "right_hand_side",
+        "canonical_form",
+        "normalization_or_units",
+    ):
+        value = contract.get(field)
+        if not isinstance(value, str) or not value.strip():
+            reasons.append(f"{prefix}.identity_contract.{field}")
+    if (
+        isinstance(contract.get("left_hand_side"), str)
+        and contract.get("left_hand_side") == contract.get("right_hand_side")
+    ):
+        reasons.append(f"{prefix}.identity_contract.trivial_same_side")
+    for field in ("derivation_basis", "proof_steps"):
+        value = contract.get(field)
+        if (
+            not isinstance(value, list)
+            or not value
+            or any(not isinstance(item, str) or not item.strip() for item in value)
+            or len(value) != len(set(value))
+        ):
+            reasons.append(f"{prefix}.identity_contract.{field}")
+    expected_audit_digest = _canonical_sha256(
+        {"audit_basis": equation.get("audit_basis")}
+    )
+    if contract.get("audit_basis_sha256") != expected_audit_digest:
+        reasons.append(f"{prefix}.identity_contract.audit_basis_sha256_mismatch")
+    expected_expression_digest = _canonical_sha256(
+        _strict_identity_expression_preimage(contract)
+    )
+    if contract.get("identity_expression_sha256") != expected_expression_digest:
+        reasons.append(
+            f"{prefix}.identity_contract.identity_expression_sha256_mismatch"
+        )
+    equation_text = equation.get("equation_text")
+    expected_equation_text = (
+        f'{contract.get("left_hand_side")} = {contract.get("right_hand_side")}'
+    )
+    if equation_text != expected_equation_text:
+        reasons.append(
+            f"{prefix}.identity_contract.equation_text_not_exact_profile_identity"
+        )
+    return list(dict.fromkeys(reasons))
 
 
 def stable_measurement_program_hash(program: Any) -> str:
@@ -249,16 +580,29 @@ def measurement_program_template(
     *,
     placeholder: str,
     implementation_route: str = "operator",
+    contract_version: str = MEASUREMENT_PROGRAM_VERSION_V1,
 ) -> dict[str, Any]:
     if implementation_route not in IMPLEMENTATION_ROUTES:
         raise ValueError(
             f"unsupported measurement-program implementation route: "
             f"{implementation_route!r}"
         )
+    if (
+        not isinstance(contract_version, str)
+        or contract_version not in MEASUREMENT_PROGRAM_VERSIONS
+    ):
+        raise ValueError(
+            f"unsupported measurement-program contract version: "
+            f"{contract_version!r}"
+        )
     route = implementation_route
-    return {
-        "contract_version": MEASUREMENT_PROGRAM_VERSION,
-        "authority_order": list(AUTHORITY_ORDER),
+    program = {
+        "contract_version": contract_version,
+        "authority_order": list(
+            AUTHORITY_ORDER_V2
+            if contract_version == MEASUREMENT_PROGRAM_VERSION_V2
+            else AUTHORITY_ORDER_V1
+        ),
         "knowledge_role": {
             "authority": KNOWLEDGE_AUTHORITY,
             "uses": ["candidate_model_prior", "counterexample", "tool_candidate"],
@@ -351,6 +695,7 @@ def measurement_program_template(
         "observation_and_estimation": {
             "estimand": placeholder,
             "observation_map": placeholder,
+            "executable_formula_projection": placeholder,
             "estimator": placeholder,
             "identification_assumptions": [placeholder, placeholder],
             "bias_variance_and_noise": placeholder,
@@ -404,9 +749,40 @@ def measurement_program_template(
             "ablation_and_alias_tests": [placeholder],
             "implementation_parity": placeholder,
         },
+        "evaluation_design": {
+            "primary_metrics": [
+                {
+                    "metric": placeholder,
+                    "direction": placeholder,
+                    "candidate_threshold": placeholder,
+                    "official_threshold": placeholder,
+                    "evidence_role": "promotion_gate_evidence",
+                }
+            ],
+            "portfolio_contract": {
+                "long_side_definition": placeholder,
+                "weighting": placeholder,
+                "rebalance": placeholder,
+                "return_path": placeholder,
+                "nav_construction": placeholder,
+                "turnover_definition": placeholder,
+                "cost_model": placeholder,
+                "capacity_model": placeholder,
+                "minimum_eligible_names": 1,
+                "maximum_excluded_fraction": 0.99,
+            },
+            "proof_plan": {
+                "raw_evidence_artifacts": [placeholder],
+                "hash_policy": placeholder,
+                "replay_obligations": [placeholder],
+                "authority_boundary": placeholder,
+            },
+        },
         "search_policy": {
             "invariant_estimand": placeholder,
             "allowed_model_or_estimator_variations": [placeholder],
+            "registered_diagnostic_trials": [],
+            "quarantined_sensitivities": [],
             "forbidden_shortcuts": [
                 "choose a story because an operator already exists",
                 "change the estimand because an available field is convenient",
@@ -422,6 +798,41 @@ def measurement_program_template(
             "stop_rules": [placeholder],
         },
     }
+    if contract_version == MEASUREMENT_PROGRAM_VERSION_V2:
+        program["research_equation"] = {
+            "equation_status": "research_conjecture",
+            "equation_text": placeholder,
+            "assumptions": [placeholder],
+            "validity_scope": {
+                "market": placeholder,
+                "frequency": placeholder,
+                "regime": placeholder,
+                "participant_structure": placeholder,
+            },
+            "symmetry_or_constraint": placeholder,
+            "symmetry_breaking_mechanism": placeholder,
+            "participant_constraint_loop": {
+                "payer": placeholder,
+                "constraint": placeholder,
+                "repeat_mechanism": placeholder,
+                "failure_condition": placeholder,
+            },
+            "equation_quality": {
+                "evidence_tier": "report_specific_hypothesis",
+                "audit_basis": [placeholder],
+                "demotion_triggers": ["metric_signature_mismatch"],
+            },
+            "evidence_tier": "report_specific_hypothesis",
+            "audit_basis": [placeholder],
+            "demotion_triggers": ["metric_signature_mismatch"],
+            "mathematical_object": placeholder,
+            "observation_or_estimation_map": placeholder,
+            "observable_estimator": placeholder,
+            "expected_metric_signature": [placeholder],
+            "falsification_tests": [placeholder],
+            "kill_criteria": [placeholder],
+        }
+    return program
 
 
 def validate_measurement_program(
@@ -430,8 +841,16 @@ def validate_measurement_program(
     placeholder: str | None = None,
     available_knowledge_node_ids: Iterable[str] = (),
     require_web_executable: bool = True,
+    compatibility_profile: str | None = None,
+    scope: str | None = None,
 ) -> list[str]:
     reasons: list[str] = []
+    flexible_local = (
+        compatibility_profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        and scope == "local_is_only"
+    )
+    if compatibility_profile is not None and not flexible_local:
+        reasons.append("measurement_program.compatibility_profile_invalid")
     available_nodes = {str(item) for item in available_knowledge_node_ids}
 
     def nonempty(value: Any) -> bool:
@@ -479,12 +898,32 @@ def validate_measurement_program(
 
     if not isinstance(program, dict):
         return ["measurement_program"]
-    reject_unexpected(
-        program, PUBLIC_MEASUREMENT_PROGRAM_FIELDS, "measurement_program"
+    contract_version = program.get("contract_version")
+    allowed_program_fields = (
+        PUBLIC_MEASUREMENT_PROGRAM_FIELDS_V2
+        if contract_version == MEASUREMENT_PROGRAM_VERSION_V2
+        else PUBLIC_MEASUREMENT_PROGRAM_FIELDS_V1
     )
-    if program.get("contract_version") != MEASUREMENT_PROGRAM_VERSION:
+    if flexible_local:
+        allowed_program_fields = frozenset(
+            {*allowed_program_fields, "compatibility_profile"}
+        )
+    reject_unexpected(
+        program, allowed_program_fields, "measurement_program"
+    )
+    if flexible_local and program.get("compatibility_profile") != compatibility_profile:
+        reasons.append("measurement_program.compatibility_profile_binding_invalid")
+    if (
+        not isinstance(contract_version, str)
+        or contract_version not in MEASUREMENT_PROGRAM_VERSIONS
+    ):
         reasons.append("measurement_program.contract_version")
-    if program.get("authority_order") != AUTHORITY_ORDER:
+    expected_authority_order = (
+        AUTHORITY_ORDER_V2
+        if contract_version == MEASUREMENT_PROGRAM_VERSION_V2
+        else AUTHORITY_ORDER_V1
+    )
+    if program.get("authority_order") != expected_authority_order:
         reasons.append("measurement_program.authority_order")
 
     knowledge = program.get("knowledge_role")
@@ -532,7 +971,7 @@ def validate_measurement_program(
             tool_selection,
             "candidate_tool_families",
             "measurement_program.math_tool_selection",
-            minimum=2,
+            minimum=1 if flexible_local else 2,
         )
         selected = require_string_list(
             tool_selection,
@@ -549,7 +988,12 @@ def validate_measurement_program(
             "measurement_program.math_tool_selection",
         )
         rejected = tool_selection.get("rejected_tool_families")
-        if not isinstance(rejected, list) or not rejected:
+        if not isinstance(rejected, list):
+            reasons.append(
+                "measurement_program.math_tool_selection.rejected_tool_families"
+            )
+            rejected = []
+        elif not rejected and not flexible_local:
             reasons.append(
                 "measurement_program.math_tool_selection.rejected_tool_families"
             )
@@ -591,13 +1035,14 @@ def validate_measurement_program(
         ):
             require_string(selection, field, "measurement_program.model_selection")
         candidates = selection.get("candidate_models")
-        if not isinstance(candidates, list) or len(candidates) < 3:
+        minimum_candidates = 2 if flexible_local else 3
+        if not isinstance(candidates, list) or len(candidates) < minimum_candidates:
             reasons.append("measurement_program.model_selection.candidate_models")
         else:
             selected_count = 0
             identities: set[str] = set()
             roles: set[str] = set()
-            model_families: dict[str, str] = {}
+            model_families: dict[str, list[str]] = {}
             for index, candidate in enumerate(candidates):
                 prefix = f"measurement_program.model_selection.candidate_models[{index}]"
                 if not isinstance(candidate, dict):
@@ -625,10 +1070,14 @@ def validate_measurement_program(
                 role = str(candidate.get("candidate_role") or "")
                 if role not in MODEL_CANDIDATE_ROLES:
                     reasons.append(f"{prefix}.candidate_role_invalid")
-                if role in roles:
+                if role in roles and not (
+                    flexible_local and role == "mechanism_alternative"
+                ):
                     reasons.append(f"{prefix}.candidate_role_duplicate")
                 roles.add(role)
-                model_families[role] = str(candidate.get("model_family") or "")
+                model_families.setdefault(role, []).append(
+                    str(candidate.get("model_family") or "")
+                )
                 selected_count += candidate.get("selected") is True
                 if candidate.get("selected") is True:
                     selected_candidate = candidate
@@ -647,18 +1096,21 @@ def validate_measurement_program(
                 reasons.append(
                     "measurement_program.model_selection.exactly_one_selected"
                 )
-            if roles != MODEL_CANDIDATE_ROLES:
+            required_roles = (
+                {"primary", "null_alias"}
+                if flexible_local
+                else set(MODEL_CANDIDATE_ROLES)
+            )
+            if not required_roles <= roles:
                 reasons.append(
                     "measurement_program.model_selection.candidate_roles_incomplete"
                 )
-            if (
-                model_families.get("primary")
-                and model_families.get("primary")
-                == model_families.get("mechanism_alternative")
-            ):
-                reasons.append(
-                    "measurement_program.model_selection.alternative_model_not_distinct"
-                )
+            primary_families = set(model_families.get("primary", []))
+            for alternative_family in model_families.get("mechanism_alternative", []):
+                if alternative_family and alternative_family in primary_families:
+                    reasons.append(
+                        "measurement_program.model_selection.alternative_model_not_distinct"
+                    )
 
     outcome = program.get("market_outcome_projection")
     if not isinstance(outcome, dict):
@@ -756,6 +1208,7 @@ def validate_measurement_program(
         for field in (
             "estimand",
             "observation_map",
+            "executable_formula_projection",
             "estimator",
             "bias_variance_and_noise",
             "legal_information_time",
@@ -769,7 +1222,7 @@ def validate_measurement_program(
             observation,
             "identification_assumptions",
             "measurement_program.observation_and_estimation",
-            minimum=2,
+            minimum=1 if flexible_local else 2,
         )
         if observation.get("data_construction_is_hypothesis_conditioned") is not True:
             reasons.append(
@@ -802,6 +1255,202 @@ def validate_measurement_program(
                     f"{field}_global_mismatch"
                 )
 
+    if contract_version == MEASUREMENT_PROGRAM_VERSION_V2:
+        equation_prefix = "measurement_program.research_equation"
+        equation = program.get("research_equation")
+        if not isinstance(equation, dict):
+            reasons.append(equation_prefix)
+        else:
+            reject_unexpected(
+                equation,
+                PUBLIC_RESEARCH_EQUATION_FIELDS,
+                equation_prefix,
+            )
+            equation_status = equation.get("equation_status")
+            if equation_status not in VALID_RESEARCH_EQUATION_STATUSES:
+                reasons.append(f"{equation_prefix}.equation_status")
+            for field in (
+                "equation_text",
+                "evidence_tier",
+                "symmetry_or_constraint",
+                "symmetry_breaking_mechanism",
+                "mathematical_object",
+                "observation_or_estimation_map",
+                "observable_estimator",
+            ):
+                require_string(equation, field, equation_prefix)
+            top_demotion_triggers: list[str] = []
+            for field in (
+                "assumptions",
+                "audit_basis",
+                "demotion_triggers",
+                "expected_metric_signature",
+                "falsification_tests",
+                "kill_criteria",
+            ):
+                values = require_string_list(equation, field, equation_prefix)
+                if field == "demotion_triggers":
+                    top_demotion_triggers = values
+                if values and len(values) != len(set(values)):
+                    reasons.append(f"{equation_prefix}.{field}_duplicate")
+
+            validity_scope = equation.get("validity_scope")
+            if not isinstance(validity_scope, dict):
+                reasons.append(f"{equation_prefix}.validity_scope")
+            else:
+                reject_unexpected(
+                    validity_scope,
+                    PUBLIC_RESEARCH_EQUATION_VALIDITY_SCOPE_FIELDS,
+                    f"{equation_prefix}.validity_scope",
+                )
+                for field in sorted(
+                    PUBLIC_RESEARCH_EQUATION_VALIDITY_SCOPE_FIELDS
+                ):
+                    require_string(
+                        validity_scope,
+                        field,
+                        f"{equation_prefix}.validity_scope",
+                    )
+
+            participant_loop = equation.get("participant_constraint_loop")
+            if not isinstance(participant_loop, dict):
+                reasons.append(f"{equation_prefix}.participant_constraint_loop")
+            else:
+                reject_unexpected(
+                    participant_loop,
+                    PUBLIC_PARTICIPANT_CONSTRAINT_LOOP_FIELDS,
+                    f"{equation_prefix}.participant_constraint_loop",
+                )
+                for field in sorted(PUBLIC_PARTICIPANT_CONSTRAINT_LOOP_FIELDS):
+                    require_string(
+                        participant_loop,
+                        field,
+                        f"{equation_prefix}.participant_constraint_loop",
+                    )
+
+            equation_quality = equation.get("equation_quality")
+            if not isinstance(equation_quality, dict):
+                reasons.append(f"{equation_prefix}.equation_quality")
+            else:
+                quality_prefix = f"{equation_prefix}.equation_quality"
+                reject_unexpected(
+                    equation_quality,
+                    PUBLIC_EQUATION_QUALITY_FIELDS,
+                    quality_prefix,
+                )
+                require_string(equation_quality, "evidence_tier", quality_prefix)
+                require_string_list(equation_quality, "audit_basis", quality_prefix)
+                quality_demotion_triggers = require_string_list(
+                    equation_quality,
+                    "demotion_triggers",
+                    quality_prefix,
+                )
+                if (
+                    equation_quality.get("evidence_tier")
+                    not in VALID_EVIDENCE_TIERS
+                ):
+                    reasons.append(f"{quality_prefix}.evidence_tier_invalid")
+                invalid_quality_triggers = sorted(
+                    set(quality_demotion_triggers) - VALID_DEMOTION_TRIGGERS
+                )
+                if invalid_quality_triggers:
+                    reasons.append(
+                        f"{quality_prefix}.demotion_triggers_invalid:"
+                        + ",".join(invalid_quality_triggers)
+                    )
+                for field in sorted(PUBLIC_EQUATION_QUALITY_FIELDS):
+                    if equation.get(field) != equation_quality.get(field):
+                        reasons.append(
+                            f"{equation_prefix}.{field}_quality_mirror_mismatch"
+                        )
+
+            if equation.get("evidence_tier") not in VALID_EVIDENCE_TIERS:
+                reasons.append(f"{equation_prefix}.evidence_tier_invalid")
+            invalid_demotion_triggers = sorted(
+                set(top_demotion_triggers) - VALID_DEMOTION_TRIGGERS
+            )
+            if invalid_demotion_triggers:
+                reasons.append(
+                    f"{equation_prefix}.demotion_triggers_invalid:"
+                    + ",".join(invalid_demotion_triggers)
+                )
+            if (
+                equation_status == "strict_identity"
+                and equation.get("evidence_tier") != "logical_identity"
+            ):
+                reasons.append(
+                    f"{equation_prefix}.strict_identity_requires_logical_identity_evidence"
+                )
+            if equation_status == "strict_identity":
+                reasons.extend(
+                    _strict_identity_contract_failures(
+                        equation,
+                        prefix=equation_prefix,
+                    )
+                )
+                equation_quality_result = score_research_equation(equation)
+                if (
+                    equation_quality_result.quality_score
+                    < STRICT_IDENTITY_MIN_QUALITY_SCORE
+                ):
+                    reasons.append(
+                        f"{equation_prefix}.strict_identity_quality_below_"
+                        f"{STRICT_IDENTITY_MIN_QUALITY_SCORE}"
+                    )
+            elif equation.get("identity_contract") is not None:
+                reasons.append(
+                    f"{equation_prefix}.identity_contract_only_allowed_for_"
+                    "strict_identity"
+                )
+
+            if selected_candidate:
+                if (
+                    equation.get("mathematical_object")
+                    != selected_candidate.get("mathematical_object")
+                ):
+                    reasons.append(
+                        f"{equation_prefix}.mathematical_object_selected_model_mismatch"
+                    )
+            if isinstance(observation, dict):
+                if (
+                    equation.get("observation_or_estimation_map")
+                    != observation.get("observation_map")
+                ):
+                    reasons.append(
+                        f"{equation_prefix}.observation_or_estimation_map_global_mismatch"
+                    )
+                if (
+                    equation.get("observable_estimator")
+                    != observation.get("estimator")
+                ):
+                    reasons.append(
+                        f"{equation_prefix}.observable_estimator_global_mismatch"
+                    )
+
+            equation_text = str(equation.get("equation_text") or "").strip()
+            forbidden_equation_aliases = (
+                (
+                    "market_outcome_projection",
+                    outcome.get("projection_equation_or_map")
+                    if isinstance(outcome, dict)
+                    else None,
+                ),
+                (
+                    "executable_formula_projection",
+                    observation.get("executable_formula_projection")
+                    if isinstance(observation, dict)
+                    else None,
+                ),
+            )
+            for alias_name, alias_value in forbidden_equation_aliases:
+                if (
+                    equation_text
+                    and equation_text == str(alias_value or "").strip()
+                ):
+                    reasons.append(
+                        f"{equation_prefix}.equation_text_equals_{alias_name}"
+                    )
+
     public_record = program.get("public_derivation_record")
     if not isinstance(public_record, dict):
         reasons.append("measurement_program.public_derivation_record")
@@ -819,10 +1468,10 @@ def validate_measurement_program(
             )
         for field, minimum in (
             ("definitions", 1),
-            ("assumptions", 2),
-            ("key_derivation_steps", 3),
+            ("assumptions", 1 if flexible_local else 2),
+            ("key_derivation_steps", 1 if flexible_local else 3),
             ("identification_gaps", 1),
-            ("approximations", 1),
+            ("approximations", 0 if flexible_local else 1),
         ):
             require_string_list(
                 public_record,
@@ -930,6 +1579,70 @@ def validate_measurement_program(
                 "measurement_program.deterministic_validation_plan",
             )
 
+    evaluation = program.get("evaluation_design")
+    evaluation_prefix = "measurement_program.evaluation_design"
+    if not isinstance(evaluation, dict):
+        reasons.append(evaluation_prefix)
+    else:
+        reject_unexpected(
+            evaluation,
+            PUBLIC_MEASUREMENT_SECTION_FIELDS["evaluation_design"],
+            evaluation_prefix,
+        )
+        metrics = evaluation.get("primary_metrics")
+        metric_keys = {
+            "metric", "direction", "candidate_threshold",
+            "official_threshold", "evidence_role",
+        }
+        if not isinstance(metrics, list) or not metrics:
+            reasons.append(f"{evaluation_prefix}.primary_metrics")
+        else:
+            seen_metrics: set[str] = set()
+            for index, metric in enumerate(metrics):
+                prefix = f"{evaluation_prefix}.primary_metrics[{index}]"
+                if not isinstance(metric, dict) or set(metric) != metric_keys:
+                    reasons.append(prefix)
+                    continue
+                for field in metric_keys:
+                    require_string(metric, field, prefix)
+                name = str(metric.get("metric") or "")
+                if name in seen_metrics:
+                    reasons.append(f"{prefix}.duplicate")
+                seen_metrics.add(name)
+                if metric.get("evidence_role") != "promotion_gate_evidence":
+                    reasons.append(f"{prefix}.evidence_role")
+        portfolio = evaluation.get("portfolio_contract")
+        portfolio_keys = {
+            "long_side_definition", "weighting", "rebalance", "return_path",
+            "nav_construction", "turnover_definition", "cost_model",
+            "capacity_model", "minimum_eligible_names",
+            "maximum_excluded_fraction",
+        }
+        if not isinstance(portfolio, dict) or set(portfolio) != portfolio_keys:
+            reasons.append(f"{evaluation_prefix}.portfolio_contract")
+        else:
+            for field in portfolio_keys - {
+                "minimum_eligible_names", "maximum_excluded_fraction"
+            }:
+                require_string(portfolio, field, f"{evaluation_prefix}.portfolio_contract")
+            if type(portfolio.get("minimum_eligible_names")) is not int or portfolio["minimum_eligible_names"] < 1:
+                reasons.append(f"{evaluation_prefix}.portfolio_contract.minimum_eligible_names")
+            excluded = portfolio.get("maximum_excluded_fraction")
+            if isinstance(excluded, bool) or not isinstance(excluded, (int, float)) or not 0 <= float(excluded) < 1:
+                reasons.append(f"{evaluation_prefix}.portfolio_contract.maximum_excluded_fraction")
+        proof = evaluation.get("proof_plan")
+        proof_keys = {
+            "raw_evidence_artifacts", "hash_policy", "replay_obligations",
+            "authority_boundary",
+        }
+        if not isinstance(proof, dict) or set(proof) != proof_keys:
+            reasons.append(f"{evaluation_prefix}.proof_plan")
+        else:
+            require_string_list(proof, "raw_evidence_artifacts", f"{evaluation_prefix}.proof_plan")
+            require_string_list(proof, "replay_obligations", f"{evaluation_prefix}.proof_plan")
+            require_string(proof, "hash_policy", f"{evaluation_prefix}.proof_plan")
+            require_string(proof, "authority_boundary", f"{evaluation_prefix}.proof_plan")
+
     search = program.get("search_policy")
     if not isinstance(search, dict):
         reasons.append("measurement_program.search_policy")
@@ -950,5 +1663,56 @@ def validate_measurement_program(
         shortcuts = set(str(item) for item in search.get("forbidden_shortcuts") or [])
         if "choose a story because an operator already exists" not in shortcuts:
             reasons.append("measurement_program.search_policy.operator_first_forbidden")
+        diagnostics = search.get("registered_diagnostic_trials")
+        if not isinstance(diagnostics, list):
+            reasons.append("measurement_program.search_policy.registered_diagnostic_trials")
+        else:
+            for index, item in enumerate(diagnostics):
+                prefix = f"measurement_program.search_policy.registered_diagnostic_trials[{index}]"
+                if not isinstance(item, dict) or set(item) != {
+                    "trial_id",
+                    "role",
+                    "component_id",
+                    "formula_or_law",
+                    "affects_acceptance",
+                    "multiple_testing_family",
+                }:
+                    reasons.append(prefix)
+                    continue
+                for field in (
+                    "trial_id",
+                    "role",
+                    "component_id",
+                    "formula_or_law",
+                    "multiple_testing_family",
+                ):
+                    require_string(item, field, prefix)
+                if item.get("role") not in {
+                    "standalone_component",
+                    "leave_one_out",
+                    "sign_oracle",
+                    "alias_diagnostic",
+                    "regime_diagnostic",
+                }:
+                    reasons.append(f"{prefix}.role")
+                if item.get("affects_acceptance") is not False:
+                    reasons.append(f"{prefix}.affects_acceptance")
+        sensitivities = search.get("quarantined_sensitivities")
+        if not isinstance(sensitivities, list):
+            reasons.append("measurement_program.search_policy.quarantined_sensitivities")
+        else:
+            for index, item in enumerate(sensitivities):
+                prefix = f"measurement_program.search_policy.quarantined_sensitivities[{index}]"
+                if not isinstance(item, dict) or set(item) != {
+                    "sensitivity_id",
+                    "reason",
+                    "can_affect_acceptance",
+                }:
+                    reasons.append(prefix)
+                    continue
+                require_string(item, "sensitivity_id", prefix)
+                require_string(item, "reason", prefix)
+                if item.get("can_affect_acceptance") is not False:
+                    reasons.append(f"{prefix}.can_affect_acceptance")
 
     return list(dict.fromkeys(reasons))

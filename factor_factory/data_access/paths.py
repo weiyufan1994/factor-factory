@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 DEFAULT_LOCAL_ROOT = Path.home() / '.qlib' / 'raw_tushare'
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 DEFAULT_EC2_PERSISTENT_ROOT = LEGACY_WORKSPACE / 'factorforge' / 'data' / 'raw_tushare'
 
 

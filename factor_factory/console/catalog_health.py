@@ -13,7 +13,7 @@ from typing import Any
 from factor_factory.console.config import ConsoleConfig
 
 
-CATALOG_BUCKET = "yufan-data-lake"
+CATALOG_BUCKET = "factorforge-example-data"
 CATALOG_KEY = "factorforge/data/catalog/data_catalog.json"
 CATALOG_RECEIPT_VERSION = "factorforge_console_active_catalog_receipt_v1"
 CATALOG_MAX_AGE = timedelta(hours=24)

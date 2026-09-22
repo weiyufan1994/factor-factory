@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path("/home/ubuntu/.openclaw/workspace")
+LEGACY_WORKSPACE = Path("/opt/factorforge/workspace")
 FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if (LEGACY_WORKSPACE / "factorforge").exists() else REPO_ROOT))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -173,6 +173,28 @@ def selected_proposal_ids(summary: dict[str, Any]) -> list[str]:
         if isinstance(proposal_id, str) and proposal_id and proposal_id not in ids:
             ids.append(proposal_id)
     return ids
+
+
+def council_producer_mode(
+    council_summary: dict[str, Any], proposals: dict[str, dict[str, Any]] | None = None
+) -> str:
+    """Derive the attachment label from the producers actually represented."""
+    producer_modes = {
+        str(item.get("producer"))
+        for item in (
+            list(council_summary.get("candidate_proposals") or [])
+            + list(council_summary.get("valid_agent_results") or [])
+            + list((proposals or {}).values())
+        )
+        if isinstance(item, dict) and item.get("producer")
+    }
+    if not producer_modes or producer_modes == {"deterministic_scaffold"}:
+        return "scaffold"
+    if producer_modes == {"local_mock_agentic_contract"}:
+        return "agentic_contract_mock"
+    if producer_modes == {"real_agent"}:
+        return "agentic_dispatch_manifest"
+    return "mixed"
 
 
 def proposal_from_agent_result(result: dict[str, Any], path: Path) -> dict[str, Any]:
@@ -426,7 +448,7 @@ def build_revision_council_ref(report_id: str, summary: dict[str, Any], proposal
     research_depths = sorted({str(item.get("research_depth")) for item in candidate_sources if isinstance(item, dict) and item.get("research_depth")})
     return {
         "enabled": True,
-        "mode": "agentic_contract_mock" if "local_mock_agentic_contract" in producer_modes else ("scaffold" if producer_modes == ["deterministic_scaffold"] else "mixed"),
+        "mode": council_producer_mode(summary, proposals),
         "status": "completed",
         "packet_path": relpath(OBJ / "research_iteration_master" / "revision_council" / report_id / f"revision_council_packet__{report_id}.json"),
         "summary_path": relpath(OBJ / "research_iteration_master" / "revision_council" / report_id / f"revision_council_summary__{report_id}.json"),
@@ -447,7 +469,7 @@ def build_brief_council_summary(report_id: str, council_summary: dict[str, Any],
     branches = council_summary.get("recommended_branch_templates") or []
     return {
         "enabled": True,
-        "mode": "agentic_contract_mock" if council_summary.get("valid_agent_results") else "scaffold",
+        "mode": council_producer_mode(council_summary, proposals),
         "status": "completed",
         "proposal_count": len(proposals),
         "selected_proposals": selected_ids,
@@ -481,7 +503,7 @@ def append_council_markdown(markdown: str, council_summary: dict[str, Any], prop
     section = [
         "## Revision Council Summary",
         "",
-        f"- Council mode: scaffold",
+        f"- Council mode: {council_producer_mode(council_summary, proposals)}",
         f"- Proposal count: {len(proposals)}",
         f"- Selected proposal ids: {', '.join(selected_ids) if selected_ids else 'none'}",
         f"- Mathematical tools used: {', '.join(tools) if tools else 'none'}",

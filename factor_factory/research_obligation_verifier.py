@@ -20,7 +20,11 @@ from factor_factory.research_release import (
     MINIMUM_FORMAL_DAILY_PERIODS,
     observed_panel_dates,
     validate_evaluation_release_chain,
+    validate_evaluation_release_chain_current,
     validate_observed_oos_window,
+)
+from factor_factory.oos_exposure_incident import (
+    oos_exposure_private_registry_guard,
 )
 
 
@@ -534,7 +538,35 @@ def run_component_obligation_verifier(
     workspace_root: Path,
     panel_path: Path,
     spec: dict[str, Any],
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    _incident_guard: object | None = None,
 ) -> dict[str, Any]:
+    current_context = (
+        incident_trust_root is not None,
+        bool(incident_installation_id),
+    )
+    if current_context[0] != current_context[1] or (
+        _incident_guard is not None and not all(current_context)
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_COMPONENT_VERIFIER_INCIDENT_HOST_CONTEXT_INCOMPLETE"
+        )
+    if all(current_context) and _incident_guard is None:
+        assert incident_trust_root is not None
+        trust_root = incident_trust_root.expanduser().resolve(strict=True)
+        with oos_exposure_private_registry_guard(
+            trust_root,
+            installation_id=str(incident_installation_id),
+        ) as guard:
+            return run_component_obligation_verifier(
+                workspace_root=workspace_root,
+                panel_path=panel_path,
+                spec=spec,
+                incident_trust_root=trust_root,
+                incident_installation_id=incident_installation_id,
+                _incident_guard=guard,
+            )
     root = workspace_root.expanduser().resolve(strict=False)
     resolved_panel = panel_path.expanduser().resolve(strict=False)
     identities = component_verifier_identities(
@@ -549,13 +581,25 @@ def run_component_obligation_verifier(
         spec=spec,
         identities=identities,
     )
-    release_chain = validate_evaluation_release_chain(
-        workspace_root=root,
-        spec=spec,
-        identities=identities,
-        threshold_path=threshold_path,
-        threshold_payload=threshold_payload,
-    )
+    if incident_trust_root is not None and incident_installation_id:
+        release_chain = validate_evaluation_release_chain_current(
+            workspace_root=root,
+            spec=spec,
+            identities=identities,
+            threshold_path=threshold_path,
+            threshold_payload=threshold_payload,
+            incident_trust_root=incident_trust_root,
+            incident_installation_id=incident_installation_id,
+            _incident_guard=_incident_guard,
+        )
+    else:
+        release_chain = validate_evaluation_release_chain(
+            workspace_root=root,
+            spec=spec,
+            identities=identities,
+            threshold_path=threshold_path,
+            threshold_payload=threshold_payload,
+        )
     frame = _prepare_panel(_load_panel(resolved_panel), spec)
     metrics = _build_metrics(frame, spec)
     outcomes = _evaluate_rules(metrics, threshold_payload["decision_rules"])
@@ -626,7 +670,34 @@ def validate_component_obligation_report(
     report: dict[str, Any],
     *,
     workspace_root: Path,
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    _incident_guard: object | None = None,
 ) -> list[str]:
+    current_context = (
+        incident_trust_root is not None,
+        bool(incident_installation_id),
+    )
+    if current_context[0] != current_context[1] or (
+        _incident_guard is not None and not all(current_context)
+    ):
+        return [
+            "COMPONENT_EVIDENCE_INCIDENT_HOST_CONTEXT_INCOMPLETE"
+        ]
+    if all(current_context) and _incident_guard is None:
+        assert incident_trust_root is not None
+        trust_root = incident_trust_root.expanduser().resolve(strict=True)
+        with oos_exposure_private_registry_guard(
+            trust_root,
+            installation_id=str(incident_installation_id),
+        ) as guard:
+            return validate_component_obligation_report(
+                report,
+                workspace_root=workspace_root,
+                incident_trust_root=trust_root,
+                incident_installation_id=incident_installation_id,
+                _incident_guard=guard,
+            )
     reasons: list[str] = []
     if not isinstance(report, dict):
         return ["COMPONENT_EVIDENCE_REPORT_INVALID"]
@@ -658,13 +729,44 @@ def validate_component_obligation_report(
             spec=spec,
             identities=identities,
         )
-        release_chain = validate_evaluation_release_chain(
-            workspace_root=root,
-            spec=spec,
-            identities=identities,
-            threshold_path=threshold_path,
-            threshold_payload=threshold_payload,
+        current_replay = bool(
+            incident_trust_root is not None and incident_installation_id
         )
+        if current_replay:
+            release_chain = validate_evaluation_release_chain_current(
+                workspace_root=root,
+                spec=spec,
+                identities=identities,
+                threshold_path=threshold_path,
+                threshold_payload=threshold_payload,
+                incident_trust_root=incident_trust_root,
+                incident_installation_id=incident_installation_id,
+                _incident_guard=_incident_guard,
+            )
+        else:
+            release_chain = validate_evaluation_release_chain(
+                workspace_root=root,
+                spec=spec,
+                identities=identities,
+                threshold_path=threshold_path,
+                threshold_payload=threshold_payload,
+            )
+            claimed_chain = report.get("evaluation_release_chain")
+            if isinstance(claimed_chain, dict):
+                if "current_formal_authority_verified" in claimed_chain:
+                    release_chain["current_formal_authority_verified"] = (
+                        claimed_chain["current_formal_authority_verified"]
+                    )
+                else:
+                    release_chain.pop("current_formal_authority_verified", None)
+        claimed_chain = report.get("evaluation_release_chain")
+        if isinstance(claimed_chain, dict):
+            if "current_formal_authority_verified" in claimed_chain:
+                release_chain["current_formal_authority_verified"] = (
+                    claimed_chain["current_formal_authority_verified"]
+                )
+            else:
+                release_chain.pop("current_formal_authority_verified", None)
         frame = _prepare_panel(_load_panel(panel_path), spec)
         metrics = _build_metrics(frame, spec)
         outcomes = _evaluate_rules(metrics, threshold_payload["decision_rules"])

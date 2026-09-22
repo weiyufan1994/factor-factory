@@ -1,0 +1,315 @@
+{
+  "schema_id": "factorforge_offline_failure_diagnosis_fixture_v1",
+  "case_class": "SYNTHETIC_DIAGNOSIS_PLAN_CANDIDATE",
+  "target_identity_candidate": {
+    "hypothesis_candidate_id": "hypothesis-liquidity-withdrawal-response",
+    "assertion_family_id": "assertion-family-latent-liquidity-response"
+  },
+  "frozen_hypothesis": {
+    "economic_hypothesis": "受融资和风险限额约束的拥挤持有者失去等待能力后,会向有限承接深度的流动性提供者支付更大的价格让步。",
+    "estimand": "在形成时点信息集内,约束强弱变化对应的潜在承接深度响应。",
+    "payer": "失去等待能力的受约束拥挤持有者。",
+    "receiver": "仍愿意提供承接深度并承担库存风险的流动性提供者。",
+    "information_set": "形成时点已经可知的价格路径、成交活动与约束代理。",
+    "mathematical_object": "带状态依赖边界的潜在流动性响应及其局部尺度观测映射。",
+    "observation_equation": "局部尺度能量、相位一致性与成交活动共同形成潜在承接深度的有噪声观测。",
+    "market_outcome_projection": "潜在承接深度下降会扩大受约束卖方向剩余承接者支付的价格让步。",
+    "falsifier": "若约束强弱和承接深度对照都不改变局部响应,则当前 payer 与观测映射不能共同成立。"
+  },
+  "signature_candidate": {
+    "expected": {
+      "direction": "CONSTRAINT_STRENGTHENS_RESPONSE",
+      "cross_sectional_shape": "TAIL_CONCENTRATED",
+      "horizon_pattern": "SHORT_TO_MEDIUM_DECAY",
+      "state_interaction": "LOW_DEPTH_AMPLIFICATION",
+      "alias_behavior": "SURVIVES_VOLATILITY_CONTROL",
+      "missingness_behavior": "FORMATION_MASK_INVARIANT",
+      "cost_capacity_behavior": "INFORMATION_MAY_SURVIVE_COST_PRESSURE"
+    },
+    "observed_synthetic": {
+      "direction": "WEAK_DIRECTIONAL_RESPONSE",
+      "cross_sectional_shape": "NON_MONOTONE_TAIL",
+      "horizon_pattern": "VERY_SHORT_DECAY",
+      "state_interaction": "MIXED_DEPTH_INTERACTION",
+      "alias_behavior": "ATTENUATES_UNDER_VOLATILITY_CONTROL",
+      "missingness_behavior": "FORMATION_MASK_INVARIANT",
+      "cost_capacity_behavior": "INFORMATION_MAY_SURVIVE_COST_PRESSURE"
+    }
+  },
+  "validity_intake": {
+    "provenance_state": "SYNTHETIC_TESTABLE",
+    "information_time_state": "SYNTHETIC_TESTABLE",
+    "implementation_state": "SYNTHETIC_TESTABLE",
+    "metric_values_present": false,
+    "production_identity_present": false
+  },
+  "assertions": [
+    {
+      "assertion_id": "assertion-observation-state",
+      "layer_id": "L3",
+      "semantics": "局部尺度观测能够在预注册误差边界内识别潜在承接深度变化。",
+      "material": true,
+      "planned_partition": "FAILURE_TEST_TARGET",
+      "observation_identifiability": "TESTABLE_WITH_REGISTERED_SYNTHETIC_INPUTS"
+    },
+    {
+      "assertion_id": "assertion-volatility-alias",
+      "layer_id": "L5",
+      "semantics": "局部响应不是一般波动放大、公共信息冲击或成员选择造成的别名。",
+      "material": true,
+      "planned_partition": "FAILURE_TEST_TARGET",
+      "observation_identifiability": "TESTABLE_WITH_REGISTERED_SYNTHETIC_INPUTS"
+    },
+    {
+      "assertion_id": "assertion-kernel-timescale",
+      "layer_id": "L6",
+      "semantics": "所选局部核与潜在状态的真实时标和边界相匹配。",
+      "material": true,
+      "planned_partition": "FAILURE_TEST_TARGET",
+      "observation_identifiability": "TESTABLE_WITH_REGISTERED_SYNTHETIC_INPUTS"
+    },
+    {
+      "assertion_id": "assertion-payer-constraint",
+      "layer_id": "L7",
+      "semantics": "受约束持有者确实是价格让步的付款方,且该约束会重复出现。",
+      "material": true,
+      "planned_partition": "SURVIVAL_TEST_TARGET",
+      "observation_identifiability": "TESTABLE_WITH_REGISTERED_SYNTHETIC_INPUTS"
+    }
+  ],
+  "rivals": [
+    {
+      "rival_id": "rival-target-constraint-response",
+      "role": "PREFERRED_MECHANISM",
+      "target_assertion_ids": [
+        "assertion-observation-state",
+        "assertion-kernel-timescale",
+        "assertion-payer-constraint"
+      ],
+      "target_layer_ids": ["L3", "L6", "L7"],
+      "mechanism_semantics": "受约束卖方等待能力下降,有限承接深度使价格让步通过潜在流动性状态进入局部价格路径。",
+      "predicted_signature_candidate": {
+        "direction": "CONSTRAINT_GRADIENT_PRESENT",
+        "cross_sectional_shape": "LOW_DEPTH_TAIL_STRONGER",
+        "horizon_pattern": "PERSISTENT_THEN_DECAYING",
+        "state_interaction": "CONSTRAINT_BY_DEPTH_INTERACTION",
+        "alias_behavior": "SURVIVES_REGISTERED_CONTROLS",
+        "missingness_behavior": "FORMATION_MASK_INVARIANT",
+        "cost_capacity_behavior": "SIGNAL_AND_TRADABILITY_SEPARABLE"
+      },
+      "materiality_floor_candidate": "约束梯度、深度交互和控制后响应必须共同跨过预先定义的最小辨识边界。",
+      "falsifier_semantics": "若高低约束与高低承接深度组合没有不同响应,则目标机制被否定。",
+      "distinguishing_test_ids": [
+        "test-constraint-depth-gradient",
+        "test-estimator-family-stability",
+        "test-public-information-control"
+      ]
+    },
+    {
+      "rival_id": "rival-estimator-misspecification",
+      "role": "MECHANISM_DISTINCT_ALTERNATIVE",
+      "target_assertion_ids": [
+        "assertion-observation-state",
+        "assertion-kernel-timescale"
+      ],
+      "target_layer_ids": ["L3", "L6"],
+      "mechanism_semantics": "潜在状态可能存在,但局部尺度核混叠时标或删除相位信息,从而使当前观察方程失配。",
+      "predicted_signature_candidate": {
+        "direction": "ESTIMATOR_DEPENDENT_DIRECTION",
+        "cross_sectional_shape": "KERNEL_SENSITIVE_SHAPE",
+        "horizon_pattern": "TIMESCALE_MISALIGNMENT",
+        "state_interaction": "STATE_ESTIMATE_SENSITIVE",
+        "alias_behavior": "CONTROL_ROBUST_BUT_ESTIMATOR_FRAGILE",
+        "missingness_behavior": "FORMATION_MASK_INVARIANT",
+        "cost_capacity_behavior": "MEASUREMENT_FAILURE_PRECEDES_TRADABILITY"
+      },
+      "materiality_floor_candidate": "竞争估计族必须在相同信息集内产生可区分且稳定的响应差异。",
+      "falsifier_semantics": "若多种保留不同信息的估计族都恢复同一失配,则单纯估计器解释被否定。",
+      "distinguishing_test_ids": [
+        "test-constraint-depth-gradient",
+        "test-estimator-family-stability",
+        "test-public-information-control"
+      ]
+    },
+    {
+      "rival_id": "rival-null-alias-public-information",
+      "role": "NULL_OR_ALIAS",
+      "target_assertion_ids": [
+        "assertion-volatility-alias",
+        "assertion-payer-constraint"
+      ],
+      "target_layer_ids": ["L5", "L7"],
+      "mechanism_semantics": "一般波动放大、公共信息重新定价或成员选择可以生成相同表面,并不需要受约束付款方。",
+      "predicted_signature_candidate": {
+        "direction": "NO_CONSTRAINT_SPECIFIC_GRADIENT",
+        "cross_sectional_shape": "CONTROL_MATCHES_TARGET",
+        "horizon_pattern": "PUBLIC_INFORMATION_DECAY",
+        "state_interaction": "NO_DEPTH_SPECIFIC_INTERACTION",
+        "alias_behavior": "DISAPPEARS_UNDER_REGISTERED_CONTROLS",
+        "missingness_behavior": "SELECTION_SENSITIVE",
+        "cost_capacity_behavior": "SURFACE_PATTERN_WITHOUT_PAYER"
+      },
+      "materiality_floor_candidate": "公共信息和一般波动对照必须足以解释目标表面的主要差异。",
+      "falsifier_semantics": "若控制样本无法复制约束梯度和承接深度交互,则别名解释被否定。",
+      "distinguishing_test_ids": [
+        "test-constraint-depth-gradient",
+        "test-estimator-family-stability",
+        "test-public-information-control"
+      ]
+    }
+  ],
+  "tests": [
+    {
+      "test_id": "test-constraint-depth-gradient",
+      "target_assertion_ids": [
+        "assertion-volatility-alias",
+        "assertion-payer-constraint"
+      ],
+      "rival_ids": [
+        "rival-target-constraint-response",
+        "rival-estimator-misspecification",
+        "rival-null-alias-public-information"
+      ],
+      "discriminating_question": "约束强弱与承接深度的交互是否只在目标机制下出现?",
+      "synthetic_input_roles": ["形成时点约束代理", "形成时点承接深度代理", "共同成员掩码"],
+      "statistic_semantics": "比较相同成员掩码下约束梯度与承接深度交互的区间估计。",
+      "expected_signature_by_rival": [
+        {"rival_id": "rival-target-constraint-response", "signature": "CONSTRAINT_GRADIENT_PRESENT"},
+        {"rival_id": "rival-estimator-misspecification", "signature": "GRADIENT_PRESENT_ESTIMATE_UNSTABLE"},
+        {"rival_id": "rival-null-alias-public-information", "signature": "NO_CONSTRAINT_GRADIENT"}
+      ],
+      "materiality_floor_candidate": "交互区间必须跨过预注册的最小机制差异边界。",
+      "correction_law_candidate": "FROZEN_FAMILYWISE_HOLM_CANDIDATE",
+      "missing_data_disposition": "INCONCLUSIVE",
+      "nonfinite_disposition": "BLOCK",
+      "budget_charge_candidate": 1
+    },
+    {
+      "test_id": "test-estimator-family-stability",
+      "target_assertion_ids": [
+        "assertion-observation-state",
+        "assertion-kernel-timescale"
+      ],
+      "rival_ids": [
+        "rival-target-constraint-response",
+        "rival-estimator-misspecification",
+        "rival-null-alias-public-information"
+      ],
+      "discriminating_question": "保留不同相位与时标信息的估计族是否恢复一致的潜在响应方向?",
+      "synthetic_input_roles": ["共同潜在状态路径", "局部尺度观测", "状态空间观测"],
+      "statistic_semantics": "在相同信息集和成员掩码下比较估计族的方向、时标与边界一致性。",
+      "expected_signature_by_rival": [
+        {"rival_id": "rival-target-constraint-response", "signature": "ESTIMATOR_FAMILY_DIRECTION_STABLE"},
+        {"rival_id": "rival-estimator-misspecification", "signature": "ESTIMATOR_FAMILY_DISAGREES"},
+        {"rival_id": "rival-null-alias-public-information", "signature": "ALL_ESTIMATORS_TRACK_CONTROL"}
+      ],
+      "materiality_floor_candidate": "至少两个机制不同估计族必须产生预注册的可区分响应。",
+      "correction_law_candidate": "FROZEN_FAMILYWISE_HOLM_CANDIDATE",
+      "missing_data_disposition": "INCONCLUSIVE",
+      "nonfinite_disposition": "BLOCK",
+      "budget_charge_candidate": 1
+    },
+    {
+      "test_id": "test-public-information-control",
+      "target_assertion_ids": [
+        "assertion-volatility-alias",
+        "assertion-payer-constraint"
+      ],
+      "rival_ids": [
+        "rival-target-constraint-response",
+        "rival-estimator-misspecification",
+        "rival-null-alias-public-information"
+      ],
+      "discriminating_question": "公共信息与一般波动对照能否复制约束梯度和深度交互?",
+      "synthetic_input_roles": ["公共信息对照", "一般波动对照", "共同成员掩码"],
+      "statistic_semantics": "比较目标样本与预注册对照在方向、形状和交互上的区间差异。",
+      "expected_signature_by_rival": [
+        {"rival_id": "rival-target-constraint-response", "signature": "CONTROL_DOES_NOT_MATCH_TARGET"},
+        {"rival_id": "rival-estimator-misspecification", "signature": "CONTROL_DIFFERS_ESTIMATE_UNSTABLE"},
+        {"rival_id": "rival-null-alias-public-information", "signature": "CONTROL_MATCHES_TARGET"}
+      ],
+      "materiality_floor_candidate": "对照与目标之间必须跨过预注册的最小差异边界。",
+      "correction_law_candidate": "FROZEN_FAMILYWISE_HOLM_CANDIDATE",
+      "missing_data_disposition": "INCONCLUSIVE",
+      "nonfinite_disposition": "BLOCK",
+      "budget_charge_candidate": 1
+    }
+  ],
+  "partition_plan": {
+    "generation_member_ids": ["generation-member-a", "generation-member-b", "generation-member-c"],
+    "confirmation_member_ids": ["confirmation-member-a", "confirmation-member-b", "confirmation-member-c"],
+    "generation_mask_semantics": "形成时点共同成员掩码的合成 generation 规划。",
+    "confirmation_mask_semantics": "同一形成规则下且与 generation 不重叠的合成 confirmation 规划。",
+    "reservation_order_candidate": "SYNTHETIC_RESERVATION_BEFORE_RESULT_CANDIDATE",
+    "selection_correction_candidate": "FROZEN_POST_SELECTION_FAMILYWISE_CANDIDATE",
+    "zero_use_scope_candidate": [
+      "confirmation 成员不得用于生成当前 mismatch 候选",
+      "confirmation 成员不得用于选择 rival、test、阈值或估计器",
+      "confirmation 成员不得用于选择 Exploit 或 Explore 候选"
+    ],
+    "activation_count_ceiling": 1
+  },
+  "trial_controls": {
+    "trial_budget": 3,
+    "multiplicity_policy": "FROZEN_FAMILYWISE_HOLM_CANDIDATE",
+    "stopping_rule": "三个已登记试验完成或任一合法阻断条件出现时停止。"
+  },
+  "exploit_lane": {
+    "disposition": "PROPOSED_CANDIDATES",
+    "candidates": [
+      {
+        "candidate_id": "exploit-observation-family-comparison",
+        "target_assertion_ids": ["assertion-observation-state", "assertion-kernel-timescale"],
+        "change_semantics": "在不改变 payer、estimand 与信息集的前提下,比较保留不同相位和时标信息的观测估计族。",
+        "expected_signature_candidate": "若潜在机制存活,竞争估计族应在预注册边界内恢复一致方向并暴露信息损失位置。",
+        "kill_criteria": "若竞争估计族都无法恢复一致方向或新增复杂度没有独有预测,停止该邻域。",
+        "same_parent_hypothesis": true,
+        "preserves_estimand": true,
+        "preserves_economic_hypothesis": true,
+        "preserves_payer": true,
+        "preserves_information_set": true,
+        "portfolio_repair": false
+      }
+    ],
+    "reason": null
+  },
+  "explore_lane": {
+    "disposition": "PROPOSED_CANDIDATES",
+    "candidates": [
+      {
+        "candidate_id": "explore-nonlinear-latent-depth-state",
+        "new_hypothesis_identity_reservation_candidate": "hypothesis-reservation-nonlinear-depth-state",
+        "target_assertion_ids": ["assertion-observation-state", "assertion-kernel-timescale"],
+        "mechanism_delta_semantics": "把固定局部核改写为受约束状态调制的非线性潜在承接深度响应,作为新的研究问题。",
+        "mathematical_object_candidate": "具有状态依赖观测噪声和边界的非线性潜在状态估计问题。",
+        "unique_prediction_candidate": "只有约束与深度同时跨过边界时,不同估计族才出现一致的非线性响应。",
+        "complexity_delta_candidate": "新增一个状态依赖边界和一个观测噪声结构,并要求删除无独有预测的固定核项。",
+        "distinguishing_test_id": "test-estimator-family-stability",
+        "kill_criteria": "若边界交互没有独有预测或不能在共同信息集内被区分,停止该新假设。",
+        "reuses_parent_identity": false,
+        "uses_parent_or_current_oos": false,
+        "portfolio_repair": false
+      }
+    ],
+    "reason": null
+  },
+  "pre_dirac_question_candidate": {
+    "disposition": "PRE_DIRAC_HYPOTHESIS_ONLY",
+    "target_assertion_id": "assertion-kernel-timescale",
+    "minimal_added_state_or_parameter": "一个调制局部响应时标的潜在承接深度状态。",
+    "zero_extension_recovery_statement": "当新增状态的调制强度归零时,候选问题恢复为原固定局部核。",
+    "unique_prediction_candidate": "约束与深度同时跨过边界时,响应时标才发生可区分变化。",
+    "economic_backprojection": {
+      "actor": "失去等待能力的受约束持有者。",
+      "action": "在有限承接深度下加速让价。",
+      "binding_constraint": "融资与风险限额缩短可等待时间。",
+      "payer": "受约束拥挤持有者。",
+      "receiver": "仍提供承接深度的流动性提供者。",
+      "observable_proxy_need": "需要形成时点合法的约束强弱与承接深度代理。",
+      "negative_control": "高承接深度且约束不绑定的共同信息冲击对照。",
+      "disappearance_condition": "约束解除或承接深度充分时,新增状态调制应消失。"
+    },
+    "distinguishing_test_id": "test-constraint-depth-gradient",
+    "complexity_cost_candidate": "新增一个潜在状态、一个边界与对应的识别试验。"
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "evidence": {
+    "boundary": "Candidate reference; not canonical experience admission, formal research completion, return evidence, or economic causal identification.",
+    "classification": "mathematical_counterexample_and_local_candidate_diagnosis",
+    "observed_scope": "Existing 2016 Q1 candidate-output diagnosis only: 59 dates, 44 raw-variable dates, 38 dates with raw variation erased by projection. These counts do not describe the intended full 2016-01-04 to 2025-07-11 IS window.",
+    "original_raw_outputs_recomputed_by_reference": false,
+    "reproducible_counterexample": "tests/test_mszq_candidate_v2.py"
+  },
+  "factor_ids": [],
+  "id": "node::method_sparse_event_projection_failure_20260907",
+  "mechanism": {
+    "conditional_repair": "For MAD>0 preserve the existing median/MAD mapping; for MAD=0 and nonconstant finite input, a predeclared positive population-standard-deviation fallback preserves ordering. This repairs numerical information loss, not profitability. Missing history/undefined baseline stays missing rather than entering the ranking as zero.",
+    "counterexample": "U=[0,0,0,1,2] has median(U)=MAD(U)=0 but variance(U)>0. Mapping MAD=0 to all-zero scores is not a valid normalization of unequal values.",
+    "economic_hypothesis": "Transient price pressure after unusual-volume events may revert. This candidate hypothesis has not been economically tested by this diagnosis.",
+    "failure_signature": "Raw unique count exceeds one but projected unique count equals one. Finite-output rate and parity against the same flawed implementation cannot detect this loss alone.",
+    "falsifier": "If MAD>0 or the projected score retains variation, this specific collapse diagnosis does not explain the failure. Investigate timing, observation coverage, exposure and economic rivals separately.",
+    "mathematical_object": "Nonnegative marked-event aggregate U with a structural zero atom; distinguish unobserved event search, valid no-event, and observed fully reversed events.",
+    "not_paper_replication": "The diagnosed EVENT_U extension is not the source report's PF plus VV composite. Do not transfer an EVENT_U implementation failure to the paper baseline or the economic hypothesis."
+  },
+  "node_type": "anti_pattern",
+  "relations": [
+    {
+      "edge_type": "contradicts",
+      "note": "The explicit five-value counterexample disproves this implication.",
+      "target": "naive_method::mad_zero_implies_constant"
+    },
+    {
+      "edge_type": "contradicts",
+      "note": "An event search without a valid prior baseline cannot establish absence of an event.",
+      "target": "naive_method::missing_history_equals_no_event"
+    },
+    {
+      "edge_type": "inspires",
+      "note": "Compare raw and projected variance, missingness, tie mass and order before interpreting failed performance.",
+      "target": "method::raw_projection_information_check"
+    },
+    {
+      "edge_type": "shares_failure_with",
+      "note": "Measurement failure precedes economic falsification; retain the original estimand when repairing implementation boundaries.",
+      "target": "node::method_mechanism_conditioned_measurement_search_20260807"
+    }
+  ],
+  "report_ids": [
+    "MSZQ_EVENT_U_IMPLEMENTATION_DIAGNOSIS_20260907"
+  ],
+  "reuse_guidance": [
+    "Retrieve for 稀疏事件 MAD 中位数 零值 热身期 缺历史 全零 信息损失 sparse event zero inflation point mass warmup missing history normalization.",
+    "Keep ties tied. Do not split by ticker or randomness to create deciles, or select only the nonconstant dates after inspecting results.",
+    "Freeze the numerical policy before viewing returns. Report reduced coverage separately; restored rank information alone cannot establish an alpha.",
+    "Use the source-first economic explanation before consulting this case; the case supplies a counterexample and diagnostic test, not a mandatory model."
+  ],
+  "schema_version": "factor_knowledge_node_v1",
+  "source_paths": [
+    "examples/mszq_intraday_momentum_pulse/README.zh-CN.md",
+    "examples/mszq_intraday_momentum_pulse/candidate_v2.py",
+    "tests/test_mszq_candidate_v2.py"
+  ],
+  "summary": "Sparse event factors with a majority point mass can have median=0 and MAD=0 while retaining nonzero variation. A fallback mapping all finite observations to zero destroys ordering. Separately, insufficient prior history must not be encoded as a valid no-event zero. This is a mathematical and implementation lesson, not evidence against overreaction or for factor profitability.",
+  "taxonomy": {
+    "data_source": [
+      "minute_bar"
+    ],
+    "economic_mechanism": [
+      "overreaction",
+      "attention"
+    ],
+    "failure_mode": [
+      "wrong_math_object",
+      "data_coverage_gap",
+      "smoke_only_false_positive"
+    ],
+    "math_mechanism": [
+      "distribution_moment",
+      "cross_sectional_rank",
+      "time_series_state"
+    ],
+    "research_status": [
+      "candidate",
+      "anti_pattern"
+    ],
+    "tradability": [
+      "model_feature_only"
+    ]
+  },
+  "title": "稀疏事件因子：MAD 为零不等于原信号恒定；warmup 缺失不等于无事件"
+}

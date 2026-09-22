@@ -21,7 +21,7 @@ except Exception:  # pragma: no cover - fcntl is unavailable on some non-Unix ho
     fcntl = None
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 LEGACY_FACTORFORGE = LEGACY_WORKSPACE / 'factorforge'
 
 

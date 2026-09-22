@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import argparse, hashlib, importlib.util, inspect, json
+import argparse, hashlib, importlib.util, inspect, json, uuid
 import os
 import re
 import sys
@@ -14,7 +14,7 @@ import pandas as pd
 # - otherwise keep legacy EC2 compatibility
 # - fallback to current repository root for local runs
 # COMMENT_POLICY: runtime_path
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 LEGACY_REPO_ROOT = LEGACY_WORKSPACE / 'repos' / 'factor-factory'
 REPO_ROOT = Path(os.getenv('FACTORFORGE_REPO_ROOT')).expanduser() if os.getenv('FACTORFORGE_REPO_ROOT') else (LEGACY_REPO_ROOT if LEGACY_REPO_ROOT.exists() else Path(__file__).resolve().parents[3])
 if str(REPO_ROOT) not in sys.path:
@@ -49,9 +49,12 @@ from factor_factory.formula.operators import default_ts_rank_engine_profile, res
 from factor_factory.formula.parity import compare_outputs, make_operator_fixture
 from factor_factory.performance import PhaseTimer, safe_file_size
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.local_is_execution import local_is_workspace_errors
 from factor_factory.factor_laws.moneyflow.registry import resolve_contract as resolve_moneyflow_law_contract
 from factor_factory.step3.high_speed_policy import assert_high_speed_code_policy, build_high_speed_code_profile
 from factor_factory.step3.template_runtime import maybe_reexec_from_template_copy
+from factor_factory.evo_data_boundary import install_agent_execution_isolation
+from factor_factory.partitioned_direct_code import run_partitioned_controller
 
 MODE_DECISION_VERSION = 'factorforge_implementation_mode_decision_v1'
 HYBRID_CONTRACT_VERSION = 'factorforge_hybrid_contract_v1'
@@ -384,6 +387,13 @@ def is_child_revision_report(report_id: str, spec: dict) -> bool:
 def apply_executable_revision_spec(report_id: str, spec: dict, spec_path: Path) -> tuple[dict, dict | None]:
     if not is_child_revision_report(report_id, spec):
         return spec, None
+
+    if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1':
+        workspace_errors = local_is_workspace_errors(OBJ.parent, report_id)
+        if workspace_errors:
+            raise SystemExit('BLOCK_FACTORFORGE_LOCAL_IS_HOSTED_WORKSPACE')
+        return spec, None
+
     path = executable_revision_spec_path(report_id)
     if not path.exists():
         raise SystemExit(f'BLOCK_FACTORFORGE_CHILD_REVISION_SPEC_MISSING: {path}')
@@ -490,12 +500,12 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
     return manifest, manifest_report_id(manifest)
 
 
-def maybe_reexec_from_step3b_template_copy(report_id: str | None, manifest_path: str | None) -> None:
+def maybe_reexec_from_step3b_template_copy(report_id: str | None, manifest_path: str | None, *, debug_root: Path | None = None) -> None:
     maybe_reexec_from_template_copy(
         script_stem='run_step3b',
         report_id=report_id,
         manifest_path=manifest_path,
-        default_factorforge_root=FF,
+        default_factorforge_root=debug_root or FF,
         source_path=Path(__file__),
         copy_env=STEP3B_TEMPLATE_COPY_ENV,
         copy_version=STEP3B_TEMPLATE_COPY_VERSION,
@@ -505,7 +515,7 @@ def maybe_reexec_from_step3b_template_copy(report_id: str | None, manifest_path:
     )
 
 
-def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
+def enforce_direct_step_policy(manifest_path: str | None = None, *, apply_runtime: bool = True) -> Path | None:
     global FF, WORKSPACE, OBJ, CODEGEN, RUNS
     if os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1':
         return
@@ -527,6 +537,8 @@ def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
         manifest = load_runtime_manifest(manifest_path)
         if manifest_factorforge_root(manifest).expanduser().resolve() != debug_root:
             raise SystemExit('BLOCKED_DIRECT_STEP: direct debug manifest must point to FACTORFORGE_DEBUG_ROOT.')
+    if not apply_runtime:
+        return debug_root
     FF = debug_root
     WORKSPACE = FF.parent
     OBJ = FF / 'objects'
@@ -792,6 +804,21 @@ def _as_list(value):
     return [value]
 
 
+def _declared_list(sources, key: str, label: str):
+    """Select the first declared list without treating [] as missing."""
+    for source in sources:
+        if key not in source:
+            continue
+        value = source.get(key)
+        if not isinstance(value, list):
+            raise ValueError(f'BLOCK_STEP3B_RESEARCH_CONTEXT_INVALID:{label}')
+        reason = source.get(f'{key}_absence_reason')
+        if key == 'similar_case_lessons_imported' and reason is None:
+            reason = source.get('similar_case_lessons_absence_reason')
+        return list(value), reason
+    return [], None
+
+
 def build_step2_research_context(report_id: str, spec: dict, step2_handoff: dict | None = None) -> dict:
     """Carry Step2 research intent into Step3B implementation artifacts."""
     handoff = step2_handoff or {}
@@ -815,23 +842,33 @@ def build_step2_research_context(report_id: str, spec: dict, step2_handoff: dict
         or thesis.get('economic_mechanism')
         or handoff_contract.get('economic_mechanism')
     )
-    expected_failure_modes = (
-        _as_list(spec_contract.get('expected_failure_modes'))
-        or _as_list(spec_math.get('expected_failure_modes'))
-        or _as_list(handoff_contract.get('expected_failure_modes'))
-        or _as_list(handoff_math.get('expected_failure_modes'))
+    expected_failure_modes, _ = _declared_list(
+        [spec_contract, spec_math, handoff_contract, handoff_math],
+        'expected_failure_modes',
+        'expected_failure_modes',
     )
-    innovative_idea_seeds = (
-        _as_list(spec_learning.get('innovative_idea_seeds'))
-        or _as_list(spec_contract.get('innovative_idea_seeds'))
-        or _as_list(handoff_learning.get('innovative_idea_seeds'))
-        or _as_list(handoff_contract.get('innovative_idea_seeds'))
+    innovative_idea_seeds, idea_absence_reason = _declared_list(
+        [spec_learning, spec_contract, handoff_learning, handoff_contract],
+        'innovative_idea_seeds',
+        'innovative_idea_seeds',
     )
-    reuse_instruction = (
-        _as_list(spec_learning.get('reuse_instruction_for_future_agents'))
-        or _as_list(spec_contract.get('reuse_instruction_for_future_agents'))
-        or _as_list(handoff_learning.get('reuse_instruction_for_future_agents'))
-        or _as_list(handoff_contract.get('reuse_instruction_for_future_agents'))
+    reuse_instruction, _ = _declared_list(
+        [spec_learning, spec_contract, handoff_learning, handoff_contract],
+        'reuse_instruction_for_future_agents',
+        'reuse_instruction_for_future_agents',
+    )
+    profile = next(
+        (
+            source.get('research_compatibility_profile')
+            for source in [spec_learning, spec_contract, handoff_learning, handoff_contract]
+            if 'research_compatibility_profile' in source
+        ),
+        None,
+    )
+    lessons, lessons_absence_reason = _declared_list(
+        [spec_learning, spec_contract, handoff_learning, handoff_contract],
+        'similar_case_lessons_imported',
+        'similar_case_lessons_imported',
     )
 
     return {
@@ -848,11 +885,11 @@ def build_step2_research_context(report_id: str, spec: dict, step2_handoff: dict
             or handoff_math.get('step1_random_object')
         ),
         'information_set_legality': spec_math.get('information_set_legality') or handoff_math.get('information_set_legality'),
-        'similar_case_lessons_imported': (
-            _as_list(spec_learning.get('similar_case_lessons_imported'))
-            or _as_list(handoff_learning.get('similar_case_lessons_imported'))
-        ),
+        'similar_case_lessons_imported': lessons,
         'innovative_idea_seeds': innovative_idea_seeds,
+        'innovative_idea_seeds_absence_reason': idea_absence_reason,
+        'similar_case_lessons_absence_reason': lessons_absence_reason,
+        'research_compatibility_profile': profile,
         'reuse_instruction_for_future_agents': reuse_instruction or ['missing_reuse_instruction_from_step2'],
         'implementation_invariants': [
             'Step3B implementation must preserve the Step2 target statistic and economic mechanism.',
@@ -926,19 +963,9 @@ def add_direct_code_alias_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def direct_code_expects_polars(module) -> bool:
-    path = Path(getattr(module, '__file__', '') or '')
-    try:
-        text = path.read_text(encoding='utf-8')
-    except OSError:
-        text = ''
-    polars_api_markers = [
-        '.with_columns(',
-        '.select(',
-        '.lazy(',
-        'pl.col(',
-        'polars.col(',
-    ]
-    return any(marker in text for marker in polars_api_markers)
+    from factor_factory.implementation_runtime import expects_polars
+
+    return expects_polars(module)
 
 
 def maybe_polars_frame(df: pd.DataFrame, use_polars: bool):
@@ -961,38 +988,16 @@ def normalize_direct_code_result(result) -> pd.DataFrame:
     return result
 
 
-def compute_factor_with_contract(module, daily_df: pd.DataFrame, minute_df: pd.DataFrame) -> pd.DataFrame:
-    fn = getattr(module, 'compute_factor')
-    daily_input = add_direct_code_alias_columns(daily_df)
-    minute_input = add_direct_code_alias_columns(minute_df)
-    use_polars = direct_code_expects_polars(module)
-    daily_call_input = maybe_polars_frame(daily_input, use_polars)
-    minute_call_input = maybe_polars_frame(minute_input, use_polars)
-    try:
-        params = list(inspect.signature(fn).parameters.values())
-    except (TypeError, ValueError):
-        params = []
-    positional = [
-        p for p in params
-        if p.kind in {inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD}
-    ]
-    if len(positional) == 1:
-        first = positional[0].name.lower()
-        if 'daily' in first:
-            return normalize_direct_code_result(fn(daily_call_input))
-        if 'minute' in first or 'intraday' in first:
-            return normalize_direct_code_result(fn(minute_call_input))
-        chosen = minute_call_input if not minute_input.empty else daily_call_input
-        return normalize_direct_code_result(fn(chosen))
+def compute_factor_with_contract(module, daily_df, minute_df):
+    """Resolve the invocation before executing user code, without retries."""
+    from factor_factory.implementation_runtime import invoke_factor
 
-    try:
-        return normalize_direct_code_result(fn(daily_df=daily_call_input, minute_df=minute_call_input))
-    except TypeError:
-        if positional:
-            first = positional[0].name.lower()
-            if 'minute' in first:
-                return normalize_direct_code_result(fn(minute_call_input, daily_call_input))
-        return normalize_direct_code_result(fn(daily_call_input, minute_call_input))
+    use_polars = direct_code_expects_polars(module)
+    daily_input = maybe_polars_frame(add_direct_code_alias_columns(daily_df), use_polars)
+    minute_input = maybe_polars_frame(add_direct_code_alias_columns(minute_df), use_polars)
+    return normalize_direct_code_result(
+        invoke_factor(module.compute_factor, daily_input, minute_input)
+    )
 
 
 def resolve_local_input_path(raw: str | None) -> Path | None:
@@ -1293,6 +1298,107 @@ def _run_formula_engine_with_profile(
     return profile_frame, formula_engine_profile
 
 
+def partitioned_controller_attempt_path(run_dir: Path, report_id: str) -> Path:
+    """Allocate a create-only private Step3B controller target."""
+    return run_dir / f'step3b_partitioned_output__{report_id}__{uuid.uuid4().hex}.parquet'
+
+
+def step3b_output_reference(path: Path) -> str:
+    """Keep normal runtime-relative refs, but do not corrupt an explicit test run dir."""
+    try:
+        return str(path.relative_to(FF))
+    except ValueError:
+        return str(path)
+
+
+def step3b_first_run_dispatch_enabled(input_mode: str, minute_rel: str | None, daily_rel: str | None) -> bool:
+    """Decide whether Step3B must attempt its non-formal first-run proof."""
+    if input_mode == 'derived_state_with_daily':
+        # The callee supplies the precise missing-sample-config diagnostic.
+        return True
+    return bool((minute_rel and daily_rel) or (input_mode == 'daily_only' and daily_rel))
+
+
+def load_prepared_step3b_sample_inputs(local_inputs: dict) -> tuple[dict, Path, list[str]]:
+    """Load the explicit sample controller; never infer it from a full route.
+
+    ``derived_state_with_daily`` may carry full-state declarations for a later
+    Step4 owner, but Step3B is only permitted to call the separately named
+    sample controller.  Reusing the primary/full manifest would silently turn
+    an executability proof into a full-state computation.
+    """
+    raw_config = local_inputs.get('step3b_prepared_controller_config')
+    if not isinstance(raw_config, str) or not raw_config.strip():
+        raise SystemExit(
+            'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_MISSING: derived_state_with_daily '
+            'requires an explicit step3b_prepared_controller_config; Step3B will not use full-state paths'
+        )
+    config_path = resolve_local_input_path(raw_config)
+    if config_path is None or config_path.is_symlink() or not config_path.is_file():
+        raise SystemExit(
+            'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_INVALID: '
+            f'expected an explicit non-symlink controller file, got {config_path}'
+        )
+    try:
+        config = load_json(config_path)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise SystemExit(
+            f'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_INVALID: cannot read {config_path}: {exc}'
+        ) from exc
+    if config.get('controller') != 'sample':
+        raise SystemExit(
+            'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_INVALID: controller must explicitly be sample'
+        )
+    sample_inputs = config.get('local_inputs')
+    if not isinstance(sample_inputs, dict) or sample_inputs.get('input_mode') != 'derived_state_with_daily':
+        raise SystemExit(
+            'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_INVALID: sample controller must carry derived_state_with_daily local_inputs'
+        )
+    if sample_inputs.get('minute_df_parquet') or sample_inputs.get('minute_df_csv'):
+        raise SystemExit(
+            'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_INVALID: sample controller must not declare raw minute input'
+        )
+    for key in ('daily_df_parquet', 'derived_state_root'):
+        path = resolve_local_input_path(sample_inputs.get(key))
+        if path is None or not path.exists():
+            raise SystemExit(
+                f'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_INVALID: sample controller {key} is missing: {path}'
+            )
+    budget = config.get('sample_budget')
+    max_calendar_days = budget.get('max_calendar_days') if isinstance(budget, dict) else None
+    if isinstance(max_calendar_days, bool) or not isinstance(max_calendar_days, int) or max_calendar_days < 1:
+        raise SystemExit(
+            'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_INVALID: sample controller requires '
+            'sample_budget.max_calendar_days as a positive integer'
+        )
+    calendar = config.get('sample_calendar_dates', sample_inputs.get('calendar_dates'))
+    if (
+        not isinstance(calendar, list)
+        or not calendar
+        or len(calendar) > max_calendar_days
+        or any(not isinstance(day, str) or len(day) != 8 or not day.isdigit() for day in calendar)
+        or len(calendar) != len(set(calendar))
+        or calendar != sorted(calendar)
+        or sample_inputs.get('calendar_dates') != calendar
+    ):
+        raise SystemExit(
+            'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_INVALID: sample controller must provide an ordered, '
+            f'explicit sample calendar within sample_budget.max_calendar_days={max_calendar_days}'
+        )
+    for top_key, sample_key in (
+        ('step3b_daily_df_parquet', 'daily_df_parquet'),
+        ('step3b_derived_state_root', 'derived_state_root'),
+    ):
+        declared = resolve_local_input_path(local_inputs.get(top_key))
+        configured = resolve_local_input_path(sample_inputs.get(sample_key))
+        if declared is None or configured is None or declared.resolve() != configured.resolve():
+            raise SystemExit(
+                'BLOCK_STEP3B_PREPARED_SAMPLE_CONFIG_INVALID: '
+                f'{top_key} must exactly match the sample controller {sample_key}'
+            )
+    return sample_inputs, config_path.resolve(), list(calendar)
+
+
 def generate_first_run_factor_values(
     report_id: str,
     factor_id: str,
@@ -1313,12 +1419,19 @@ def generate_first_run_factor_values(
     This intentionally does not call Step4 or any evaluator. Step3B's proof is
     executability of the factor implementation, not IC/NAV/backtest evidence.
     """
+    input_mode = str(local_inputs.get('input_mode') or '')
+    prepared_derived_state = input_mode == 'derived_state_with_daily'
+    prepared_sample_config_path = None
+    prepared_sample_calendar = None
+    if prepared_derived_state:
+        local_inputs, prepared_sample_config_path, prepared_sample_calendar = load_prepared_step3b_sample_inputs(local_inputs)
+
     minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
     daily_parquet_rel = local_inputs.get('daily_df_parquet')
     daily_csv_rel = local_inputs.get('daily_df_csv')
     daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
-    input_mode = str(local_inputs.get('input_mode') or '')
-    minute_required = input_mode != 'daily_only'
+    derived_state_root = resolve_local_input_path(local_inputs.get('derived_state_root') if prepared_derived_state else None)
+    minute_required = input_mode != 'daily_only' and not prepared_derived_state
     minute_path = resolve_local_input_path(minute_rel)
     daily_path = resolve_local_input_path(daily_rel)
     daily_parquet_path = resolve_local_input_path(daily_parquet_rel)
@@ -1350,13 +1463,16 @@ def generate_first_run_factor_values(
         raise SystemExit(f'Step3B first-run daily input missing: {daily_path}')
     if minute_required and (minute_path is None or not minute_path.exists()):
         raise SystemExit(f'Step3B first-run minute input missing: {minute_path}')
+    if prepared_derived_state and (derived_state_root is None or not derived_state_root.is_dir()):
+        raise SystemExit(f'Step3B prepared derived-state root missing: {derived_state_root}')
 
     import pandas as pd
 
     timer = PhaseTimer()
 
     module = import_module_from_path(implementation_path)
-    if not hasattr(module, 'compute_factor'):
+    has_partitioned_controller = prepared_derived_state and callable(getattr(module, 'compute_factor_partitioned', None))
+    if not has_partitioned_controller and not hasattr(module, 'compute_factor'):
         raise SystemExit(f'Step3B implementation missing compute_factor(): {implementation_path}')
     metadata = getattr(module, 'METADATA', {}) if module is not None else {}
     source_profile = assert_high_speed_code_policy(
@@ -1383,7 +1499,7 @@ def generate_first_run_factor_values(
     lazy_polars_formula_ir = None
 
     with timer.phase('read_inputs'):
-        minute_df = read_df(minute_path) if minute_path is not None else pd.DataFrame()
+        minute_df = read_df(minute_path) if minute_path is not None and not has_partitioned_controller else pd.DataFrame()
         if use_lazy_polars_parquet:
             try:
                 from factor_factory.formula.polars_evaluator import read_formula_parquet_sample_for_polars_parity
@@ -1425,7 +1541,13 @@ def generate_first_run_factor_values(
     formula_engine_profile['step3b_sample_limit_profile'] = step3b_sample_limit_profile
     with timer.phase('compute_factor'):
         try:
-            profiled_result, formula_engine_profile = _run_formula_engine_with_profile(
+            if has_partitioned_controller:
+                controller_output = partitioned_controller_attempt_path(RUNS / report_id, report_id)
+                controller_output.parent.mkdir(parents=True, exist_ok=True)
+                controller_result = run_partitioned_controller(module, local_inputs=local_inputs, derived_state_root=derived_state_root, daily_input_path=daily_path, output_path=controller_output, run_dir=controller_output.parent, report_id=report_id, factor_id=factor_id, factorforge_root=FF, workspace_root=WORKSPACE)
+                result_df = read_df(controller_result) if isinstance(controller_result, Path) else controller_result
+            else:
+                profiled_result, formula_engine_profile = _run_formula_engine_with_profile(
                 module,
                 daily_df,
                 formula_engine=selected_formula_engine,
@@ -1435,10 +1557,10 @@ def generate_first_run_factor_values(
                 daily_parquet_path=daily_parquet_path,
                 formula_ir_override=lazy_polars_formula_ir,
             )
-            if profiled_result is not None:
-                result_df = profiled_result
-            else:
-                result_df = compute_factor_with_contract(module, daily_df, minute_df)
+                if profiled_result is not None:
+                    result_df = profiled_result
+                else:
+                    result_df = compute_factor_with_contract(module, daily_df, minute_df)
         except ModuleNotFoundError as exc:
             if 'BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING' in str(exc):
                 raise SystemExit('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING') from exc
@@ -1469,9 +1591,25 @@ def generate_first_run_factor_values(
         raise SystemExit('Step3B first-run implementation returned empty factor values')
     if not {'ts_code', 'trade_date'}.issubset(result_df.columns):
         raise SystemExit('Step3B first-run output must include ts_code and trade_date')
+    if prepared_sample_calendar is not None:
+        result_dates = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
+        outside = sorted(set(result_dates) - set(prepared_sample_calendar))
+        if outside:
+            raise SystemExit(
+                'BLOCK_STEP3B_PREPARED_SAMPLE_OUTPUT_OUTSIDE_CALENDAR: '
+                f'controller emitted dates outside its explicit sample calendar: {outside[:5]}'
+            )
 
     with timer.phase('normalize_sort'):
-        signal_col = infer_signal_column(result_df, factor_id=factor_id)
+        # Prepared controllers intentionally expose diagnostics (including
+        # ``warmup``) beside their declared factor.  Generic last-column
+        # inference would otherwise publish that boolean diagnostic as the
+        # Step3B signal.
+        signal_col = (
+            'factor_value'
+            if has_partitioned_controller and 'factor_value' in result_df.columns
+            else infer_signal_column(result_df, factor_id=factor_id)
+        )
         result_df = result_df[['ts_code', 'trade_date', signal_col]]
         result_df['trade_date'] = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
         sort_contract = extract_sort_contract(local_inputs)
@@ -1571,9 +1709,9 @@ def generate_first_run_factor_values(
         'csv_sample_path': str(csv_sample_path) if csv_sample_path else None,
         'write_csv_seconds': float(phase_seconds.get('write_csv') or 0.0),
     }
-    output_paths = [str(step3b_cache_parquet.relative_to(FF))]
+    output_paths = [step3b_output_reference(step3b_cache_parquet)]
     if csv_sample_path:
-        output_paths.append(str(csv_sample_path.relative_to(FF)))
+        output_paths.append(step3b_output_reference(csv_sample_path))
     actual_window = {
         'start': str(result_df['trade_date'].min()),
         'end': str(result_df['trade_date'].max()),
@@ -1623,7 +1761,11 @@ def generate_first_run_factor_values(
         'input_paths': {
             'minute': str(minute_path) if minute_path else None,
             'daily': str(daily_path),
+            'prepared_sample_controller_config': (
+                str(prepared_sample_config_path) if prepared_sample_config_path else None
+            ),
         },
+        'prepared_sample_calendar_dates': prepared_sample_calendar,
         'step2_research_context': step2_research_context,
         'implementation_mode_decision': mode_decision,
         'created_at_utc': utc_now(),
@@ -1668,7 +1810,7 @@ def generate_first_run_factor_values(
         'status': 'ready',
         'output_paths': output_paths,
         'csv_output_profile': csv_output_profile,
-        'run_metadata_path': str(step3b_cache_meta.relative_to(FF)),
+        'run_metadata_path': step3b_output_reference(step3b_cache_meta),
         'producer': 'step3b_sample_proof',
         'sample_only': True,
         'step3b_scope': 'sample_executability_proof_only',
@@ -2226,75 +2368,21 @@ def resolve_direct_code_law_contract(contract: dict) -> dict:
 
 
 def ensure_direct_code_keyword_adapter(source_code: str) -> str:
-    """Expose a stable Step3B/Step4 `compute_factor(daily_df=..., minute_df=...)` API.
-
-    Older Step2 direct-code contracts may define positional-only or ambiguously
-    named compute functions. Step3B can execute those, but formal generated code
-    must present the keyword API that validators and Step4 use.
-    """
+    # Keep the selected body and expose the shared single-invocation keyword API.
     marker = '_factorforge_user_compute_factor'
     if marker in source_code:
         return source_code
     adapter = r'''
 
-# Factor Forge formal API adapter.
-# The original Step2 direct_code implementation is preserved above; this wrapper
-# normalizes the public entry point used by Step3B validators and Step4 runners.
+# Factor Forge formal API adapter: factorforge_implementation_runtime_v1.
+# The selected factor body remains above; argument binding happens before its
+# single invocation. Body exceptions propagate without positional retries.
 _factorforge_user_compute_factor = compute_factor
 
 def compute_factor(daily_df=None, minute_df=None):
-    import inspect as _factorforge_inspect
+    from factor_factory.implementation_runtime import invoke_factor
 
-    def _factorforge_frame_nonempty(_frame):
-        if _frame is None:
-            return False
-        if hasattr(_frame, "empty"):
-            return not bool(_frame.empty)
-        if hasattr(_frame, "is_empty") and callable(_frame.is_empty):
-            return not bool(_frame.is_empty())
-        try:
-            return len(_frame) > 0
-        except TypeError:
-            return True
-
-    _fn = _factorforge_user_compute_factor
-    try:
-        _params = list(_factorforge_inspect.signature(_fn).parameters.values())
-    except (TypeError, ValueError):
-        _params = []
-    _positional = [
-        _p for _p in _params
-        if _p.kind in {
-            _factorforge_inspect.Parameter.POSITIONAL_ONLY,
-            _factorforge_inspect.Parameter.POSITIONAL_OR_KEYWORD,
-        }
-    ]
-    _accepts_kwargs = any(_p.kind == _factorforge_inspect.Parameter.VAR_KEYWORD for _p in _params)
-    _accepts_daily = _accepts_kwargs or any(
-        _p.name == "daily_df" and _p.kind != _factorforge_inspect.Parameter.POSITIONAL_ONLY
-        for _p in _params
-    )
-    _accepts_minute = _accepts_kwargs or any(
-        _p.name == "minute_df" and _p.kind != _factorforge_inspect.Parameter.POSITIONAL_ONLY
-        for _p in _params
-    )
-    if _accepts_daily:
-        _kwargs = {"daily_df": daily_df}
-        if _accepts_minute:
-            _kwargs["minute_df"] = minute_df
-        return _fn(**_kwargs)
-    if len(_positional) == 1:
-        _name = _positional[0].name.lower()
-        if "minute" in _name or "intraday" in _name:
-            return _fn(minute_df)
-        if "daily" in _name:
-            return _fn(daily_df)
-        return _fn(minute_df if _factorforge_frame_nonempty(minute_df) else daily_df)
-    if _positional:
-        _first = _positional[0].name.lower()
-        if "minute" in _first or "intraday" in _first:
-            return _fn(minute_df, daily_df)
-    return _fn(daily_df, minute_df)
+    return invoke_factor(_factorforge_user_compute_factor, daily_df, minute_df)
 '''
     return source_code.rstrip() + '\n' + adapter.lstrip()
 
@@ -2399,6 +2487,8 @@ def main():
     ap.add_argument('--formula-kernel-engine', help='Formula-IR operator kernel engine. Experimental engines require explicit enable gate.')
     ap.add_argument('--trust-step3a-sort-contract', action='store_true', help='Experimental opt-in: trust validated Step3A sort contract to skip full normalize_sort sorting.')
     args = ap.parse_args()
+    if os.getenv('FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY') == 'DENY':
+        install_agent_execution_isolation()
     csv_policy = resolve_csv_policy(args.csv_output_policy)
     formula_engine = resolve_formula_engine(args.formula_engine)
     operator_profile = resolve_operator_profile(args.operator_profile if args.operator_profile else None)
@@ -2410,8 +2500,11 @@ def main():
         _formula_kernel_config = resolve_formula_kernel_engine(args.formula_kernel_engine)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
+    # Validate before the template copier can write. Leave the inherited root
+    # intact until after re-exec so the child can validate the same boundary.
+    debug_root = enforce_direct_step_policy(args.manifest, apply_runtime=False)
+    maybe_reexec_from_step3b_template_copy(args.report_id, args.manifest, debug_root=debug_root)
     enforce_direct_step_policy(args.manifest)
-    maybe_reexec_from_step3b_template_copy(args.report_id, args.manifest)
     _manifest, manifest_rid = apply_runtime_manifest(args.manifest)
     require_formal_manifest(_manifest)
     report_id = args.report_id or manifest_rid
@@ -2751,9 +2844,7 @@ def main():
     minute_rel = local_inputs.get('minute_df_parquet') or local_inputs.get('minute_df_csv')
     daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
     input_mode = str(local_inputs.get('input_mode') or '')
-    executable_daily_only = input_mode == 'daily_only' and daily_rel
-    executable_minute_daily = minute_rel and daily_rel
-    if (executable_minute_daily or executable_daily_only) and executable_impl_abs.exists():
+    if step3b_first_run_dispatch_enabled(input_mode, minute_rel, daily_rel) and executable_impl_abs.exists():
         first_run_outputs = generate_first_run_factor_values(
             report_id=report_id,
             factor_id=factor_id,

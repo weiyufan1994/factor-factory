@@ -93,7 +93,7 @@ python3 skills/factor-forge-step6/scripts/run_step6.py --manifest factorforge/ob
 ## 路径解析规则
 
 1. 优先使用显式 `FACTORFORGE_ROOT`。
-2. EC2 上若存在 `/home/ubuntu/.openclaw/workspace/factorforge`，使用该目录。
+2. EC2 上若存在 `/opt/factorforge/workspace/factorforge`，使用该目录。
 3. 否则使用当前 repo root 作为 local runtime root。
 4. handoff 中可以保留相对路径，但 consumer 必须通过 `ctx.remap_legacy_path()` 解析。
 5. 旧 EC2 绝对路径可以 remap 到当前 active `factorforge_root`。

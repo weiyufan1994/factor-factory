@@ -39,6 +39,7 @@ from .operators import (
 )
 from .kernels import apply_kernel_operator, default_kernel_profile, resolve_formula_kernel_engine
 from .profiling import OperatorProfiler
+from .extension_operators import EXTENSION_FUNCTIONS
 
 
 def _window(value) -> int:
@@ -159,6 +160,8 @@ def _eval(node: dict, frame: pd.DataFrame):
         raise ValueError(f'BLOCK_UNSUPPORTED_IR_NODE: {typ}')
     op = node['operator']
     args = [_eval(arg, frame) for arg in node.get('args') or []]
+    if op in EXTENSION_FUNCTIONS:
+        return EXTENSION_FUNCTIONS[op](*args, frame=frame)
     if op == 'rank':
         return cs_rank(args[0], frame)
     if op == 'ts_rank':
@@ -305,7 +308,9 @@ def _eval_cached(
         input_rows=len(frame),
         detail={'node_type': typ, 'operator': op},
     ) if profiler is not None else _null_phase()) as event:
-        if op == 'rank':
+        if op in EXTENSION_FUNCTIONS:
+            result = EXTENSION_FUNCTIONS[op](*args, frame=frame)
+        elif op == 'rank':
             result = cs_rank(args[0], frame)
         elif op == 'ts_rank':
             if (ts_rank_engine_config or {}).get('experimental_enabled'):

@@ -32,9 +32,70 @@ Current practical backend maturity:
   skipped/not_applicable, not failed because the qlib input config is missing.
 - Standard Step4 evidence is mandatory. Agents must not fill missing Step4 evidence with ad hoc plotting scripts or one-off notebooks.
 
+## Reviewed Code and Bug Feedback
+
+Before factor execution or payoff evaluation, confirm that the actual code
+revision has Step2 researcher approval and subsequent passing deterministic/
+parity tests from Step3. Check substantive findings are closed, not just that a
+file says PASS. Missing review goes back to Step2/Step3 inside Ultimate;
+an earlier review of different behavior does not cover later code edits.
+Step3 sample outputs and generator self-checks do not substitute for this review.
+
+For ordinary local IS, Ultimate runs `validate_step2_code_review` before Step4,
+using the manifest-selected spec and implementation and the study journal's
+`code_review__<report_id>.json`. Follow Ultimate's
+`references/local-code-review.md` if that check reports missing/stale evidence.
+It is a version/completion check, not proof of semantic correctness or a new
+identity service. Step4 does not write a self-approval to bypass it.
+
+If execution or diagnostics reveal a suspected bug, pause the affected work
+and promptly notify both the Step3 implementer and Step2 researcher through
+their existing agent/task channels. Do not wait for Step5/6, silently patch the
+research code yourself, or make the user relay the report. Send the failing
+code/function, expected versus observed behavior, traceback or minimal
+reproducer, data/time scope and potentially affected state, outputs and metrics.
+If a role cannot be reached, leave the handoff in the existing study journal
+and keep the affected work paused; do not invent a reviewer.
+
+Step3 reproduces and fixes; Step2 checks mathematical/economic consistency and
+any needed spec revision. Recovery requires Step2 re-review of the corrected
+code followed by passing regression/parity tests. Then recompute affected
+outputs from an appropriate clean checkpoint/history within the authorized
+scope. Do not combine stale pre-fix state or metrics with corrected output.
+Mark bug-affected results unusable for economic judgment and preserve them for
+diagnosis; a corrected toy replay alone does not complete the full research run.
+
+Weak IC or returns alone are not proof of a code bug. Localize implementation,
+measurement/data and economic-hypothesis questions separately; do not tune
+formula, direction, sample, costs or thresholds while calling it a bug fix.
+Record confirmed cause, repair, regression case and reuse limits for Step6
+knowledge writeback, without treating an implementation defect as economic
+falsification.
+
 ## Research Discipline
 
 Step 4 produces evidence; it does not declare victory.
+
+Before interpreting returns, inspect missingness, warmup, tie mass and variation
+before and after each material projection. A finite output or parity against the
+same implementation is not proof that it retains the measured information.
+If nonconstant raw values become constant scores, localize that implementation
+failure before judging the economic hypothesis. Preserve the failed result;
+test an explicitly identified numerical repair without selecting only the
+dates where the old score happened to vary. Restored variation alone is not
+economic validation, and a diagnostic replay is not a full Step4 rerun.
+
+Read the current research's evaluation settings before reusing an older
+evaluator. Signal cadence, portfolio rebalance/exit dates, group count and IC
+label horizon are separate choices: a 20-day label must not silently replace
+next-month portfolio rebalancing. Reuse the existing cash/position engine via
+explicit policy inputs, preserving costs and trading constraints. Test actual
+orders, not only descriptive metadata: an unavailable or non-evaluable group
+formation must produce no new selections/orders, with its missing-signal cash
+period reported explicitly rather than counted as evidence of a valid signal.
+Keep equal factor values tied. A G10-minus-G1 diagnostic is not proof of an
+executable short account. In both net and zero-cost outputs, standard trade
+reason fields must identify the actual selection policy, not a legacy label.
 
 Every serious Step4 run should separate:
 - signal evidence: IC, rank IC, grouped spread, and diagnostic bucket shape
@@ -301,16 +362,21 @@ fit revisions on OOS evidence.
 8. No polished prose counts as completion.
 9. If execution depends on user-selectable run parameters not already frozen in handoff/artifacts — e.g. benchmark, account size, topk, n_drop, deal price, cost model, universe, sample vs wider window, or whether to run quick-only vs deeper/native backtest — the skill must ask and confirm before launching the run.
 10. qlib-native evaluators must treat signal formatting as a first-class contract item; if `instrument` / `datetime` naming or market-code normalization is unresolved, the run should be marked blocked rather than silently coercing inconsistent semantics.
-10a. qlib-native evaluators must consume an explicit provider URI when available. Prefer `QLIB_PROVIDER_URI` or backend `provider_uri`, then fall back to `/home/ubuntu/.qlib/qlib_data/cn_data`, `~/.qlib/qlib_data/cn_data`, and finally `runs/<report_id>/qlib_provider`. The provider publisher is `scripts/publish_qlib_daily_provider.py`; it only converts already-clean daily data into a Qlib provider and must not clean raw data or compute factor values.
+10a. qlib-native evaluators must consume an explicit provider URI when available. Prefer `QLIB_PROVIDER_URI` or backend `provider_uri`, then fall back to `/home/researcher/.qlib/qlib_data/cn_data`, `~/.qlib/qlib_data/cn_data`, and finally `runs/<report_id>/qlib_provider`. The provider publisher is `scripts/publish_qlib_daily_provider.py`; it only converts already-clean daily data into a Qlib provider and must not clean raw data or compute factor values.
 10b. If the default Step4 Python cannot import Microsoft Qlib, set `FACTORFORGE_QLIB_PYTHON` or backend `qlib_python` to a dedicated qlib-native interpreter. Step4 preflight must verify that interpreter with `qlib.init` and `qlib.data.D`, then run the qlib backend with the same interpreter.
 11. Manual/temporary plotting is forbidden for official evidence. If a plot/table is needed, add it to the Step4 backend contract and rerun Step4.
 12. Decile NAV and long-short NAV must be computed from daily group returns/spreads and normalized to start at `1.0`; subtracting NAV levels is invalid.
 
 ## Execution chain
 
+This example is ordinary local IS. Hosted/EVO/OOS uses Ultimate's selected
+mode contract; local IS does not run the certificate/finalizer procedures above.
+
 ```bash
-cd /home/ubuntu/.openclaw/workspace
-python3 repos/factor-factory/scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 4 --end-step 4
+# From the study's pinned checkout, after Step2 review and Step3 tests:
+python3 scripts/run_factorforge_ultimate.py --local-is-only \
+  --report-id <report_id> --factor-workspace <factor_workspace> \
+  --start-step 4 --end-step 4
 ```
 
 Direct `run_step4.py` / `validate_step4.py` commands are debug-only and are blocked by default for formal writes. Official agent-led runs must use `scripts/run_factorforge_ultimate.py` and produce an `ultimate_run_report__<report_id>.json` proof.
@@ -328,6 +394,9 @@ Treat those files as the authoritative current repo-level reproducibility notes 
 
 ## Acceptance
 
+- the executed code revision had Step2 review and Step3 post-review tests;
+  any execution-discovered code defect completed the Step4–Step3–Step2 loop,
+  with affected outputs recomputed before claiming usable results
 - `factor_run_master` exists
 - `run_status` is one of `success|partial|failed`
 - output paths exist when run_status is success/partial

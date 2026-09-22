@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path("/home/ubuntu/.openclaw/workspace")
+LEGACY_WORKSPACE = Path("/opt/factorforge/workspace")
 FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if (LEGACY_WORKSPACE / "factorforge").exists() else REPO_ROOT))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -241,6 +241,12 @@ def main() -> None:
     manifest = load_json(manifest_path)
     if manifest.get("dispatch_manifest_version") != MANIFEST_VERSION or manifest.get("report_id") != rid:
         print("BLOCK_AGENTIC_COUNCIL_DISPATCH_MANIFEST_INVALID", file=sys.stderr)
+        raise SystemExit(1)
+    if manifest.get("evo_v2") is not None:
+        print(
+            "BLOCK_COUNCIL_EVO_V2_REAL_AGENT_DISPATCH_REQUIRED",
+            file=sys.stderr,
+        )
         raise SystemExit(1)
     taskbook_tasks = {
         str(task.get("task_id")): task

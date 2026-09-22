@@ -12,11 +12,12 @@ from typing import Any
 from collections import Counter
 import re
 import urllib.request
+from copy import deepcopy
 
 import numpy as np
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
+LEGACY_WORKSPACE = Path('/opt/factorforge/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
@@ -48,18 +49,28 @@ from factor_factory.mechanism_math.main_agent_memo import (
 from factor_factory.mechanism_math.validator import validate_mechanism_math_contract, validate_mechanism_math_contract_v2
 from factor_factory.measurement_program import (
     BLOCK_MEASUREMENT_PROGRAM_INVALID,
+    research_compatibility_profile_from_spec,
     validate_measurement_program,
 )
 from factor_factory.mechanism_math.factor_discovery_queue import build_default_discovery_queue
 from factor_factory.research_conjecture import (
+    RESEARCH_PROTOCOL_SCOPE_HOSTED,
+    RESEARCH_PROTOCOL_SCOPE_LOCAL_IS,
     research_protocol_paths,
     validate_protocol_bundle,
 )
 from factor_factory.research_proof import validate_factor_proof_certificate
+from factor_factory.primary_evaluator import (
+    RIGHT_CENSORED_RECOVERY_STATUS,
+    normalize_primary_evaluator_payload,
+    primary_evaluator_plan,
+    recovery_evidence_complete,
+)
 
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
-RETRIEVAL_INDEX = Path(os.getenv('FACTORFORGE_RETRIEVAL_INDEX') or (REPO_ROOT / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl'))
+RETRIEVAL_INDEX = Path(os.getenv('FACTORFORGE_RETRIEVAL_INDEX') or (FF / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl'))
+_RETRIEVAL_INDEX_ERROR: str | None = None
 LOOP_RESEARCH_BRIEF_VERSION = 'factorforge_loop_research_brief_v1'
 REQUIRED_LOOP_BRIEF_CHART_KEYS = [
     'rank_ic_timeseries',
@@ -213,6 +224,29 @@ def load_researcher_agent_memo(report_id: str) -> dict[str, Any] | None:
     }
 
 
+def _project_authored_failure_regimes(research_memo: dict[str, Any], authored_memo: Any) -> dict[str, Any]:
+    """Project authored failure hypotheses without deriving regimes from returns."""
+    if not isinstance(research_memo, dict) or not isinstance(authored_memo, dict):
+        return research_memo
+    risk_review = authored_memo.get('risk_review')
+    failure_risk = authored_memo.get('failure_risk_analysis')
+    failure_analysis = authored_memo.get('failure_and_risk_analysis')
+    candidates = (
+        risk_review.get('failure_regimes') if isinstance(risk_review, dict) else None,
+        failure_risk.get('failure_regimes') if isinstance(failure_risk, dict) else None,
+        failure_analysis.get('expected_failure_regimes') if isinstance(failure_analysis, dict) else None,
+    )
+    source = next((value for value in candidates if value is not None), None)
+    if not isinstance(source, list) or not source or not all(isinstance(item, str) and item.strip() for item in source):
+        return research_memo
+    failure = research_memo.get('failure_and_risk_analysis')
+    if not isinstance(failure, dict):
+        failure = {}
+        research_memo['failure_and_risk_analysis'] = failure
+    failure['expected_failure_regimes'] = [item.strip() for item in source]
+    return research_memo
+
+
 def load_researcher_journal(report_id: str) -> dict[str, Any] | None:
     path = OBJ / 'research_journal' / f'research_journal__{report_id}.json'
     if not path.exists():
@@ -234,17 +268,25 @@ def load_researcher_journal(report_id: str) -> dict[str, Any] | None:
 
 
 def load_retrieval_docs() -> list[dict[str, Any]]:
+    global _RETRIEVAL_INDEX_ERROR
+    _RETRIEVAL_INDEX_ERROR = None
     if not RETRIEVAL_INDEX.exists():
         return []
     docs: list[dict[str, Any]] = []
+    seen_ids: set[str] = set()
     for line in RETRIEVAL_INDEX.read_text(encoding='utf-8').splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            docs.append(json.loads(line))
+            value = json.loads(line)
+            if not isinstance(value, dict) or not value.get('id') or not isinstance(value.get('advisory_projection', {}), dict) or str(value['id']) in seen_ids:
+                raise ValueError('invalid_retrieval_document')
+            seen_ids.add(str(value['id']))
+            docs.append(value)
         except Exception:
-            continue
+            _RETRIEVAL_INDEX_ERROR = 'invalid_retrieval_index'
+            return []
     return docs
 
 
@@ -278,8 +320,25 @@ def embed_query(text: str) -> np.ndarray | None:
         return None
 
 
-def extract_headline_metrics(payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def extract_headline_metrics(
+    payloads: dict[str, dict[str, Any]],
+    evaluation_plan: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     metrics: dict[str, Any] = {}
+    try:
+        primary = primary_evaluator_plan(evaluation_plan)
+    except ValueError:
+        primary = None
+    if primary is not None:
+        normalized = normalize_primary_evaluator_payload(
+            payloads.get(primary['backend']), evaluation_plan,
+        )
+        if normalized is not None:
+            metrics.update(normalized.get('metrics') or {})
+            metrics['primary_evaluator_backend'] = primary['backend']
+            metrics['primary_evaluator_frequency'] = primary['frequency']
+            metrics['primary_evaluator_metric_sources'] = normalized.get('metric_sources') or {}
+        return metrics
     sq = payloads.get('self_quant_analyzer') or {}
     ql = payloads.get('qlib_backtest') or {}
 
@@ -503,7 +562,12 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
         log_growth_proxy = mean_return + volatility_drag
 
     thresholds = LONG_SIDE_PERFORMANCE_THRESHOLDS
-    net_revenue_after_cogs = mean_return - trading_cogs if mean_return is not None and trading_cogs is not None else None
+    return_is_net_of_costs = metrics.get('trading_cogs_included_in_return') is True
+    net_revenue_after_cogs = (
+        mean_return
+        if return_is_net_of_costs
+        else mean_return - trading_cogs if mean_return is not None and trading_cogs is not None else None
+    )
     risk_capital_required = None
     if expected_shortfall is not None:
         risk_capital_required = abs(expected_shortfall)
@@ -525,7 +589,7 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
     if mean_return is not None:
         economic_net_alpha = (
             mean_return
-            - (trading_cogs or 0.0)
+            - (0.0 if return_is_net_of_costs else (trading_cogs or 0.0))
             + (volatility_drag or 0.0)
             - (capital_charge or 0.0)
             - (drawdown_provision or 0.0)
@@ -557,7 +621,9 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
     else:
         drawdown_status = 'too_deep'
 
-    if recovery_days is None:
+    if recovery_days is None and metrics.get('long_side_recovery_status') == RIGHT_CENSORED_RECOVERY_STATUS:
+        recovery_status = 'right_censored_not_recovered'
+    elif recovery_days is None:
         recovery_status = 'missing'
     elif recovery_days <= thresholds['recovery_days_soft_limit']:
         recovery_status = 'acceptable'
@@ -599,12 +665,14 @@ def build_factor_business_review(metrics: dict[str, Any]) -> dict[str, Any]:
             'source': 'Step4 long_side_performance contract',
         },
         'factor_business_quality': {
-            'gross_revenue': mean_return,
+            'gross_revenue': None if return_is_net_of_costs else mean_return,
             'trading_cogs': trading_cogs,
             'trading_cogs_source': trading_cogs_source,
             'default_turnover_cost_rate': DEFAULT_TURNOVER_COST_RATE,
             'turnover_proxy': turnover,
             'net_revenue_after_cogs': net_revenue_after_cogs,
+            'return_basis': metrics.get('return_basis') or 'gross_or_unspecified',
+            'trading_cogs_already_included_in_return': return_is_net_of_costs,
             'cogs_status': 'explicit_or_estimated' if trading_cogs is not None else 'missing_turnover_and_explicit_trading_cost',
             'volatility': volatility,
             'volatility_drag': volatility_drag,
@@ -685,6 +753,9 @@ def build_long_side_adoption_review(metrics: dict[str, Any]) -> dict[str, Any]:
     elif sharpe_status == 'missing':
         status = 'unknown'
         verdict = 'Long-side revenue evidence exists but Sharpe evidence is missing; do not promote until Step4 emits risk-adjusted long-side performance.'
+    elif business_review.get('recovery_status') == 'right_censored_not_recovered':
+        status = 'mixed'
+        verdict = 'Recovery is right-censored at the observation end: retain the observed lower bound, do not invent recovery days, and do not promote.'
     elif top > 0 and sharpe_status == 'official_ready' and drawdown_status != 'too_deep' and (rank_ic is None or rank_ic > 0):
         status = 'official_ready'
         verdict = 'Highest-score long side is positive, Sharpe clears the official threshold, and drawdown is not beyond the soft limit.'
@@ -814,6 +885,12 @@ def build_metric_interpretation(metrics: dict[str, Any], payloads: dict[str, dic
             positives.append(f'recovery_days={recovery_days:.0f} is within the soft payback limit.')
         else:
             negatives.append(f'recovery_days={recovery_days:.0f} is longer than the soft payback limit; the factor may not survive its drawdown cycle.')
+    elif metrics.get('long_side_recovery_status') == RIGHT_CENSORED_RECOVERY_STATUS:
+        lower_bound = _safe_float(metrics.get('long_side_recovery_lower_bound_days'))
+        negatives.append(
+            'Drawdown was not recovered by the observation end; recovery is right-censored'
+            + (f' with observed lower bound {lower_bound:.0f} days.' if lower_bound is not None else '.')
+        )
     if top_return is not None and bottom_return is not None and top_return <= bottom_return:
         negatives.append('Highest-score group does not outperform the lowest-score group; the expression does not yet show the desired monotonic economic direction.')
     if spread is not None:
@@ -892,8 +969,13 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
     partial = _backend_bucket(backend_runs, {'partial'})
     skipped = _backend_bucket(backend_runs, {'skipped'})
     failed = _backend_bucket(backend_runs, {'failed'})
-    self_quant_status = next((str(item.get('status')) for item in backend_runs if item.get('backend') == 'self_quant_analyzer'), 'missing')
-    self_quant_present = self_quant_status in {'success', 'partial'} and bool(payloads.get('self_quant_analyzer'))
+    try:
+        primary_plan = primary_evaluator_plan(run_master.get('evaluation_plan'))
+    except ValueError:
+        primary_plan = None
+    primary_backend = (primary_plan or {}).get('backend', 'self_quant_analyzer')
+    primary_status = next((str(item.get('status')) for item in backend_runs if item.get('backend') == primary_backend), 'missing')
+    primary_present = primary_status in {'success', 'partial'} and bool(payloads.get(primary_backend))
     all_skipped = bool(backend_runs) and not successful and not partial
     payload_missing = [
         str(item.get('backend'))
@@ -957,6 +1039,8 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
         'cost_adjusted_long_side_sharpe',
     ]
     missing_long = [key for key in required_long_side if headline_metrics.get(key) is None]
+    if 'long_side_recovery_days' in missing_long and recovery_evidence_complete(headline_metrics):
+        missing_long.remove('long_side_recovery_days')
     sharpe = _safe_float(headline_metrics.get('long_side_sharpe'))
     max_drawdown = _safe_float(headline_metrics.get('long_side_max_drawdown'))
     recovery_days = _safe_float(headline_metrics.get('long_side_recovery_days'))
@@ -988,7 +1072,9 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
         drawdown_status = 'soft_breach'
     else:
         drawdown_status = 'acceptable'
-    if recovery_days is None:
+    if recovery_days is None and headline_metrics.get('long_side_recovery_status') == RIGHT_CENSORED_RECOVERY_STATUS:
+        recovery_status = 'right_censored_not_recovered'
+    elif recovery_days is None:
         recovery_status = 'missing'
     elif recovery_days <= LONG_SIDE_PERFORMANCE_THRESHOLDS['recovery_days_soft_limit']:
         recovery_status = 'acceptable'
@@ -1002,6 +1088,8 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
         cost_adjusted_status = 'positive'
     if missing_long:
         long_side_verdict = 'blocked'
+    elif recovery_status == 'right_censored_not_recovered':
+        long_side_verdict = 'inconclusive'
     elif long_return is not None and long_return > 0 and sharpe_status in {'official_ready', 'candidate'} and cost_adjusted_status == 'positive':
         long_side_verdict = 'supportive'
     elif long_return is not None and long_return > 0:
@@ -1029,8 +1117,8 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
     suspicions: list[str] = []
     if all_skipped:
         suspicions.append('all_backends_skipped')
-    if not self_quant_present:
-        suspicions.append('self_quant_required_evidence_missing')
+    if not primary_present:
+        suspicions.append(f'primary_evaluator_required_evidence_missing:{primary_backend}')
     if payload_missing:
         suspicions.append('backend_payload_missing:' + ','.join(payload_missing))
     if fallback_or_stub:
@@ -1045,7 +1133,10 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
     if (run_master.get('implementation_mode_decision') or {}).get('selected_mode') == 'blocked':
         suspicions.append('step3b_implementation_blocked')
 
-    gross_return = _safe_float(headline_metrics.get('long_side_annual_return'))
+    return_is_net_of_costs = headline_metrics.get('trading_cogs_included_in_return') is True
+    gross_return = _safe_float(headline_metrics.get('gross_zero_cost_counterfactual_annual_return'))
+    if gross_return is None and not return_is_net_of_costs:
+        gross_return = _safe_float(headline_metrics.get('long_side_annual_return'))
     cogs_destroy_alpha = bool(
         gross_return is not None
         and gross_return > 0
@@ -1058,7 +1149,7 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
     if high_turnover:
         suspicions.append('high_turnover_cost_risk')
 
-    if all_skipped or not self_quant_present or missing_long or factor_value_verdict == 'blocked' or case_quality.get('identity_chain_verified') is False:
+    if all_skipped or not primary_present or missing_long or factor_value_verdict == 'blocked' or case_quality.get('identity_chain_verified') is False:
         evidence_verdict = 'blocked'
     elif cogs_destroy_alpha or high_turnover or failed or skipped or metric_verdict in {'mixed', 'negative', 'inconclusive'}:
         evidence_verdict = 'usable_with_warnings'
@@ -1072,11 +1163,13 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
             'partial_backends': partial,
             'skipped_backends': skipped,
             'failed_backends': failed,
-            'self_quant_required_and_present': self_quant_present,
+            'primary_evaluator': primary_backend,
+            'primary_evaluator_required_and_present': primary_present,
+            'self_quant_required_and_present': primary_present if primary_backend == 'self_quant_analyzer' else None,
             'all_backends_skipped': all_skipped,
             'payload_missing_backends': payload_missing,
             'fallback_or_stub_backends': fallback_or_stub,
-            'backend_verdict': 'blocked' if all_skipped or not self_quant_present else 'usable_with_warnings' if failed or skipped or partial else 'usable',
+            'backend_verdict': 'blocked' if all_skipped or not primary_present else 'usable_with_warnings' if failed or skipped or partial else 'usable',
         },
         'metric_consistency': {
             'rank_ic_direction': _direction(rank_ic),
@@ -1233,6 +1326,8 @@ def measurement_program_from_bundle(bundle: dict[str, Any]) -> dict[str, Any]:
         program,
         available_knowledge_node_ids=declared_node_ids,
         require_web_executable=False,
+        compatibility_profile=research_compatibility_profile_from_spec(spec),
+        scope='local_is_only' if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1' else 'hosted_formal',
     )
     if reasons:
         raise SystemExit(
@@ -2204,6 +2299,28 @@ def _first_revision_hypothesis_id(revision_strategy: dict[str, Any]) -> str | No
     return None
 
 
+def terminal_local_rejection_strategy(strategy: dict[str, Any]) -> dict[str, Any]:
+    """Project an authored terminal rejection, without converting failure into a repair mandate."""
+    result = dict(strategy)
+    signature = result.get('primary_failure_signature')
+    result.update({
+        'revision_needed': False,
+        'revision_hypotheses': [],
+        'revision_quality': 'blocked' if signature in {
+            'implementation_suspect', 'same_factor_identity_mismatch', 'mechanism_unclear'
+        } else 'not_needed',
+        'loop_authorization': 'advisory_only',
+        'requires_human_approval_before_code_change': False,
+        'terminal_local_rejection': True,
+        'reject_reason_if_no_revision': (
+            'Concordant authored local research reviews reject this realization and request no '
+            'implementation change. Retained failure signatures are metric heuristics, not a '
+            'uniquely identified causal diagnosis. Future questions do not reopen this study.'
+        ),
+    })
+    return result
+
+
 def build_search_policy_decision(
     decision: str,
     evidence_audit: dict[str, Any],
@@ -2226,7 +2343,11 @@ def build_search_policy_decision(
     ]
     branch_templates: list[dict[str, Any]] = []
 
-    if evidence_audit.get('evidence_verdict') == 'blocked' or signature == 'implementation_suspect':
+    if decision == 'reject' and revision_strategy.get('terminal_local_rejection') is True:
+        mode = 'kill'
+        why = 'Authored local terminal rejection: no revision branch, tuning, or mandatory Council repair.'
+        blockers.append('current_case_rejected')
+    elif evidence_audit.get('evidence_verdict') == 'blocked' or signature == 'implementation_suspect':
         mode = 'audit'
         why = 'Evidence or implementation is suspect; audit/repair must precede exploit or explore search.'
         blockers.append('implementation_or_evidence_suspect')
@@ -2354,23 +2475,23 @@ def build_search_policy_decision(
             blockers.append('advisory_only')
     elif signature == 'unstable_regime' and quality == 'actionable' and loop_authorization == 'approved_for_step3b_handoff':
         mode = 'bayesian_exploit'
-        why = 'The factor has useful signal evidence but unstable OOS/portfolio geometry; test expression-level regime stability before promotion.'
+        why = 'The factor has useful signal evidence but unstable sample/portfolio geometry; test expression-level regime stability before promotion.'
         branch_templates.append(_search_branch_template(
             branch_id='exploit_regime_stability_gate',
             branch_role='exploit',
             search_mode='bayesian_search',
-            research_question='Can persistence, smoothing, or state gating keep the residual-volatility mechanism while improving OOS monotonicity and long-side tradability?',
-            hypothesis='Residual price-volume instability may be useful only when it is persistent or confirmed by a measurable state; controlled smoothing/gating should preserve RankIC while reducing OOS top-bottom degradation.',
+            research_question='Can persistence, smoothing, or state gating keep the residual-volatility mechanism while improving in-sample monotonicity and long-side tradability?',
+            hypothesis='Residual price-volume instability may be useful only when it is persistent or confirmed by a measurable state; controlled smoothing/gating should preserve RankIC while reducing sample top-bottom degradation.',
             mechanism_target='residual_volatility_regime_stability',
             revision_hypothesis_id=revision_hypothesis_id,
             success_criteria=[
-                'OOS top-minus-bottom spread becomes positive without weakening full-IS RankIC materially',
+                'Top-minus-bottom spread becomes positive without weakening the declared IS RankIC materially',
                 'long-side Sharpe improves after transaction costs',
                 'required IS samples keep positive RankIC and avoid isolated stress-period dependence',
             ],
             falsification_tests=[
                 'regime gate removes the gross signal or materially lowers coverage',
-                'OOS monotonicity remains unstable',
+                'Declared-sample monotonicity remains unstable',
                 'cost-adjusted long-side Sharpe remains below candidate threshold',
             ],
         ))
@@ -2393,7 +2514,7 @@ def build_search_policy_decision(
         'recommended_mode': mode,
         'why_this_mode': why,
         'branch_templates': branch_templates,
-        'human_approval_required': True,
+        'human_approval_required': revision_strategy.get('terminal_local_rejection') is not True,
         'forbidden_search': REVISION_FORBIDDEN_CHANGES,
         'search_blockers': blockers,
         'selection_rationale': rationale,
@@ -2465,7 +2586,24 @@ def build_formula_understanding(bundle: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_research_memo(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]], framework: dict[str, Any], metrics: dict[str, Any], decision: str) -> dict[str, Any]:
+ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE = 'factorforge_ordinary_local_is_flexible_v1'
+
+
+def _research_contract_and_profile(bundle: dict[str, Any]) -> tuple[dict[str, Any], str | None, bool]:
+    spec = bundle.get('factor_spec_master') or {}
+    contract = spec.get('research_contract') or {}
+    contract_has_profile = 'research_compatibility_profile' in contract
+    spec_has_profile = 'research_compatibility_profile' in spec
+    contract_profile = contract.get('research_compatibility_profile')
+    spec_profile = spec.get('research_compatibility_profile')
+    profile = contract_profile if contract_has_profile else None
+    if spec_has_profile and (not contract_has_profile or spec_profile != contract_profile):
+        profile = '__inconsistent_research_compatibility_profile__'
+    local = os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+    return contract, profile, local and profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+
+
+def build_research_memo(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]], framework: dict[str, Any], metrics: dict[str, Any], decision: str, authored_memo: dict[str, Any] | None = None) -> dict[str, Any]:
     formula = build_formula_understanding(bundle)
     metric_interpretation = build_metric_interpretation(metrics, payloads)
     math_discipline = build_math_discipline_review(bundle, payloads, framework, metrics, metric_interpretation, decision)
@@ -2503,13 +2641,34 @@ def build_research_memo(bundle: dict[str, Any], payloads: dict[str, dict[str, An
             'The evidence is ambiguous enough that human review should precede automatic modification or official promotion.',
         ]
 
-    next_tests = [
+    contract, profile, flexible_local = _research_contract_and_profile(bundle)
+    authored_memo = authored_memo if isinstance(authored_memo, dict) else {}
+    authored_memo_body = authored_memo.get('research_memo') if isinstance(authored_memo.get('research_memo'), dict) else authored_memo
+    authored_next_tests = (
+        authored_memo_body['next_research_tests']
+        if 'next_research_tests' in authored_memo_body
+        else contract.get('next_research_tests')
+    )
+    authored_next_tests_reason = (
+        authored_memo_body.get('next_research_tests_absence_reason')
+        if 'next_research_tests' in authored_memo_body
+        else contract.get('next_research_tests_absence_reason')
+    )
+    if flexible_local and isinstance(authored_next_tests, list):
+        next_tests = list(authored_next_tests)
+        next_tests_absence_reason = authored_next_tests_reason
+    elif flexible_local:
+        next_tests = []
+        next_tests_absence_reason = None
+    else:
+        next_tests = [
         'Run expression-direction comparison to verify whether higher factor values should represent stronger expected risk-adjusted long-side returns.',
         'Run monotonicity, long-side Sharpe, drawdown, recovery, and top-group return checks across years, regimes, industries, and market-cap buckets.',
         'Check yearly and regime-split stability, especially before and after major liquidity/regulatory regime changes.',
         'Check liquidity and market-cap buckets to see whether the edge is broad or concentrated in hard-to-trade names.',
         'Compare against related formula-family price-volume factors to avoid promoting a redundant signal.',
-    ]
+        ]
+        next_tests_absence_reason = None
 
     return {
         'formula_understanding': formula,
@@ -2540,6 +2699,7 @@ def build_research_memo(bundle: dict[str, Any], payloads: dict[str, dict[str, An
         },
         'decision_rationale': decision_rationale,
         'next_research_tests': next_tests,
+        'next_research_tests_absence_reason': next_tests_absence_reason,
     }
 
 
@@ -2751,7 +2911,7 @@ def infer_research_framework(bundle: dict[str, Any], payloads: dict[str, dict[st
         ' '.join(canonical.get('cross_sectional_steps') or []),
     ]))
     token_set = set(factor_tokens)
-    metrics = extract_headline_metrics(payloads)
+    metrics = extract_headline_metrics(payloads, run_master.get('evaluation_plan'))
 
     style_tokens = {'value', 'size', 'beta', 'liquidity', 'lowvol', 'volatility', 'quality'}
     behavior_tokens = {'momentum', 'reversal', 'sentiment', 'overreaction', 'underreaction'}
@@ -2893,17 +3053,21 @@ def infer_research_framework(bundle: dict[str, Any], payloads: dict[str, dict[st
         research_commentary.append('Cross-sectional rank evidence and risk-adjusted long-side evidence point in the same positive direction.')
 
     return {
-        'factor_family': factor_family,
-        'monetization_model': monetization_model,
-        'bias_type': bias_type,
-        'return_source_hypothesis': return_source_hypothesis,
-        'expected_failure_regimes': expected_failure_regimes,
-        'objective_constraint_dependency': objective_constraint_dependency,
-        'constraint_sources': constraint_sources,
-        'crowding_risk': crowding_risk,
-        'capacity_constraints': capacity_constraints,
-        'implementation_risk': implementation_risk,
-        'improvement_frontier': improvement_frontier,
+        # Token routing is useful only for generic review prompts below.  It
+        # cannot establish a case's payer, regime, mandate, capacity, or risk
+        # premium.  Those facts must arrive later from a reviewed authored
+        # derivation; otherwise writeback remains explicitly unknown/empty.
+        'factor_family': 'unknown',
+        'monetization_model': 'unknown',
+        'bias_type': 'unknown',
+        'return_source_hypothesis': 'unknown',
+        'expected_failure_regimes': [],
+        'objective_constraint_dependency': 'unknown',
+        'constraint_sources': [],
+        'crowding_risk': 'unknown',
+        'capacity_constraints': 'unknown',
+        'implementation_risk': 'unknown',
+        'improvement_frontier': [],
         'program_search_axes': program_search_axes,
         'review_checklist': review_checklist,
         'revision_principles': revision_principles,
@@ -2917,7 +3081,7 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
     report_id = str(run_master.get('report_id') or '')
     factor_id = str(run_master.get('factor_id') or case.get('factor_id') or '')
     decision_hint = str(case.get('final_status') or run_master.get('run_status') or '')
-    metrics = extract_headline_metrics(payloads)
+    metrics = extract_headline_metrics(payloads, run_master.get('evaluation_plan'))
     query_parts = [
         factor_id,
         decision_hint,
@@ -2961,6 +3125,7 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
             'source_path': doc.get('source_path'),
             'overlap_terms': sorted(overlap)[:12],
             'snippet': snippet,
+            'advisory_context': doc.get('advisory_projection') or {},
         })
 
     embedding_available = (
@@ -3035,6 +3200,9 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
     return {
         'retrieval_index_path': str(RETRIEVAL_INDEX),
         'retrieval_index_available': RETRIEVAL_INDEX.exists(),
+        'retrieval_index_readable': _RETRIEVAL_INDEX_ERROR is None,
+        'retrieval_index_error': _RETRIEVAL_INDEX_ERROR,
+        'retrieval_error': _RETRIEVAL_INDEX_ERROR,
         'factor_knowledge_context_available': bool(factor_knowledge_context.get('node_index_available')),
         'factor_knowledge_context_node_count': factor_knowledge_context.get('node_count') or 0,
         'factor_knowledge_context': factor_knowledge_context,
@@ -3058,7 +3226,32 @@ def build_learning_and_innovation(
     weaknesses: list[str],
     modification_targets: list[str],
     retrieval_context: dict[str, Any],
+    authored_learning: dict[str, Any] | None = None,
+    flexible_local: bool = False,
 ) -> dict[str, Any]:
+    authored_learning = authored_learning if isinstance(authored_learning, dict) else {}
+    if flexible_local:
+        result = {
+            'learning_goal': 'Preserve the current authored Step6 reflection and report any missing bounded fields without synthesis.',
+            'factor_family': str(framework.get('factor_family') or 'mixed_or_unclear'),
+        }
+        for key in (
+            'transferable_patterns',
+            'anti_patterns',
+            'similar_case_lessons_imported',
+            'innovative_idea_seeds',
+            'reuse_instruction_for_future_agents',
+        ):
+            if key in authored_learning:
+                result[key] = deepcopy(authored_learning[key])
+            reason_key = f'{key}_absence_reason'
+            aliases = [reason_key]
+            if key == 'similar_case_lessons_imported':
+                aliases.append('similar_case_lessons_absence_reason')
+            for candidate_reason_key in aliases:
+                if candidate_reason_key in authored_learning:
+                    result[candidate_reason_key] = authored_learning[candidate_reason_key]
+        return result
     similar_cases = retrieval_context.get('similar_cases') or []
     imported_lessons = []
     for item in similar_cases[:3]:
@@ -3066,7 +3259,10 @@ def build_learning_and_innovation(
         snippet = str(item.get('snippet') or '').strip()
         if label or snippet:
             imported_lessons.append((label + ': ' + snippet).strip(': ')[:360])
-    if not imported_lessons:
+    authored_keys = set(authored_learning)
+    if flexible_local and not authored_learning:
+        imported_lessons = []
+    elif not imported_lessons and not (flexible_local and 'similar_case_lessons_imported' in authored_learning):
         imported_lessons.append(
             'No similar prior case was retrieved; treat this as a cold-start lesson and update the knowledge base after comparable cases exist.'
         )
@@ -3107,19 +3303,47 @@ def build_learning_and_innovation(
             'Use this case as a retrieval anchor for future factors in the same family and test whether the same mechanism survives a new universe/window.',
         ]
 
-    return {
+    if flexible_local:
+        for key in ('transferable_patterns', 'anti_patterns', 'similar_case_lessons_imported', 'innovative_idea_seeds'):
+            if key in authored_learning:
+                value = authored_learning.get(key)
+                if isinstance(value, list):
+                    if key == 'transferable_patterns':
+                        transferable_patterns = list(value)
+                    elif key == 'anti_patterns':
+                        anti_patterns = list(value)
+                    elif key == 'similar_case_lessons_imported':
+                        imported_lessons = list(value)
+                    elif key == 'innovative_idea_seeds':
+                        idea_seed = list(value)
+        authored_reuse = authored_learning.get('reuse_instruction_for_future_agents')
+        reuse_instruction = list(authored_reuse) if isinstance(authored_reuse, list) else []
+        if not authored_learning:
+            transferable_patterns = []
+            anti_patterns = []
+            idea_seed = []
+    else:
+        reuse_instruction = []
+
+    result = {
         'learning_goal': 'Make future researcher agents better at extracting reusable factor ideas, anti-patterns, and innovative next experiments.',
         'factor_family': factor_family,
         'transferable_patterns': transferable_patterns,
         'anti_patterns': anti_patterns,
         'similar_case_lessons_imported': imported_lessons,
         'innovative_idea_seeds': idea_seed,
-        'reuse_instruction_for_future_agents': [
+        'reuse_instruction_for_future_agents': reuse_instruction or [
             'Before modifying a similar factor, retrieve this case and decide whether to reuse, invert, or avoid its revision operator.',
             'When a case fails, preserve the failure as a search prior instead of treating it as dead output.',
             'Every new idea seed should state the return source it expects to strengthen and the kill criteria that would stop it.',
         ],
     }
+    for key in ('transferable_patterns', 'anti_patterns', 'similar_case_lessons_imported', 'innovative_idea_seeds'):
+        if not result[key]:
+            reason = authored_learning.get(f'{key}_absence_reason')
+            if reason is not None:
+                result[f'{key}_absence_reason'] = reason
+    return result
 
 
 def build_experience_chain(
@@ -3245,7 +3469,15 @@ def build_program_search_policy(
     decision: str,
     modification_targets: list[str],
     retrieval_context: dict[str, Any],
+    flexible_local: bool = False,
 ) -> dict[str, Any]:
+    if flexible_local:
+        if 'authored_program_search_policy' not in retrieval_context:
+            return {}
+        authored_policy = retrieval_context['authored_program_search_policy']
+        if isinstance(authored_policy, dict):
+            return deepcopy(authored_policy)
+        return {'authored_program_search_policy_invalid': deepcopy(authored_policy)}
     verdict = str(metric_interpretation.get('verdict') or '')
     budget = 3 if decision == 'iterate' else 1 if decision == 'needs_human_review' else 0
     method_library = {
@@ -3260,7 +3492,7 @@ def build_program_search_policy(
                 'neutralization_or_grouping_toggle',
             ],
             'selection_objective': [
-                'out_of_sample_rank_ic_ir',
+                'in_sample_rank_ic_ir',
                 'long_side_sharpe_ratio',
                 'long_side_drawdown_and_recovery',
                 'monotonicity_of_factor_value_to_forward_return',
@@ -3343,7 +3575,7 @@ def build_program_search_policy(
         'long_only_policy': LONG_ONLY_POLICY,
         'search_budget_branches': budget,
         'explore_exploit_rule': (
-            'When budget >= 2, run at least one exploit branch that refines the current factor and one explore branch that tests a neighboring formula/hypothesis.'
+            'When budget permits, run only declared exploit or explore branches with legal information and explicit falsifiers.'
         ),
         'method_library': method_library,
         'recommended_next_search': {
@@ -3401,7 +3633,7 @@ def derive_strengths_weaknesses(bundle: dict[str, Any], payloads: dict[str, dict
     final_status = str(case.get('final_status') or '')
     backend_runs = (((run_master.get('evaluation_results') or {}).get('backend_runs')) or [])
     backend_status = {str(item.get('backend')): str(item.get('status')) for item in backend_runs}
-    metrics = extract_headline_metrics(payloads)
+    metrics = extract_headline_metrics(payloads, run_master.get('evaluation_plan'))
     metric_interpretation = build_metric_interpretation(metrics, payloads)
 
     strengths: list[str] = []
@@ -3430,7 +3662,11 @@ def derive_strengths_weaknesses(bundle: dict[str, Any], payloads: dict[str, dict
     if run_status == 'partial' or final_status == 'partial':
         weaknesses.append('current run is still partial rather than fully validated')
         modification_targets.append('close remaining partial coverage gap before promotion')
-    if backend_status.get('qlib_backtest') != 'success':
+    try:
+        custom_primary = primary_evaluator_plan(run_master.get('evaluation_plan'))
+    except ValueError:
+        custom_primary = None
+    if custom_primary is None and backend_status.get('qlib_backtest') != 'success':
         weaknesses.append('qlib backend is not yet consistently successful')
         modification_targets.append('stabilize qlib backtest path and payload contract')
     if (metrics.get('rank_ic_mean') or 0) <= 0:
@@ -3489,12 +3725,20 @@ def decide(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]]) -> str:
     final_status = str(case.get('final_status') or '')
     backend_runs = (((run_master.get('evaluation_results') or {}).get('backend_runs')) or [])
     successful_backends = {str(item.get('backend')) for item in backend_runs if item.get('status') == 'success'}
-    metrics = extract_headline_metrics(payloads)
+    metrics = extract_headline_metrics(payloads, run_master.get('evaluation_plan'))
     metric_interpretation = build_metric_interpretation(metrics, payloads)
     rank_ic = _safe_float(metrics.get('rank_ic_mean'))
     long_side_review = build_long_side_adoption_review(metrics)
     long_side_ok = long_side_review['long_side_status'] == 'official_ready'
-    required_backends_ok = {'self_quant_analyzer', 'qlib_backtest'}.issubset(successful_backends)
+    try:
+        primary_plan = primary_evaluator_plan(run_master.get('evaluation_plan'))
+    except ValueError:
+        primary_plan = None
+    required_backends_ok = (
+        primary_plan['backend'] in successful_backends
+        if primary_plan is not None
+        else {'self_quant_analyzer', 'qlib_backtest'}.issubset(successful_backends)
+    )
 
     if run_status == 'failed' or final_status == 'failed':
         return 'reject'
@@ -3580,13 +3824,11 @@ def build_evidence_status(
     long_complete = all(_safe_float(metrics.get(key)) is not None for key in [
         'long_side_annual_return',
         'long_side_max_drawdown',
-        'long_side_recovery_days',
-    ])
+    ]) and recovery_evidence_complete(metrics)
     cost_complete = _safe_float(metrics.get('cost_adjusted_annual_return')) is not None
     drawdown_complete = all(_safe_float(metrics.get(key)) is not None for key in [
         'long_side_max_drawdown',
-        'long_side_recovery_days',
-    ])
+    ]) and recovery_evidence_complete(metrics)
     long_ret = _safe_float(metrics.get('long_side_annual_return'))
     cost_ret = _safe_float(metrics.get('cost_adjusted_annual_return'))
     max_dd = _safe_float(metrics.get('long_side_max_drawdown'))
@@ -3604,13 +3846,23 @@ def build_evidence_status(
     if research_decision not in {'promote', 'iterate', 'reject', 'needs_human_review'}:
         research_decision = 'needs_human_review'
     raw_run_status = run_master.get('run_status') or evaluation.get('run_status') or 'unknown'
+    try:
+        primary_plan = primary_evaluator_plan(run_master.get('evaluation_plan'))
+    except ValueError:
+        primary_plan = None
+    primary_backend = (primary_plan or {}).get('backend', 'self_quant_analyzer')
     return {
         'version': 'factorforge_step6_evidence_status_v1',
         'status': 'complete' if evaluation.get('artifact_ready') is True else 'partial_evaluation_artifact',
         'run_status': _named_step6_run_status(raw_run_status),
         'raw_run_status': str(raw_run_status),
         'wrapper_validation_status': 'PASS' if evaluation.get('artifact_ready') is True else 'BLOCK',
-        'self_quant_evidence_status': _status_from_backend(backend_statuses, 'self_quant_analyzer'),
+        'primary_evaluator_backend': primary_backend,
+        'primary_evaluator_evidence_status': _status_from_backend(backend_statuses, primary_backend),
+        'self_quant_evidence_status': (
+            _status_from_backend(backend_statuses, 'self_quant_analyzer')
+            if primary_backend == 'self_quant_analyzer' else 'not_required'
+        ),
         'qlib_native_status': _qlib_native_status(payloads, backend_statuses),
         'long_side_evidence_status': 'complete' if long_complete else 'missing',
         'cost_model_status': 'complete' if cost_complete else 'missing',
@@ -3622,6 +3874,8 @@ def build_evidence_status(
 
 
 def load_window_evidence(report_id: str) -> dict[str, Any]:
+    if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1':
+        return {}
     path = OBJ / 'window_evidence' / f'window_evidence__{report_id}.json'
     if not path.exists():
         return {}
@@ -3666,6 +3920,113 @@ def summarize_window_evidence(window_evidence: dict[str, Any]) -> tuple[list[str
     return strengths, weaknesses
 
 
+def local_reviewers_agree_to_reject(report_id: str, factor_id: str, current_identity: dict[str, Any]) -> bool:
+    """Honor consistent local authored rejection declarations, never an admission upgrade.
+
+    A metric heuristic may propose iteration, but may not force a new search
+    after both the full-workflow researcher and independent reviewer stop the
+    case.  The main-agent mechanism memo is still validated before publication.
+    Hosted/EVO admission and promotion decisions do not use this local route.
+
+    This only checks local authored declarations for identity consistency.  It
+    is not evidence of separate sessions or a proof of research independence.
+    """
+    if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1':
+        return False
+    if not isinstance(current_identity, dict):
+        return False
+    required_identity_keys = ('branch_id', 'run_id', 'spec_hash', 'implementation_mode')
+    identity_keys = (*required_identity_keys, 'formula_hash', 'code_hash', 'code_contract_hash', 'hybrid_hash')
+    if any(
+        not isinstance(current_identity.get(key), str) or not current_identity[key].strip()
+        for key in required_identity_keys
+    ):
+        return False
+    if any(
+        current_identity.get(key) is not None
+        and (not isinstance(current_identity[key], str) or not current_identity[key].strip())
+        for key in identity_keys[len(required_identity_keys):]
+    ):
+        return False
+    journal = load_researcher_journal(report_id)
+    review = load_researcher_agent_memo(report_id)
+    if not isinstance(journal, dict) or not isinstance(review, dict):
+        return False
+    for item in (journal, review):
+        if item.get('report_id') != report_id or item.get('factor_id') != factor_id:
+            return False
+        if item.get('load_error'):
+            return False
+    if journal.get('producer') != 'factor-forge-researcher':
+        return False
+    if review.get('producer') != 'independent_researcher':
+        return False
+    for item in (journal, review):
+        provenance = item.get('provenance')
+        if not isinstance(provenance, dict):
+            return False
+        if any(
+            provenance.get(key) != current_identity[key]
+            for key in identity_keys
+            if current_identity.get(key) is not None
+        ):
+            return False
+    reflection = journal.get('reflection')
+    revision_brief = review.get('revision_brief_to_step3b')
+    return (
+        isinstance(reflection, dict)
+        and reflection.get('current_decision') == 'reject'
+        and review.get('researcher_decision') == 'reject'
+        and isinstance(revision_brief, dict)
+        and revision_brief.get('should_modify') is False
+        and bool(str(review.get('executive_summary') or '').strip())
+        and isinstance(review.get('formula_review'), dict) and bool(review['formula_review'])
+        and isinstance(review.get('metric_review'), dict) and bool(review['metric_review'])
+    )
+
+
+def project_authored_terminal_model_review(mechanism: dict[str, Any], memo: dict[str, Any]) -> None:
+    """Copy an authored rejection diagnosis, never infer a unique cause from a metric."""
+    review = (memo.get('evidence_comparison') or {}).get('model_layer_review') or {}
+    if not review:
+        return
+    if (
+        review.get('equation_supported_by_metrics') != 'challenged'
+        or review.get('mechanism_fit') != 'contradicted'
+        or review.get('return_source') != 'unknown'
+        or review.get('failed_equation_component') not in {
+            'assumptions', 'math_tool_selection', 'primary_math_mechanism', 'mathematical_object',
+            'latent_state', 'observable_estimator', 'price_process_projection',
+            'market_outcome_projection', 'applicable_audit', 'implementation_contract',
+            'trading_cost', 'drawdown_geometry',
+        }
+        or not str(review.get('interpretation') or '').strip()
+    ):
+        raise ValueError('Invalid authored terminal model review')
+    derivation = mechanism['formula_specific_derivation']
+    equation = mechanism.setdefault('research_equation_review', {})
+    equation['legacy_metric_heuristic_not_causal_identification'] = {
+        'failed_equation_component': equation.get('failed_equation_component'),
+        'revision_implication': equation.get('revision_implication'),
+    }
+    equation.update({
+        'equation_supported_by_metrics': review['equation_supported_by_metrics'],
+        'failed_equation_component': review['failed_equation_component'],
+        'revision_implication': derivation['revision_implication'],
+        'authored_interpretation': review['interpretation'],
+        'causal_identification': False,
+    })
+    mechanism['mechanism_fit'] = review['mechanism_fit']
+    mechanism['return_source'] = review['return_source']
+    mechanism['measurement_execution_scope'] = {
+        'source': 'validated_main_agent_formula_specific_derivation',
+        'observed_mathematical_object': derivation['mathematical_object'],
+        'observed_formula_components': derivation['formula_components'],
+        'observation_mapping': derivation['observation_mapping'],
+        'declared_program_is_not_execution_evidence': True,
+    }
+
+
 def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
     run_master = bundle['factor_run_master']
     case = bundle['factor_case_master']
@@ -3674,10 +4035,21 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     report_id = run_master['report_id']
     factor_id = run_master.get('factor_id') or case.get('factor_id')
     decision = decide(bundle, payloads)
+    local_terminal_reject = local_reviewers_agree_to_reject(
+        str(report_id), str(factor_id), run_master.get('artifact_identity') or {}
+    )
+    if local_terminal_reject:
+        decision = 'reject'
     strengths, weaknesses, risks, modification_targets = derive_strengths_weaknesses(bundle, payloads)
-    metrics = extract_headline_metrics(payloads)
-    window_evidence = load_window_evidence(str(report_id))
+    metrics = extract_headline_metrics(payloads, run_master.get('evaluation_plan'))
+    local_is_only = os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+    window_evidence = {} if local_is_only else load_window_evidence(str(report_id))
     window_strengths, window_weaknesses = summarize_window_evidence(window_evidence)
+    if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1' and not window_evidence:
+        window_weaknesses = [
+            'Local IS review only: no hosted/OOS window package was requested; '
+            'this is not OOS or independent confirmation evidence.'
+        ]
     strengths.extend([item for item in window_strengths if item not in strengths])
     weaknesses.extend([item for item in window_weaknesses if item not in weaknesses])
     retrieval_context = build_retrieval_context(bundle, payloads)
@@ -3708,8 +4080,88 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         else 'Current evidence is insufficient or ambiguous and needs explicit human review.'
     )
     framework = infer_research_framework(bundle, payloads, decision)
-    research_memo = build_research_memo(bundle, payloads, framework, metrics, decision)
-    learning_and_innovation = build_learning_and_innovation(framework, decision, strengths, weaknesses, modification_targets, retrieval_context)
+    current_researcher_journal = load_researcher_journal(str(report_id))
+    current_researcher_memo = load_researcher_agent_memo(str(report_id))
+    current_researcher_memo_body = (
+        current_researcher_memo.get('research_memo')
+        if isinstance(current_researcher_memo, dict)
+        and isinstance(current_researcher_memo.get('research_memo'), dict)
+        else current_researcher_memo
+    )
+    research_memo = build_research_memo(
+        bundle,
+        payloads,
+        framework,
+        metrics,
+        decision,
+        authored_memo=current_researcher_memo_body,
+    )
+    if local_terminal_reject:
+        research_memo['decision_source'] = {
+            'source': 'concordant_authored_local_researcher_and_independent_review',
+            'decision': 'reject',
+            'promotion_allowed': False,
+            'automatic_revision_allowed': False,
+        }
+    contract, compatibility_profile, flexible_local = _research_contract_and_profile(bundle)
+    current_learning_declared = (
+        isinstance(current_researcher_memo_body, dict)
+        and 'learning_and_innovation' in current_researcher_memo_body
+    )
+    current_authored_learning = (
+        current_researcher_memo_body.get('learning_and_innovation')
+        if current_learning_declared else None
+    )
+    current_policy_declared = (
+        isinstance(current_researcher_memo_body, dict)
+        and 'program_search_policy' in current_researcher_memo_body
+    )
+    current_authored_policy = (
+        current_researcher_memo_body.get('program_search_policy')
+        if current_policy_declared else None
+    )
+    authored_memo = handoff.get('research_memo') if isinstance(handoff.get('research_memo'), dict) else {}
+    authored_learning_declared = (
+        current_learning_declared
+        or 'learning_and_innovation' in handoff
+        or 'learning_and_innovation' in authored_memo
+    )
+    authored_learning = (
+        current_authored_learning
+        if current_learning_declared
+        else handoff.get('learning_and_innovation')
+        if 'learning_and_innovation' in handoff
+        else authored_memo.get('learning_and_innovation')
+    )
+    if not isinstance(authored_learning, dict):
+        authored_learning = (
+            {'authored_learning_and_innovation_invalid': deepcopy(authored_learning)}
+            if flexible_local and authored_learning_declared
+            else {}
+        ) if flexible_local else (
+            (bundle.get('factor_spec_master') or {}).get('learning_and_innovation')
+            or contract.get('learning_and_innovation')
+            or {}
+        )
+    if current_policy_declared:
+        retrieval_context['authored_program_search_policy'] = current_authored_policy
+    elif 'program_search_policy' in handoff:
+        retrieval_context['authored_program_search_policy'] = handoff['program_search_policy']
+    elif 'program_search_policy' in authored_memo:
+        retrieval_context['authored_program_search_policy'] = authored_memo['program_search_policy']
+    learning_and_innovation = build_learning_and_innovation(
+        framework,
+        decision,
+        strengths,
+        weaknesses,
+        modification_targets,
+        retrieval_context,
+        authored_learning=authored_learning,
+        flexible_local=flexible_local,
+    )
+    if compatibility_profile is not None:
+        learning_and_innovation['research_compatibility_profile'] = compatibility_profile
+        research_memo['research_compatibility_profile'] = compatibility_profile
     research_memo['learning_and_innovation'] = learning_and_innovation
     metric_interpretation = research_memo.get('metric_interpretation') or {}
     math_discipline = research_memo.get('math_discipline_review') or {}
@@ -3738,6 +4190,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         decision,
         modification_targets,
         retrieval_context,
+        flexible_local=flexible_local,
     )
     diversity_position = build_diversity_position(framework, retrieval_context, decision)
     evidence_audit = build_evidence_audit(bundle, payloads, metrics)
@@ -3786,6 +4239,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             decision,
             modification_targets,
             retrieval_context,
+            flexible_local=flexible_local,
         )
         diversity_position = build_diversity_position(framework, retrieval_context, decision)
     revision_strategy = build_revision_strategy(
@@ -3797,6 +4251,9 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         framework,
         math_discipline,
     )
+    if local_terminal_reject:
+        revision_strategy = terminal_local_rejection_strategy(revision_strategy)
+        modification_targets = []
     search_policy_decision = build_search_policy_decision(
         decision,
         evidence_audit,
@@ -3805,11 +4262,12 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         revision_strategy,
         framework,
     )
-    program_search_policy.setdefault('recommended_next_search', {})['branches'] = search_policy_decision.get('branch_templates') or []
-    program_search_policy['recommended_next_search']['recommended_mode'] = search_policy_decision.get('recommended_mode')
-    program_search_policy['recommended_next_search']['requires_human_approval_before_code_change'] = search_policy_decision.get('human_approval_required') is True
-    program_search_policy['recommended_next_search']['execution_allowed_by_default'] = False
-    program_search_policy['recommended_next_search']['selection_rationale'] = search_policy_decision.get('selection_rationale') or []
+    if not flexible_local:
+        program_search_policy.setdefault('recommended_next_search', {})['branches'] = search_policy_decision.get('branch_templates') or []
+        program_search_policy['recommended_next_search']['recommended_mode'] = search_policy_decision.get('recommended_mode')
+        program_search_policy['recommended_next_search']['requires_human_approval_before_code_change'] = search_policy_decision.get('human_approval_required') is True
+        program_search_policy['recommended_next_search']['execution_allowed_by_default'] = False
+        program_search_policy['recommended_next_search']['selection_rationale'] = search_policy_decision.get('selection_rationale') or []
     should_modify_step3b = should_write_step3b_handoff(
         decision,
         revision_strategy,
@@ -3838,9 +4296,59 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'Full-workflow researcher journal was loaded and preserved under research_memo.researcher_journal.'
         )
     if researcher_agent_memo:
+        research_memo = _project_authored_failure_regimes(research_memo, researcher_agent_memo)
         research_memo['researcher_agent_memo'] = researcher_agent_memo
         research_memo.setdefault('evidence_quality', {}).setdefault('notes', []).append(
             'External Step6 researcher-agent memo was loaded and preserved under research_memo.researcher_agent_memo.'
+        )
+
+    evo_execution_summary = run_master.get('evo_child_execution')
+    evo_execution_contract = run_master.get('evo_transfer_diagnostic_contract')
+    evo_transfer_tension_ledger = None
+    if isinstance(evo_execution_contract, dict):
+        result_ref = (
+            evo_execution_summary.get('result_ref')
+            if isinstance(evo_execution_summary, dict)
+            else None
+        )
+        result_payload = {}
+        if isinstance(result_ref, dict) and result_ref.get('path'):
+            result_path = Path(str(result_ref['path']))
+            if not result_path.is_absolute():
+                result_path = FF / result_path
+            result_payload = load_json(result_path)
+        evo_transfer_tension_ledger = {
+            'contract_version': 'factorforge_evo_transfer_tension_ledger_projection_v1',
+            'diagnostic_contract_sha256': evo_execution_contract.get('contract_sha256'),
+            'execution_result_ref': result_ref,
+            'tests': [
+                {
+                    'test_id': item.get('test_id'),
+                    'source_test_sha256': item.get('source_test_sha256'),
+                    'predicted_signature': item.get('expected_signature'),
+                    'observed_signature': item.get('observed_metrics'),
+                    'falsifier': item.get('falsifier'),
+                    'mismatch_vector': None,
+                    'what_survived': None,
+                    'what_failed': None,
+                    'rival_explanations': [],
+                    'distinguishing_test': None,
+                    'host_review_status': 'HOST_REVIEW_REQUIRED_NOT_AUTOMATICALLY_ADJUDICATED',
+                }
+                for item in (result_payload.get('test_results') or [])
+                if isinstance(item, dict)
+            ],
+            'authority': {
+                'diagnostic_only': True,
+                'affects_current_factor_acceptance': False,
+                'automatic_support_or_falsification_allowed': False,
+                'factor_verdict': 'NOT_ISSUED',
+                'canonical_memory_write_allowed': False,
+            },
+        }
+        research_memo['evo_transfer_tension_ledger'] = evo_transfer_tension_ledger
+        research_memo.setdefault('evidence_quality', {}).setdefault('notes', []).append(
+            'EVO transfer tests were executed and projected for Host review; they remain diagnostic-only and do not affect current factor acceptance.'
         )
 
     return {
@@ -3856,6 +4364,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'formal_window_evidence': window_evidence,
             'step5_lessons': case.get('lessons') or handoff.get('lessons') or [],
             'step5_next_actions': case.get('next_actions') or handoff.get('next_actions') or [],
+            'evo_transfer_tension_ledger': evo_transfer_tension_ledger,
         },
         'evidence_status': evidence_status,
         'research_judgment': {
@@ -3867,6 +4376,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'why_now': 'Step6 research memo based on Step4/5 executable artifacts, backend payloads, return-source logic, and historical retrieval context.',
             'factor_investing_framework': framework,
             'research_memo': research_memo,
+            'evo_transfer_tension_ledger': evo_transfer_tension_ledger,
             'experience_chain': experience_chain,
             'revision_taxonomy': revision_taxonomy,
             'program_search_policy': program_search_policy,
@@ -3904,7 +4414,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             'loop_authorization': revision_strategy.get('loop_authorization'),
             'modification_targets': modification_targets,
             'parallel_exploration_branches': (program_search_policy.get('recommended_next_search') or {}).get('branches') or [],
-            'search_methods': list((program_search_policy.get('method_library') or {}).keys()),
+            'search_methods': [] if local_terminal_reject else list((program_search_policy.get('method_library') or {}).keys()),
             'requires_human_approval_before_code_change': should_modify_step3b,
             'next_runner': 'step3b' if should_modify_step3b else 'stop',
             'stop_reason': None if should_modify_step3b else (revision_strategy.get('loop_authorization') or decision),
@@ -3918,11 +4428,258 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     }
 
 
+def _reusable_evo_research_projection(
+    iteration: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    reusable_research_memo = dict(
+        iteration['knowledge_writeback'].get('research_memo') or {}
+    )
+    pending_transfer_tension = reusable_research_memo.pop(
+        'evo_transfer_tension_ledger', None
+    )
+    if not isinstance(pending_transfer_tension, dict):
+        return reusable_research_memo, None
+    gate = {
+        'status': 'HOST_ADJUDICATION_REQUIRED_NOT_REUSABLE',
+        'diagnostic_contract_sha256': pending_transfer_tension.get(
+            'diagnostic_contract_sha256'
+        ),
+        'execution_result_ref': pending_transfer_tension.get(
+            'execution_result_ref'
+        ),
+        'ordered_test_ids': [
+            item.get('test_id')
+            for item in (pending_transfer_tension.get('tests') or [])
+            if isinstance(item, dict)
+        ],
+        'raw_tension_ledger_copied_to_knowledge': False,
+        'reusable_as_analogy': False,
+        'canonical_memory_promotion_allowed': False,
+        'factor_acceptance_affected': False,
+    }
+    return reusable_research_memo, gate
+
+
+def _knowledge_reuse_projection(iteration: dict[str, Any]) -> dict[str, Any]:
+    """Project only the accepted main-agent derivation into same-factor reuse.
+
+    This is a retrieval aid, not an empirical generalization: future mutation
+    hypotheses retain their candidate status and the current factor's identity
+    gate remains the sole authority for same-factor evidence.
+    """
+    memo_ref = iteration.get('main_agent_mechanism_memo_ref') or {}
+    memo = ((iteration.get('research_judgment') or {}).get('research_memo') or {})
+    analysis = memo.get('mechanism_analysis') or {}
+    derivation = analysis.get('formula_specific_derivation') or {}
+    if (
+        not isinstance(memo_ref, dict)
+        or memo_ref.get('contract_version') != 'factorforge_main_agent_mechanism_memo_v1'
+        or not isinstance(derivation, dict)
+    ):
+        return {
+            'structured_knowledge_status': 'NOT_PROJECTED_NO_VALIDATED_MAIN_AGENT_DERIVATION',
+            'modification_hypotheses_status': 'candidate_not_verified',
+        }
+    mathematical_object = str(derivation.get('mathematical_object') or '').strip()
+    observation_mapping = str(derivation.get('observation_mapping') or '').strip()
+    if mathematical_object in {'', 'under_specified'}:
+        mathematical_object = None
+    components = derivation.get('formula_components') or []
+    reusable_operator = None
+    if observation_mapping:
+        reusable_operator = {
+            'status': 'SAME_FACTOR_OBSERVATION_MAPPING_ONLY_NOT_EMPIRICALLY_GENERALIZED',
+            'observation_mapping': observation_mapping,
+            'formula_components': components if isinstance(components, list) else [],
+            'source': 'validated_main_agent_formula_specific_derivation',
+        }
+    evidence = iteration.get('evidence_identity') or {}
+    references = []
+    for key in ('step3b_mode_decision_ref',):
+        value = evidence.get(key)
+        if isinstance(value, str) and value.strip():
+            references.append(value)
+    # Reuse the actual reviewed reasoning, not just generic metric thresholds.
+    # The interpretation remains scoped to this rejected case; it is not an
+    # identified cause or a cross-factor empirical claim.
+    reviewed_failure_projection = {'factor_family': 'unknown'}
+    payer_derivation = derivation.get('profit_payer_derivation') or {}
+    if not isinstance(payer_derivation, dict):
+        payer_derivation = {}
+
+    # These fields must be traceable to the reviewed derivation.  In
+    # particular, do not carry a token-classifier's style-regime or mandate
+    # template into an advisory case when the author did not establish it.
+    def authored_value(field: str) -> Any:
+        for source in (derivation, payer_derivation):
+            value = source.get(field)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+            if isinstance(value, list) and all(isinstance(item, str) for item in value):
+                return [item.strip() for item in value if item.strip()]
+        return None
+
+    def authored_string_list(value: Any) -> list[str]:
+        """Accept only an explicit, non-empty list of non-empty strings."""
+        if not isinstance(value, list) or not value:
+            return []
+        if not all(isinstance(item, str) and item.strip() for item in value):
+            return []
+        return [item.strip() for item in value]
+
+    reviewer_memo = memo.get('researcher_agent_memo')
+    reviewer_writeback = (
+        reviewer_memo.get('knowledge_to_write_back')
+        if isinstance(reviewer_memo, dict)
+        else None
+    )
+    if not isinstance(reviewer_writeback, dict):
+        reviewer_writeback = memo.get('knowledge_to_write_back')
+    if not isinstance(reviewer_writeback, dict):
+        reviewer_writeback = {}
+
+    # A real reviewer memo is the authority for reusable lessons.  Do not
+    # replace absent/invalid authored lists with generic Step6 strengths,
+    # sign, or window templates.
+    if isinstance(reviewer_memo, dict):
+        reviewed_failure_projection['success_patterns'] = authored_string_list(
+            reviewer_writeback.get('success_lessons')
+        )
+        reviewed_failure_projection['failure_patterns'] = authored_string_list(
+            reviewer_writeback.get('failure_lessons')
+        )
+        reviewed_failure_projection['reusable_heuristics'] = authored_string_list(
+            reviewer_writeback.get('reusable_heuristics')
+        )
+
+        authored_family = reviewer_writeback.get('factor_family')
+        if not isinstance(authored_family, str) or not authored_family.strip():
+            authored_family = reviewer_memo.get('factor_family')
+        reviewed_failure_projection['factor_family'] = (
+            authored_family.strip()
+            if isinstance(authored_family, str) and authored_family.strip()
+            else 'unknown'
+        )
+
+        future_questions: list[str] = []
+
+        def collect_authored_questions(value: Any) -> None:
+            if isinstance(value, str) and value.strip():
+                future_questions.append(value.strip())
+            elif isinstance(value, list):
+                for item in value:
+                    collect_authored_questions(item)
+            elif isinstance(value, dict):
+                for key in (
+                    'question',
+                    'research_question',
+                    'future_question',
+                    'next_test',
+                    'hypothesis',
+                    'specific_changes',
+                ):
+                    collect_authored_questions(value.get(key))
+
+        for key in (
+            'revision_brief',
+            'specific_revision_brief',
+            'future_research_questions',
+            'revision_questions',
+        ):
+            collect_authored_questions(reviewer_writeback.get(key))
+        # The independent reviewer records this case's concrete next-step
+        # brief at the memo root, rather than under knowledge_to_write_back.
+        collect_authored_questions(reviewer_memo.get('revision_brief_to_step3b'))
+        search_policy = reviewer_memo.get('program_search_policy')
+        if not isinstance(search_policy, dict):
+            search_policy = reviewer_writeback.get('program_search_policy')
+        if isinstance(search_policy, dict):
+            policy_sources = [search_policy]
+            recommended = search_policy.get('recommended_next_search')
+            if isinstance(recommended, dict):
+                policy_sources.append(recommended)
+            for policy_source in policy_sources:
+                for lane in (
+                    'exploit',
+                    'explore',
+                    'exploit_branches',
+                    'explore_branches',
+                ):
+                    collect_authored_questions(policy_source.get(lane))
+        reviewed_failure_projection['modification_hypotheses'] = future_questions
+        reviewed_failure_projection['modification_hypotheses_future_only'] = True
+
+    for field in ('research_variant', 'paper_replication_status'):
+        value = authored_value(field)
+        if value is not None:
+            reviewed_failure_projection[field] = value
+    # Empty/unknown is intentional: absence of reviewed evidence is not a
+    # license to retain generic style-risk template claims.
+    reviewed_failure_projection['expected_failure_regimes'] = (
+        authored_value('expected_failure_regimes') or []
+    )
+    if isinstance(reviewer_memo, dict):
+        reviewer_risk = reviewer_memo.get('risk_review')
+        authored_regimes = reviewer_risk.get('failure_regimes') if isinstance(reviewer_risk, dict) else None
+        if isinstance(authored_regimes, list) and authored_regimes and all(
+            isinstance(item, str) and item.strip() for item in authored_regimes
+        ):
+            reviewed_failure_projection['expected_failure_regimes'] = [item.strip() for item in authored_regimes]
+    reviewed_failure_projection['constraint_sources'] = (
+        authored_value('constraint_sources') or []
+    )
+    reviewed_failure_projection['objective_constraint_dependency'] = (
+        authored_value('objective_constraint_dependency') or 'unknown'
+    )
+    authored_hypothesis = payer_derivation.get('economic_hypothesis_source')
+    authored_family = authored_value('factor_family')
+    if (
+        not isinstance(reviewer_memo, dict)
+        and isinstance(authored_family, str)
+        and authored_family.strip()
+    ):
+        reviewed_failure_projection['factor_family'] = authored_family.strip()
+    if isinstance(authored_hypothesis, str) and authored_hypothesis.strip():
+        reviewed_failure_projection['return_source_hypothesis'] = authored_hypothesis.strip()
+        if analysis.get('return_source') == 'unknown':
+            reviewed_failure_projection['monetization_model'] = 'unknown'
+            reviewed_failure_projection['bias_type'] = 'unidentified'
+    if (iteration.get('research_judgment') or {}).get('decision') == 'reject':
+        failures = list((iteration.get('knowledge_writeback') or {}).get('failure_patterns') or [])
+        for key in ('observed_metric_comparison', 'metric_feedback_to_model'):
+            value = derivation.get(key)
+            if isinstance(value, str) and value.strip():
+                item = 'Current-case reviewed interpretation; not causal identification or generalization: ' + value.strip()
+                if item not in failures:
+                    failures.append(item)
+        if failures and not isinstance(reviewer_memo, dict):
+            reviewed_failure_projection['failure_patterns'] = failures
+        revision = derivation.get('revision_implication')
+        if isinstance(revision, str) and revision.strip():
+            if not isinstance(reviewer_memo, dict):
+                reviewed_failure_projection['modification_hypotheses'] = [
+                    'Future questions only; no automatic revision: ' + revision.strip()
+                ]
+                reviewed_failure_projection['modification_hypotheses_future_only'] = True
+    return {
+        'structured_knowledge_status': 'VALIDATED_MAIN_AGENT_DERIVATION__SAME_FACTOR_ONLY',
+        'mathematical_object': mathematical_object,
+        'reusable_operator': reusable_operator,
+        'implementation_references': references,
+        'derivation_reference': memo_ref,
+        'modification_hypotheses_status': 'candidate_not_verified',
+        **reviewed_failure_projection,
+    }
+
+
 def build_factor_record(iteration: dict[str, Any], bundle: dict[str, Any]) -> dict[str, Any]:
     case = bundle['factor_case_master']
     run_master = bundle['factor_run_master']
     framework = iteration['research_judgment'].get('factor_investing_framework') or {}
-    return {
+    reusable_research_memo, transfer_review_gate = (
+        _reusable_evo_research_projection(iteration)
+    )
+    record = {
         'report_id': iteration['report_id'],
         'factor_id': iteration['factor_id'],
         'decision': iteration['research_judgment']['decision'],
@@ -3952,7 +4709,7 @@ def build_factor_record(iteration: dict[str, Any], bundle: dict[str, Any]) -> di
         'revision_taxonomy': iteration['knowledge_writeback'].get('revision_taxonomy'),
         'program_search_policy': iteration['knowledge_writeback'].get('program_search_policy'),
         'diversity_position': iteration['knowledge_writeback'].get('diversity_position'),
-        'research_memo': iteration['research_judgment'].get('research_memo'),
+        'research_memo': reusable_research_memo,
         'evidence_identity': iteration.get('evidence_identity') or {},
         'source_case_identity': iteration.get('source_case_identity') or {},
         'implementation_mode_decision': iteration.get('implementation_mode_decision') or {},
@@ -3962,10 +4719,16 @@ def build_factor_record(iteration: dict[str, Any], bundle: dict[str, Any]) -> di
         'created_at_utc': iteration['created_at_utc'],
         'producer': 'step6',
     }
+    if transfer_review_gate is not None:
+        record['evo_transfer_tension_review_gate'] = transfer_review_gate
+    return record
 
 
 def build_knowledge_record(iteration: dict[str, Any]) -> dict[str, Any]:
-    return {
+    reusable_research_memo, transfer_review_gate = (
+        _reusable_evo_research_projection(iteration)
+    )
+    record = {
         'report_id': iteration['report_id'],
         'factor_id': iteration['factor_id'],
         'decision': iteration['research_judgment']['decision'],
@@ -3988,11 +4751,24 @@ def build_knowledge_record(iteration: dict[str, Any]) -> dict[str, Any]:
         'revision_principles': iteration['knowledge_writeback']['revision_principles'],
         'research_commentary': iteration['knowledge_writeback']['research_commentary'],
         'learning_and_innovation': iteration['knowledge_writeback'].get('learning_and_innovation'),
+        'research_compatibility_profile': (
+            ((iteration['research_judgment'].get('research_memo') or {}).get('research_compatibility_profile'))
+            or ((iteration['knowledge_writeback'].get('learning_and_innovation') or {}).get('research_compatibility_profile'))
+        ),
+        'next_research_tests_absence_reason': (
+            (iteration['research_judgment'].get('research_memo') or {}).get('next_research_tests_absence_reason')
+        ),
         'experience_chain': iteration['knowledge_writeback'].get('experience_chain'),
         'revision_taxonomy': iteration['knowledge_writeback'].get('revision_taxonomy'),
         'program_search_policy': iteration['knowledge_writeback'].get('program_search_policy'),
         'diversity_position': iteration['knowledge_writeback'].get('diversity_position'),
-        'research_memo': iteration['knowledge_writeback'].get('research_memo'),
+        # Raw EVO transfer diagnostics are deliberately retained in the
+        # immutable iteration, but they are not reusable knowledge until a
+        # separately signed Host adjudication supplies mismatch/survival/
+        # rival-explanation judgments.  Keeping this projection out of the
+        # canonical knowledge memo prevents an unreviewed diagnostic from
+        # silently becoming a cross-run lesson.
+        'research_memo': reusable_research_memo,
         'knowledge_scope': 'same_factor',
         'source_identity': iteration.get('source_case_identity') or {},
         'evidence_identity': iteration.get('evidence_identity') or {},
@@ -4008,6 +4784,10 @@ def build_knowledge_record(iteration: dict[str, Any]) -> dict[str, Any]:
         'created_at_utc': iteration['created_at_utc'],
         'producer': 'step6',
     }
+    if transfer_review_gate is not None:
+        record['evo_transfer_tension_review_gate'] = transfer_review_gate
+    record.update(_knowledge_reuse_projection(iteration))
+    return record
 
 
 def build_handoff_to_step3b(iteration: dict[str, Any]) -> dict[str, Any]:
@@ -4132,10 +4912,18 @@ def build_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
     promoted = decision == 'promote_official' and promotion_gate.get('official_promotion_allowed') is True
 
     brief_metrics = {key: _metric_or_none(metrics, key) for key in CORE_LOOP_BRIEF_METRICS}
+    for key in ('return_basis', 'gross_zero_cost_counterfactual_annual_return', 'gross_zero_cost_counterfactual_sharpe'):
+        brief_metrics[key] = _metric_or_none(metrics, key)
     brief_metrics['backend_statuses'] = (iteration.get('evidence_summary') or {}).get('backend_statuses') or {}
 
-    gross_return = _safe_float(metrics.get('long_side_annual_return'))
-    net_return = _safe_float(metrics.get('cost_adjusted_annual_return'))
+    return_is_net_of_costs = metrics.get('trading_cogs_included_in_return') is True
+    gross_return = _safe_float(metrics.get('gross_zero_cost_counterfactual_annual_return'))
+    if gross_return is None and not return_is_net_of_costs:
+        gross_return = _safe_float(metrics.get('long_side_annual_return'))
+    net_return = (
+        _safe_float(metrics.get('long_side_annual_return'))
+        if return_is_net_of_costs else _safe_float(metrics.get('cost_adjusted_annual_return'))
+    )
     turnover = _safe_float(metrics.get('long_side_turnover_mean_daily') or metrics.get('turnover_mean'))
     sharpe = _safe_float(metrics.get('long_side_sharpe'))
     cost_sharpe = _safe_float(metrics.get('cost_adjusted_long_side_sharpe'))
@@ -4143,6 +4931,8 @@ def build_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
     support = []
     if gross_return is not None and gross_return > 0:
         support.append(f'Gross long-side annual return is positive at {_brief_scalar(gross_return)}.')
+    elif net_return is not None and net_return > 0:
+        support.append(f'Net long-side annual return is positive at {_brief_scalar(net_return)}; gross zero-cost counterfactual was not reported.')
     if _safe_float(metrics.get('rank_ic_mean')) is not None and _safe_float(metrics.get('rank_ic_mean')) > 0:
         support.append(f'Rank IC mean is positive at {_brief_scalar(metrics.get("rank_ic_mean"))}.')
     if net_return is not None and net_return < 0:
@@ -4270,7 +5060,10 @@ def build_loop_research_brief(iteration: dict[str, Any], bundle: dict[str, Any])
                     'Any Step3B change requires human approval before code changes.',
                 ]
             ),
-            'human_decision_required': bool(search_policy.get('human_approval_required') is True or decision != 'promote_official'),
+            'human_decision_required': (
+                revision_strategy.get('terminal_local_rejection') is not True
+                and bool(search_policy.get('human_approval_required') is True or decision != 'promote_official')
+            ),
         },
     }
 
@@ -4294,12 +5087,18 @@ def render_loop_research_brief_markdown(brief: dict[str, Any]) -> str:
             return '- missing'
         return '\n'.join(f'- {json.dumps(item, ensure_ascii=False) if isinstance(item, (dict, list)) else item}' for item in values)
 
+    net_or_unspecified = metrics.get('return_basis') == 'net_after_explicit_trading_costs'
     metric_rows = [
         ('Rank IC mean', 'rank_ic_mean', 'Direction and magnitude of rank correlation.'),
         ('Rank IC IR', 'rank_ic_ir', 'Stability of rank IC.'),
         ('Pearson IC mean', 'pearson_ic_mean', 'Linear IC diagnostic.'),
         ('Pearson IC IR', 'pearson_ic_ir', 'Stability of Pearson IC.'),
-        ('Long-side annual return', 'long_side_annual_return', 'Gross long-side revenue.'),
+        (
+            'Long-side net annual return' if net_or_unspecified else 'Long-side annual return',
+            'long_side_annual_return',
+            'Net of explicit trading costs.' if net_or_unspecified else 'Long-side return basis is unspecified.',
+        ),
+        ('Gross zero-cost counterfactual annual return', 'gross_zero_cost_counterfactual_annual_return', 'Independent same-rules zero-cost account; absent means not evaluated.'),
         ('Long-side annual volatility', 'long_side_annual_volatility', 'Risk-capital pressure.'),
         ('Long-side Sharpe', 'long_side_sharpe', 'Risk-adjusted long-side quality.'),
         ('Max drawdown', 'long_side_max_drawdown', 'Capital impairment.'),
@@ -4621,10 +5420,18 @@ def step6_prewrite_failures(
         failures.extend(_strict_identity_gate('factor_case_master', case, 'factor_library_official', official_record, 'factor_library_official'))
 
     case_quality = case.get('evidence_quality') or {}
+    try:
+        custom_primary = primary_evaluator_plan(run.get('evaluation_plan'))
+    except ValueError:
+        custom_primary = None
+    primary_quality_key = (
+        'primary_evaluator_required_and_present'
+        if custom_primary is not None else 'self_quant_required_and_present'
+    )
     for key in [
         'identity_chain_verified',
         'mode_decision_present',
-        'self_quant_required_and_present',
+        primary_quality_key,
         'long_side_metrics_present',
         'step4_has_successful_backend',
     ]:
@@ -4694,6 +5501,7 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
+    ap.add_argument('--expected-host-trust-manifest-sha256', default=None)
     args = ap.parse_args()
     enforce_direct_step_policy(args.manifest)
     manifest = load_runtime_manifest(args.manifest) if args.manifest else None
@@ -4704,10 +5512,49 @@ def main() -> None:
     report_id = args.report_id or (manifest_report_id(manifest) if manifest else None)
     if not report_id:
         raise SystemExit('run_step6.py requires --report-id or --manifest')
+    protocol_scope = (
+        RESEARCH_PROTOCOL_SCOPE_LOCAL_IS
+        if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+        else RESEARCH_PROTOCOL_SCOPE_HOSTED
+    )
 
     bundle = load_required_inputs(report_id)
+    from factor_factory.evo_child_execution import validate_evo_child_execution_gate
+
+    evo_gate_reasons = validate_evo_child_execution_gate(
+        workspace_root=FF,
+        report_id=report_id,
+        factor_run_master=bundle['factor_run_master'],
+        expected_host_trust_manifest_sha256=(
+            args.expected_host_trust_manifest_sha256
+        ),
+    )
+    if evo_gate_reasons:
+        raise SystemExit(
+            'BLOCK_FACTORFORGE_EVO_CHILD_EXECUTION_GATE: '
+            + ';'.join(evo_gate_reasons)
+        )
     payloads = load_backend_payloads(report_id, bundle['factor_run_master'])
     iteration = build_iteration_payload(bundle, payloads)
+    if protocol_scope == RESEARCH_PROTOCOL_SCOPE_LOCAL_IS:
+        judgment = iteration.get('research_judgment') or {}
+        original_decision = judgment.get('decision')
+        # A local IS run may finish its empirical review, but it cannot issue
+        # an official decision.  Downgrade only the otherwise-promotable branch
+        # so an evidence-based reject/iterate conclusion remains truthful and
+        # no Host/OOS factor-proof certificate is manufactured.
+        if original_decision == 'promote_official':
+            judgment['decision'] = 'needs_human_review'
+        memo = judgment.get('research_memo') or {}
+        memo['local_is_authority_boundary'] = {
+            'execution_status': 'step6_local_is_review_completed',
+            'factor_verdict': 'NOT_ISSUED',
+            'official_promotion_allowed': False,
+            'oos_access_allowed': False,
+            'original_quantitative_decision': original_decision,
+        }
+        judgment['research_memo'] = memo
+        iteration['research_judgment'] = judgment
     base_identity = (
         bundle['factor_case_master'].get('artifact_identity')
         or bundle['factor_run_master'].get('artifact_identity')
@@ -4738,6 +5585,12 @@ def main() -> None:
         similar_cases_imported=similar_cases,
     )
     iteration['promotion_gate'] = promotion_gate(iteration, bundle)
+    if protocol_scope == RESEARCH_PROTOCOL_SCOPE_LOCAL_IS:
+        iteration['promotion_gate']['official_promotion_allowed'] = False
+        iteration['promotion_gate']['checks']['local_is_non_authoritative'] = False
+        blocked = iteration['promotion_gate']['promote_blocked_reason']
+        if 'local_is_non_authoritative' not in blocked:
+            blocked.append('local_is_non_authoritative')
 
     iteration_path = OBJ / 'research_iteration_master' / f'research_iteration_master__{report_id}.json'
     main_agent_memo_json_path = OBJ / 'research_iteration_master' / f'main_agent_mechanism_memo__{report_id}.json'
@@ -4842,6 +5695,8 @@ def main() -> None:
         if key in mechanism_analysis
     }
     mechanism_analysis['formula_specific_derivation'] = formula_specific_derivation_from_main_agent_memo(main_agent_memo, factor_spec_master)
+    if (research_memo.get('revision_strategy') or {}).get('terminal_local_rejection') is True:
+        project_authored_terminal_model_review(mechanism_analysis, main_agent_memo)
     qa = main_agent_memo.get('mechanism_qa') if isinstance(main_agent_memo.get('mechanism_qa'), dict) else {}
     math_hypothesis = main_agent_memo.get('math_hypothesis') if isinstance(main_agent_memo.get('math_hypothesis'), dict) else {}
     if qa.get('economic_hypothesis_answer') or qa.get('math_model_answer'):
@@ -4865,6 +5720,23 @@ def main() -> None:
     )
     research_memo['mechanism_analysis'] = mechanism_analysis
 
+    # Public economic summaries must agree with the validated authored
+    # derivation, not the token classifier (e.g. "volume" -> risk premium).
+    authored_projection = _knowledge_reuse_projection(iteration)
+    economic_fields = (
+        'factor_family', 'monetization_model', 'bias_type', 'return_source_hypothesis',
+        'expected_failure_regimes', 'objective_constraint_dependency', 'constraint_sources',
+        'research_variant', 'paper_replication_status',
+    )
+    economic_projection = {key: authored_projection[key] for key in economic_fields if key in authored_projection}
+    if economic_projection:
+        framework = iteration['research_judgment'].get('factor_investing_framework') or {}
+        mechanism_analysis['main_agent_mechanism_memo_takeover']['legacy_framework_not_economic_evidence'] = {
+            key: framework.get(key) for key in economic_fields
+        }
+        framework.update(economic_projection)
+        iteration['knowledge_writeback'].update(economic_projection)
+
     factor_proof_failures: list[str] = []
     formal_protocol_required = (
         os.getenv('FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE') != '1'
@@ -4882,6 +5754,10 @@ def main() -> None:
             root=FF,
             report_id=str(report_id),
             stage='pre_revision',
+            scope=protocol_scope,
+            compatibility_profile=research_compatibility_profile_from_spec(
+                bundle.get('factor_spec_master') or {}
+            ),
         )
         if pre_revision_protocol_report.get('verdict') == 'PASS':
             obligation_payload = load_json(protocol_paths['obligations'])
@@ -4954,6 +5830,10 @@ def main() -> None:
             root=FF,
             report_id=str(report_id),
             stage='pre_promotion',
+            scope=protocol_scope,
+            compatibility_profile=research_compatibility_profile_from_spec(
+                bundle.get('factor_spec_master') or {}
+            ),
             iteration_payload=iteration,
         )
         iteration['research_protocol_promotion_gate'] = {

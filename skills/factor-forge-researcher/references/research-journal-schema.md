@@ -70,3 +70,17 @@ Quality bar:
 - If the factor fails, the journal must explain what was learned and why the failure matters.
 - If the factor iterates, the revision must tie back to a return-source thesis.
 - Each serious case should leave at least one transferable pattern, anti-pattern, or idea seed unless the evidence is too incomplete to support learning.
+
+## Optional local implementation-review continuation
+
+`code_review_coordination` holds the active request and prior requests inside
+this same journal: author/reviewer, exact material versions, actual tool-call
+outcomes, findings, test/command failures and a scoped resume point. Existing
+research content above is preserved. Ultimate is the single journal writer;
+the independent reviewer writes a separate result which Ultimate consumes.
+
+The input/actions and limits are defined once in
+[Ultimate's local code-review reference](../../factor-forge-ultimate/references/local-code-review.md).
+This field is operational continuity, not proof of agent independence, research
+validity, delivery or promotion. A prepared record alone does not mean a task
+was sent. It never enables knowledge writeback or changes the study's scope.

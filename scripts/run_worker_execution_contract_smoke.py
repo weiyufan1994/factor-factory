@@ -190,7 +190,7 @@ def main() -> int:
                 "--remote-spec-path",
                 "/tmp/factorforge/task_spec.json",
                 "--remote-runner",
-                "/home/ubuntu/factorforge/scripts/run_worker_task_spec.py",
+                "/home/researcher/factorforge/scripts/run_worker_task_spec.py",
                 "--dry-run-local",
             ],
             text=True,

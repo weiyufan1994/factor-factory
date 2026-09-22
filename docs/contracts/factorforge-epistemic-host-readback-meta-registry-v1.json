@@ -1,0 +1,788 @@
+{
+  "artifact_type": "factorforge_epistemic_host_readback_meta_registry_v1",
+  "schema_version": "1.0.0-candidate",
+  "design_status": "STAGE1B0_CANDIDATE_BYTES_ONLY__DEPLOYMENT_REMAINS_UNBOUND_BLOCKING",
+  "baseline_bindings": {
+    "p0_packet_id": "FACTORFORGE_EPISTEMIC_GRAPH_V2_P0_BINDING_REVIEW_20260822_R2",
+    "p0_packet_manifest_sha256": "58c3585881f52c4ed60c4e7fb582e9b30acf0063433c12363915d54f0b985c4f",
+    "stage1a_commit": "07850b6886380aa961e1507d8f3a8df91fe204a6",
+    "stage1a_maximum_status": "VALID_STAGE1A_PREP__INCOMPLETE__DEPLOYMENT_REMAINS_UNBOUND_BLOCKING",
+    "stage1a_contract_sha256": "00fa469e89b8604ce483309d2f40edd1723dbfa86f385c9aa3da6e9433e69eda",
+    "stage1a_module_sha256": "5e9e5b1cda23686dc6bb0be3e6f8826f013f39ce509f34b017f7ae337f396fa1",
+    "stage1a_builder_sha256": "91197f06f5b68743ca7f8a78edacc8b66583e517fdbb2b86dbd80f18122f2399",
+    "stage1a_validator_sha256": "4cba712c9603ff1a80bcdd5b3191345ab83926478f58ff0fce3ee0d16bf141b3",
+    "stage1a_expected_inventory_schema_id": "factorforge_epistemic_binding_expected_inventory_v1",
+    "stage1a_expected_inventory_content_sha256": "594033b27960eb97da203b3d2706300b35cb69178c1adf5f41012540e8da2856",
+    "current_operating_code_baseline_commit": "dc6f55ab6ea1f9dc32518e3af02df4a9e5d423ee"
+  },
+  "exact_subject_universe": {
+    "authorities": 5,
+    "root_anchors": 3,
+    "delivery_endpoints": 2,
+    "required_relationships": 4,
+    "stores": 12,
+    "sod_profiles": 24,
+    "principal_rows": 33,
+    "event_purpose_rows": 67,
+    "external_trust_rows": 1,
+    "deployment_rows_total": 101,
+    "adapters_total": 40,
+    "discriminated_adapters": 38,
+    "singleton_adapters": 2,
+    "material_binding_subjects_total": 167,
+    "eligible_material_subjects": 161,
+    "prohibited_material_subjects": 6,
+    "sod_profiles_are_static_gating_definitions_not_material_subject_leaves": true,
+    "material_subject_family_order": [
+      "authorities",
+      "root_anchors",
+      "delivery_endpoints",
+      "required_relationships",
+      "stores",
+      "deployment_rows",
+      "adapters"
+    ],
+    "within_family_order": "exact Stage1A expected-inventory array order; deployment_rows are principal_rows then event_rows then external_trust_rows; required_relationships are root_relationships then delivery_endpoint_relationship",
+    "static_subject_projection_hash_rule": "SHA256(UTF8(FFDB-SUBJECT-V1 + NUL + subject_family + NUL) || RFC8785(exact Stage1A expected-inventory row))",
+    "ordered_subject_universe_hash_rule": "SHA256(UTF8(FFDB-UNIVERSE-V1 + NUL) || ordered concatenation of 167 static subject projection digest bytes)",
+    "ordered_subject_universe_sha256": "ed8666f3c437dd83b97eae1e7189a502218e7e9d49e3831b444618c224e4b3c8",
+    "not_authorized_deployment_rows": [
+      "EPB-HYP-EVO"
+    ],
+    "not_authorized_adapters": [
+      "ADP_DIAGNOSTIC_SIDECAR_CAPABILITY",
+      "ADP_CURRENT_EVO_SUPERSET",
+      "ADP_STEP56_EXECUTION_GATE",
+      "ADP_STEP56_RESULT_ACTION_READBACK",
+      "ADP_STEP56_BRANCH_COMPARISON_ACTION_READBACK"
+    ]
+  },
+  "control_plane_authority_boundary": {
+    "candidate_id": "FF_EPISTEMIC_DEPLOYMENT_EVIDENCE_CONTROL_PLANE_V1",
+    "authority_class": "EXTERNAL_DEPLOYMENT_EVIDENCE_ATTESTATION_ONLY",
+    "canonical_experience_authority": false,
+    "runtime_action_authority": false,
+    "semantic_authoring_authority": false,
+    "factor_proof_authority": false,
+    "oos_authority": false,
+    "skill_or_operating_contract_mutation_authority": false,
+    "bootstrap_rule": "OUT_OF_BAND_PROTECTED_BOOTSTRAP_PIN_SET_EXACTLY_PINS_FOUR_TRUST_MANIFESTS_AND_EXTERNAL_ISSUER_IDENTITIES",
+    "self_authorization": "FORBIDDEN",
+    "relationship_to_frozen_r3_role_universe": "EXTERNAL_CANDIDATE_CONTROL_PLANE__NOT_AN_R3_ROLE_ADDITION",
+    "operating_contract_delta_approved": false,
+    "current_generic_host_admission_key_substitution": "FORBIDDEN",
+    "relationship_to_r3_snapshot_issuer": "DISJOINT_CONTROL_PLANE_ROLE__FF_SNAPSHOT_ISSUER_V1_REMAINS_A_SUBJECT_OF_BINDING"
+  },
+  "closed_schema_bundle": {
+    "path": "docs/contracts/factorforge-epistemic-host-readback-closed-schema-bundle-v1.json",
+    "raw_file_sha256": "43d33b4499a82e69183cc5f0f8f3df116fb97545c892f44f098b9b81cac8e316",
+    "json_schema_draft": "2020-12",
+    "structural_additional_properties": false,
+    "normative_semantic_extension_keyword": "x-factorforge-normative-semantic-rules",
+    "standard_structural_and_independent_semantic_validation_both_required": true,
+    "closed_schema_definition_universe_count": 381,
+    "route_reference_root_count": 40,
+    "route_reference_root_ordinal_range": [
+      0,
+      39
+    ],
+    "route_reference_reachable_definition_count": 258,
+    "nonroute_subroot_count": 123,
+    "compiler_root_count_including_meta_root": 41,
+    "compiler_meta_root_ordinal": 40,
+    "legacy_stage1b0_artifact_partition": {
+      "top_level_artifact_schema_count": 16,
+      "dependency_and_control_artifact_schema_count": 8,
+      "external_prerequisite_receipt_schema_count": 2,
+      "runtime_chain_artifact_schema_count": 6,
+      "authoritative_for_route_or_compiler_root_count": false
+    },
+    "observation_state_oneof_count": 5,
+    "subject_family_oneof_count": 7,
+    "physical_proof_backend_oneof_count": 4,
+    "projector_sod_exact_counts": {
+      "authority_comparison_count": 193,
+      "validator_nonself_comparison_count": 3,
+      "resolved_private_evidence_leaf_count": 187,
+      "pairwise_input_occurrence_count": 392
+    },
+    "resolver_transcript_projection": {
+      "private_transcript_schema_ref": "#/$defs/projector_sod_resolver_transcript_v2",
+      "private_transcript_record_authority": "NONAUTHORITATIVE_REPLAYABLE_PROJECTOR_SOD_TRANSCRIPT",
+      "private_transcript_storage_authority": "SESSION_PRIVATE_BYTES_ONLY_CANDIDATE__NONCANONICAL",
+      "private_transcript_bytes_encoding": "RFC8785_PLUS_SINGLE_LF",
+      "private_resolution_verdict": "PASS",
+      "private_resolution_verdict_is_adjudicative_pass": false,
+      "public_ref_schema_ref": "#/$defs/projector_sod_resolver_transcript_ref_v2",
+      "public_ref_required_metadata_field_count": 25,
+      "public_ref_required_metadata_fields": [
+        "schema_id",
+        "target_schema_id",
+        "transcript_profile_id",
+        "artifact_opaque_handle_sha256",
+        "content_sha256",
+        "raw_bytes_sha256",
+        "projector_sod_evidence_bundle_ref",
+        "accepted_l0_package_id",
+        "accepted_l0_profile_generation",
+        "accepted_l0_acceptance_head_sha256",
+        "execution_owner_projector_sod_static_policy_bundle_content_sha256",
+        "validator_execution_trio_basis_sha256",
+        "private_evidence_ref_count",
+        "private_evidence_ref_manifest_sha256",
+        "resolved_leaf_count",
+        "resolved_leaf_manifest_sha256",
+        "pairwise_input_occurrence_count",
+        "pairwise_input_to_leaf_manifest_sha256",
+        "resolver_profile_id",
+        "retrieval_scope",
+        "storage_authority",
+        "private_evidence_bytes_disclosed",
+        "stable_plaintext_identifier_disclosed",
+        "caller_supplied",
+        "ref_basis_sha256"
+      ],
+      "public_ref_retrieval_scope": "SESSION_PRIVATE_PROJECTOR_SOD_VALIDATION_ONLY",
+      "public_ref_storage_authority": "SESSION_PRIVATE_BYTES_ONLY_CANDIDATE__NONCANONICAL",
+      "public_ref_forbidden_payload_classes": [
+        "private leaf arrays",
+        "native validation result objects",
+        "pairwise crosswalk rows",
+        "overall resolution verdict",
+        "failure or unresolved detail counts"
+      ],
+      "public_ref_is_independent_pass_evidence": false,
+      "semantic_validation_receipt_is_sole_adjudicative_pass": true,
+      "receipt_bundle_equality_projection_adds_second_truth": false
+    },
+    "mandatory_conformance_exact_counts": {
+      "source_vector_counts": [
+        10,
+        36,
+        50,
+        43,
+        31
+      ],
+      "source_global_ordinal_bases": [
+        0,
+        10,
+        46,
+        96,
+        139
+      ],
+      "mandatory_obligation_count": 170,
+      "global_obligation_ordinal_range": [
+        0,
+        169
+      ],
+      "minimum_distinct_case_count": 261
+    },
+    "protected_bundle_root29": {
+      "root_ordinal": 29,
+      "root_schema_id": "factorforge_epistemic_projector_sod_evidence_bundle_v1",
+      "root_schema_ref": "#/$defs/projector_sod_evidence_bundle",
+      "required_provenance_classes": [
+        "D_RECOMPUTED",
+        "R_RESOLVED",
+        "E_EXACT_EXTERNAL",
+        "T_TRUSTED_TIME",
+        "S_STATIC_PINNED"
+      ],
+      "forbidden_provenance_classes": [
+        "H_HSM_DERIVED"
+      ],
+      "runtime_concrete_index_rows_persisted": false,
+      "category_or_prose_fallback": "BLOCKED",
+      "commitment_propagation_order": [
+        "ENFORCEMENT_BINDING_COMMITMENT",
+        "FAMILY_ROW_SHA256",
+        "FAMILY_PARTITION_AND_BINDING_COMMITMENT_MANIFESTS",
+        "OCCURRENCE_ROW_SHA256",
+        "OCCURRENCE_PARTITION_MANIFEST",
+        "PARTITION_BASIS",
+        "REGISTRY_CONTENT_AND_ARTIFACT_DIGESTS",
+        "REGISTRY_REF_EXACT_COPIES"
+      ],
+      "full_commitment_and_manifest_recomputation_required": true,
+      "successor_digest_in_predecessor_preimage": "BLOCKED"
+    },
+    "execution_identity_projection": {
+      "owner_source_evidence_ref_schema_ref": "#/$defs/execution_subject_owner_source_evidence_ref",
+      "owner_source_evidence_ref_digest_profile_id": "FF_EXECUTION_SUBJECT_OWNER_SOURCE_EVIDENCE_REF_V3",
+      "owner_projection_profile_ids": [
+        "FF_TRUST_BINDING_OWNER_E_EQUALITY_PROJECTION_V2",
+        "FF_OS_HW_ROOTED_OWNER_E_EQUALITY_PROJECTION_V2"
+      ],
+      "outer_duplicate_projection_digest_allowed": false,
+      "typed_owner_source_schema_ref": "#/$defs/projector_sod_typed_owner_source",
+      "typed_owner_source_universe_count": 6,
+      "free_source_id_allowed": false,
+      "selector_resolution_schema_ref": "#/$defs/primary_execution_subject_selector_resolution_row_v3",
+      "selector_row_count": 6,
+      "external_selector_count": 5,
+      "self_selector_count": 1,
+      "owner_source_policy_schema_ref": "#/$defs/execution_owner_source_policy_row",
+      "owner_source_policy_row_count": 11,
+      "signing_policy_row_count": 5,
+      "os_hw_policy_row_count": 6,
+      "owner_equality_scope_delta_status": "DESIGN_ONLY__INDEPENDENT_OPERATING_AUTHORITY_APPROVAL_REQUIRED__UNBOUND_BLOCKING",
+      "independent_operating_authority_approval_receipt_ref": null,
+      "measurement_root_may_generate_canonicalize_select_or_mutate_owner_identity": false,
+      "measurement_root_may_select_role_phase_grant_or_policy": false,
+      "measurement_root_may_authorize_execution": false,
+      "measurement_root_may_become_canonical_identity_experience_memory_skill_runtime_or_oos_authority": false,
+      "r3_normative_role_universe_modified": false,
+      "deployment_rows_created": false
+    },
+    "review_status_boundary": {
+      "bound_bundle_sha256": "43d33b4499a82e69183cc5f0f8f3df116fb97545c892f44f098b9b81cac8e316",
+      "local_mechanical_check": "PASS_NONAUTHORITATIVE",
+      "external_review_receipt_ref": null,
+      "deployment_status": "UNBOUND_BLOCKING",
+      "implementation_authorized": false,
+      "runtime_skill_canonical_oos_or_next_gate_authorized": false
+    },
+    "hash_dag": {
+      "ordered_flow": "PRIMARY_BUNDLE_SHA_TO_META_REGISTRY_PROJECTION_TO_OUTER_PACKET_MANIFEST",
+      "primary_bundle_must_not_bind_meta_registry_digest": true,
+      "meta_registry_self_digest_forbidden": true
+    },
+    "deployment_binding": null
+  },
+  "control_plane_roles": [
+    {
+      "role_id": "FF_DEPLOYMENT_READBACK_SESSION_ISSUER_V1",
+      "role_kind": "ONE_SHOT_SESSION_GRANT_ISSUER",
+      "scope_ceiling": "issue one challenge only under the exact externally authorized byte-identical authorization context",
+      "may_observe_private_deployment": false,
+      "may_author_readback_target": false,
+      "may_issue_host_attestation": false,
+      "may_verify_binding": false,
+      "may_hold_control_action_signing_key": true,
+      "may_hold_content_provenance_key": false,
+      "deployment_binding": null
+    },
+    {
+      "role_id": "FF_DEPLOYMENT_READBACK_TARGET_COLLECTOR_V1",
+      "role_kind": "CONTENT_PROVENANCE_SIGNING_HOST_PRIVATE_OBSERVER",
+      "scope_ceiling": "read only approved deployment metadata construct one action-unsigned sanitized target and sign only its bytes provenance",
+      "may_observe_private_locators_inside_host_boundary": true,
+      "may_emit_private_locator_or_identity_components": false,
+      "may_hold_control_action_signing_key": false,
+      "may_hold_content_provenance_key": true,
+      "content_signature_authority": "BYTES_PROVENANCE_ONLY__NO_DEPLOYMENT_OR_EFFECTIVE_STATUS_AUTHORITY",
+      "may_issue_effective_status": false,
+      "deployment_binding": null
+    },
+    {
+      "role_id": "FF_DEPLOYMENT_READBACK_ATTESTATION_ISSUER_V1",
+      "role_kind": "DETACHED_TARGET_ATTESTATION_ISSUER",
+      "scope_ceiling": "sign one frozen unsigned readback target and challenge only",
+      "may_author_target_bytes": false,
+      "may_verify_own_attestation": false,
+      "may_issue_runtime_authority": false,
+      "may_hold_control_action_signing_key": true,
+      "may_hold_content_provenance_key": false,
+      "deployment_binding": null
+    },
+    {
+      "role_id": "FF_DEPLOYMENT_VERIFICATION_TARGET_AUTHOR_V1",
+      "role_kind": "CONTENT_PROVENANCE_SIGNING_INDEPENDENT_VERIFICATION_TARGET_AUTHOR",
+      "scope_ceiling": "independently reread recompute and content-sign one action-unsigned verification target",
+      "may_author_readback_target": false,
+      "may_issue_host_attestation": false,
+      "may_sign_final_verifier_receipt": false,
+      "may_hold_control_action_signing_key": false,
+      "may_hold_content_provenance_key": true,
+      "content_signature_authority": "BYTES_PROVENANCE_ONLY__NO_BINDING_VERDICT_AUTHORITY",
+      "may_mutate_observed_deployment": false,
+      "deployment_binding": null
+    },
+    {
+      "role_id": "FF_DEPLOYMENT_BINDING_INDEPENDENT_VERIFIER_V1",
+      "role_kind": "INDEPENDENT_BINDING_VERIFIER",
+      "scope_ceiling": "review and sign one exact pre-authored verification target",
+      "may_author_readback_target": false,
+      "may_author_verification_target": false,
+      "may_issue_host_attestation": false,
+      "may_mutate_observed_deployment": false,
+      "may_issue_runtime_authority": false,
+      "may_hold_control_action_signing_key": true,
+      "may_hold_content_provenance_key": false,
+      "deployment_binding": null
+    }
+  ],
+  "control_plane_sod": {
+    "session_issuer_target_author_attestation_issuer_verification_target_author_and_verifier_are_distinct": true,
+    "collector_and_verification_target_author_hold_no_control_action_signing_key": true,
+    "five_role_keys_are_pairwise_distinct": true,
+    "content_provenance_keys_cannot_sign_challenge_attestation_or_verdict_receipts": true,
+    "host_attestation_and_independent_verifier_trust_manifest_pins_are_distinct": true,
+    "attestation_issuer_principal_context_distinct_from_verifier_principal_context": true,
+    "verification_target_author_principal_context_distinct_from_verifier_principal_context": true,
+    "agent_step6_council_and_r3_runtime_roles_are_ineligible": true,
+    "same_process_label_is_not_independence_evidence": true,
+    "same_uid_is_not_independence_evidence": true,
+    "caller_supplied_role_label_is_not_principal_evidence": true,
+    "independent_verifier_requires_host_or_os_enforced_isolation_receipt": true,
+    "independence_receipt_must_be_pre_session_out_of_band_and_not_issued_by_any_five_control_plane_roles": true
+  },
+  "trust_bootstrap_contract": {
+    "bootstrap_pin_set_schema_id": "factorforge_epistemic_host_readback_bootstrap_pin_set_v1",
+    "bootstrap_pin_set_source": "OUT_OF_BAND_PROTECTED_HOST_CONFIGURATION_ONLY",
+    "bootstrap_pin_set_from_request_or_packet": "FORBIDDEN",
+    "manifest_schema_id": "factorforge_epistemic_deployment_control_trust_manifest_v1",
+    "required_distinct_trust_domains": [
+      "HOST_READBACK_CONTROL_TRUST_DOMAIN",
+      "INDEPENDENT_BINDING_VERIFIER_TRUST_DOMAIN"
+    ],
+    "required_distinct_external_prerequisite_trust_domains": [
+      "EXTERNAL_DEPLOYMENT_AUTHORIZATION_TRUST_DOMAIN",
+      "EXTERNAL_ISOLATION_ATTESTATION_TRUST_DOMAIN"
+    ],
+    "all_four_trust_domains_are_pairwise_distinct": true,
+    "required_key_roles": [
+      "deployment_readback_session_grant",
+      "deployment_readback_target_content_provenance",
+      "deployment_readback_attestation",
+      "deployment_verification_target_content_provenance",
+      "deployment_binding_independent_verifier",
+      "external_phase_authorization",
+      "external_isolation_attestation"
+    ],
+    "exact_domain_key_role_mapping": {
+      "HOST_READBACK_CONTROL_TRUST_DOMAIN": [
+        "deployment_readback_session_grant",
+        "deployment_readback_target_content_provenance",
+        "deployment_readback_attestation"
+      ],
+      "INDEPENDENT_BINDING_VERIFIER_TRUST_DOMAIN": [
+        "deployment_verification_target_content_provenance",
+        "deployment_binding_independent_verifier"
+      ],
+      "EXTERNAL_DEPLOYMENT_AUTHORIZATION_TRUST_DOMAIN": [
+        "external_phase_authorization"
+      ],
+      "EXTERNAL_ISOLATION_ATTESTATION_TRUST_DOMAIN": [
+        "external_isolation_attestation"
+      ]
+    },
+    "required_per_key_fields": [
+      "key_role",
+      "key_id",
+      "algorithm",
+      "principal_opaque_hash",
+      "context_opaque_hash",
+      "capability_opaque_hash",
+      "public_key_der_sha256"
+    ],
+    "algorithm": "Ed25519",
+    "externally_pinned_trust_steward_is_not_a_packet_action_role": true,
+    "r3_phase_policy_issuer_substitution_for_deployment_bootstrap": "FORBIDDEN",
+    "r3_independence_attestation_issuer_substitution_for_deployment_bootstrap": "FORBIDDEN",
+    "trust_manifests_and_nonrevocation_anchor_heads_must_preexist_the_session": true,
+    "each_signature_requires_a_signing_time_descendant_nonrevocation_head_and_append_only_consistency_proof": true,
+    "signing_head_cutoff_must_not_precede_signed_issued_at": true,
+    "revocation_effective_time_and_no_backdating_policy_hash_must_be_pinned": true,
+    "nonrevocation_snapshot_schema_id": "factorforge_epistemic_deployment_control_nonrevocation_snapshot_v1",
+    "manifest_bytes_inside_agent_facing_packet": false,
+    "public_key_bytes_inside_agent_facing_packet": false,
+    "agent_facing_projection_fields": [
+      "host_trust_manifest_sha256",
+      "host_trust_generation",
+      "independent_verifier_trust_manifest_sha256",
+      "independent_verifier_trust_generation",
+      "key_ids",
+      "host_nonrevocation_anchor_head_sha256",
+      "verifier_nonrevocation_anchor_head_sha256",
+      "per_signature_nonrevocation_snapshot_completed_digest_and_consistency_path"
+    ],
+    "required_out_of_band_pins": [
+      "host_trust_manifest_sha256",
+      "host_trust_generation",
+      "independent_verifier_trust_manifest_sha256",
+      "independent_verifier_trust_generation",
+      "external_authorization_trust_manifest_sha256",
+      "external_authorization_trust_generation",
+      "external_isolation_trust_manifest_sha256",
+      "external_isolation_trust_generation",
+      "external_authorization_issuer_principal_context_capability_key",
+      "external_isolation_issuer_principal_context_capability_key",
+      "challenge_id",
+      "allowed_session_issuer_code_sha256",
+      "allowed_session_issuer_config_sha256",
+      "allowed_collector_code_sha256",
+      "allowed_collector_config_sha256",
+      "allowed_host_attestation_issuer_code_sha256",
+      "allowed_host_attestation_issuer_config_sha256",
+      "allowed_verification_target_author_code_sha256",
+      "allowed_verification_target_author_config_sha256",
+      "allowed_verifier_code_sha256",
+      "allowed_verifier_config_sha256",
+      "allowed_effective_snapshot_projector_code_sha256",
+      "allowed_effective_snapshot_projector_config_sha256",
+      "revocation_temporal_policy_sha256",
+      "independence_receipt_sha256"
+    ],
+    "self_pinned_manifest": "INVALID",
+    "current_factorforge_research_org_trust_manifest_v1_substitution": "FORBIDDEN_UNLESS_SEPARATE_PURPOSE_SPECIFIC_BINDING_DELTA"
+  },
+  "trusted_input_and_phase_authorization_law": {
+    "authorization_context_schema": "closed authorization_context in factorforge_epistemic_host_readback_closed_schema_bundle_v1",
+    "phase_grant_count": 4,
+    "phase_grants": [
+      "STAGE1B_SESSION_CHALLENGE_ISSUANCE",
+      "STAGE1B1_LIVE_READBACK_EXECUTION",
+      "STAGE1B2_HOST_ATTESTATION",
+      "STAGE1B3_INDEPENDENT_VERIFICATION"
+    ],
+    "all_four_receipts_require_byte_identical_authorization_context": true,
+    "challenge_must_copy_exact_authorization_context": true,
+    "authorization_context_binds_bootstrap_pin_set": true,
+    "authorization_context_binds_all_four_trust_pins": true,
+    "authorization_context_binds_independence_receipt": true,
+    "authorization_context_binds_subject_requirement_registry": true,
+    "authorization_context_binds_physical_proof_applicability_manifest": true,
+    "authorization_context_binds_protected_namespace_manifest": true,
+    "authorization_context_binds_expected_control_heads": true,
+    "authorization_context_binds_five_roles_and_projector_code_config": true,
+    "opaque_scope_allowlist_hash_without_closed_grant": "FORBIDDEN",
+    "session_issuer_may_select_or_narrow_context": false,
+    "missing_or_mismatched_phase_receipt": "UNBOUND_BLOCKING"
+  },
+  "external_control_state_requirements": [
+    {
+      "logical_control_store_id": "FF_DEPLOYMENT_READBACK_CONTROL_LEDGER_V1",
+      "schema_id": "factorforge_epistemic_deployment_readback_control_ledger_v1",
+      "cas_law": "reserve exact challenge and target against expected parent; sign receipt binding reservation; externally finalize reservation to exact completed signed receipt digest; identical replay only; no fork or overwrite",
+      "signed_receipt_contains_finalization_result": false,
+      "must_preexist_session": true,
+      "must_be_outside_all_167_subject_roots_and_endpoints": true,
+      "deployment_binding": null
+    },
+    {
+      "logical_control_store_id": "FF_DEPLOYMENT_BINDING_VERIFICATION_REGISTRY_V1",
+      "schema_id": "factorforge_epistemic_deployment_binding_verification_registry_v1",
+      "cas_law": "reserve NO_PRIOR_VERDICT_FOR_BINDING_GENERATION and exact verification target plus intended terminal verdict; sign receipt binding reservation; externally finalize to exact completed signed receipt digest; identical replay only",
+      "signed_receipt_contains_finalization_result": false,
+      "must_preexist_session": true,
+      "must_be_outside_all_167_subject_roots_and_endpoints": true,
+      "deployment_binding": null
+    }
+  ],
+  "artifact_chain": [
+    {
+      "ordinal": 1,
+      "schema_id": "factorforge_epistemic_host_readback_challenge_v1",
+      "artifact_role": "OUT_OF_BAND_PINNED_ONE_SHOT_REQUEST",
+      "action_authority_signed": true,
+      "content_provenance_signed": false,
+      "issuer_role": "FF_DEPLOYMENT_READBACK_SESSION_ISSUER_V1"
+    },
+    {
+      "ordinal": 2,
+      "schema_id": "factorforge_epistemic_host_readback_action_unsigned_content_attested_target_v1",
+      "artifact_role": "SANITIZED_ATOMIC_OBSERVATION_TARGET",
+      "action_authority_signed": false,
+      "content_provenance_signed": true,
+      "author_role": "FF_DEPLOYMENT_READBACK_TARGET_COLLECTOR_V1"
+    },
+    {
+      "ordinal": 3,
+      "schema_id": "factorforge_epistemic_host_readback_attestation_receipt_v1",
+      "artifact_role": "DETACHED_HOST_ATTESTATION",
+      "action_authority_signed": true,
+      "content_provenance_signed": false,
+      "issuer_role": "FF_DEPLOYMENT_READBACK_ATTESTATION_ISSUER_V1",
+      "external_finalization_required_before_next_artifact": "FF_DEPLOYMENT_READBACK_CONTROL_LEDGER_V1"
+    },
+    {
+      "ordinal": 4,
+      "schema_id": "factorforge_epistemic_host_binding_action_unsigned_content_attested_verification_target_v1",
+      "artifact_role": "DETERMINISTIC_INDEPENDENT_VERIFICATION_TARGET",
+      "action_authority_signed": false,
+      "content_provenance_signed": true,
+      "author_role": "FF_DEPLOYMENT_VERIFICATION_TARGET_AUTHOR_V1"
+    },
+    {
+      "ordinal": 5,
+      "schema_id": "factorforge_epistemic_host_binding_verification_receipt_v1",
+      "artifact_role": "DETACHED_INDEPENDENT_VERIFIER_RECEIPT",
+      "action_authority_signed": true,
+      "content_provenance_signed": false,
+      "issuer_role": "FF_DEPLOYMENT_BINDING_INDEPENDENT_VERIFIER_V1",
+      "external_finalization_required_before_next_artifact": "FF_DEPLOYMENT_BINDING_VERIFICATION_REGISTRY_V1"
+    },
+    {
+      "ordinal": 6,
+      "schema_id": "factorforge_epistemic_host_binding_effective_snapshot_v1",
+      "artifact_role": "DETERMINISTIC_EFFECTIVE_STATUS_PROJECTION",
+      "action_authority_signed": false,
+      "content_provenance_signed": false,
+      "authority_ceiling": "NO_RUNTIME_OR_NEXT_GATE_AUTHORITY",
+      "requires_both_committed_receipt_refs": true
+    }
+  ],
+  "challenge_required_bindings": [
+    "exact P0 manifest SHA256",
+    "exact frozen Stage1B0 packet manifest and closed-schema-bundle SHA256",
+    "exact Stage1A commit contract module builder validator SHA256 and expected-inventory content SHA256",
+    "exact material-subject family/order law and ordered-universe hash",
+    "one-shot challenge ID and validity window",
+    "protected out-of-band bootstrap pin-set content reference",
+    "Host independent-verifier external-authorization and external-isolation trust-manifest SHA256 generations and anchor heads",
+    "allowed code/config SHA256 for all five control-plane roles plus deterministic effective-snapshot projector",
+    "expected readback-control-ledger parent head and generation or ABSENT",
+    "expected verification-registry parent head and generation or ABSENT",
+    "pre-session independence-receipt schema ID and SHA256",
+    "four distinct phase-authorization receipt references including session challenge issuance",
+    "subject-requirement registry exact content reference",
+    "physical-proof applicability manifest exact content reference",
+    "protected-namespace manifest SHA256 generation and entry count",
+    "identity-commitment master key ID canonicalizer SHA256 and purpose-registry SHA256",
+    "all authority ceilings false"
+  ],
+  "unsigned_target_required_sections": [
+    "baseline_and_challenge_binding",
+    "atomic_snapshot_cohort",
+    "source_commit_to_deployment_artifact_binding",
+    "collector_execution_authorization_reference",
+    "subject_requirement_and_physical_proof_applicability_bindings",
+    "installation_and_state_root_identity_hashes",
+    "root_anchor_identity_hash_rows",
+    "closed_pairwise_relationship_matrix",
+    "store_endpoint_schema_generation_manifest_validator_cas_rows",
+    "principal_context_capability_key_rows",
+    "event_purpose_rows",
+    "external_trust_rows",
+    "adapter_native_target_receipt_consumer_rows",
+    "trust_manifest_key_id_and_nonrevocation_projection",
+    "policy_hashes",
+    "sanitization_audit",
+    "authority_ceiling"
+  ],
+  "identity_commitment_law": {
+    "profile_id": "FFDB_OPAQUE_ID_HMAC_SHA256_HKDF_SESSION_V1",
+    "session_purpose_key_rule": "HKDF-SHA256(identity commitment master key, salt=UTF8(challenge_id), info=UTF8(profile_id + NUL + purpose_id))",
+    "opaque_identity_hash_rule": "HMAC-SHA-256(session purpose key, RFC8785(private identity tuple))",
+    "master_key_must_preexist_session": true,
+    "master_key_bytes_agent_facing": false,
+    "master_key_access_roles": [
+      "FF_DEPLOYMENT_READBACK_TARGET_COLLECTOR_V1",
+      "FF_DEPLOYMENT_VERIFICATION_TARGET_AUTHOR_V1"
+    ],
+    "same_session_purpose_and_private_tuple_must_match": true,
+    "cross_session_or_cross_purpose_linkability": "FORBIDDEN",
+    "caller_supplied_hash_or_salt": "FORBIDDEN"
+  },
+  "physical_proof_and_collision_law": {
+    "applicability_manifest_must_be_pinned_by_challenge": true,
+    "closed_backend_oneof": [
+      "FILESYSTEM",
+      "OBJECT_STORE",
+      "DATABASE",
+      "SERVICE_ENDPOINT"
+    ],
+    "dynamic_not_applicable": "FORBIDDEN",
+    "unsupported_backend": "OBSERVATION_BLOCKED",
+    "protected_namespace_manifest_schema_id": "factorforge_epistemic_protected_namespace_manifest_v1",
+    "protected_namespace_manifest_must_preexist_session": true,
+    "open_ended_collision_set": "FORBIDDEN"
+  },
+  "atomic_snapshot_law": {
+    "one_source_deployment_identity": true,
+    "one_installation_identity_hash": true,
+    "one_host_trust_manifest_sha256_and_generation": true,
+    "one_independent_verifier_trust_manifest_sha256_and_generation": true,
+    "one_pre_session_nonrevocation_anchor_head_per_trust_domain": true,
+    "each_signed_artifact_binds_a_signing_time_descendant_nonrevocation_head": true,
+    "append_only_consistency_proof_from_anchor_to_each_signing_head_required": true,
+    "signing_head_cutoff_not_before_signed_issued_at_required": true,
+    "one_policy_generation": true,
+    "one_readback_window": true,
+    "all_rows_bind_same_atomic_cohort_id": true,
+    "every_role_artifact_binds_actual_code_and_config_sha256_equal_to_challenge_allowlist": true,
+    "effective_snapshot_projector_binds_actual_code_and_config_sha256_equal_to_challenge_allowlist": true,
+    "deployment_control_ledger_is_external_to_every_subject_root": true,
+    "verification_registry_is_external_to_every_subject_root": true,
+    "mixed_commit_generation_trust_or_policy": "INVALID",
+    "unsigned_target_frozen_before_attestation": true,
+    "target_to_future_receipt_or_verifier_backreference": "FORBIDDEN",
+    "detached_receipt_must_exactly_reference_its_preexisting_target": true,
+    "receipt_cas_law": "RESERVE_THEN_SIGN_THEN_EXTERNAL_FINALIZE",
+    "receipt_must_bind_reservation_but_must_not_contain_finalization_result": true,
+    "unknown_or_unreadable_subject": "BLOCK_NOT_ABSENT",
+    "collector_side_applicability_narrowing": "FORBIDDEN"
+  },
+  "canonicalization_and_signature_law": {
+    "json_profile": "RFC8785_JCS_WITH_IJSON_NO_DUPLICATE_KEYS_NO_NONFINITE_NO_LONE_SURROGATE",
+    "canonical_serialization": "RFC8785_JCS",
+    "stored_json_bytes": "exact RFC8785 JCS bytes followed by one LF",
+    "content_hash_algorithm": "SHA-256",
+    "content_author_preimage_hash_rule": "SHA256(UTF8(schema_id + NUL + literal(content-author-preimage) + NUL) || RFC8785(target with content_author_preimage_sha256 content_author_signature and content_sha256 removed))",
+    "content_author_signature_input_rule": "Ed25519 signs UTF8(schema_id + NUL + literal(content-author-signature) + NUL) || digest_bytes(content_author_preimage_sha256)",
+    "content_object_hash_rule": "SHA256(UTF8(schema_id + NUL) || RFC8785(object with content_sha256 removed)); for content-attested targets this includes content_author_preimage_sha256 and content_author_signature",
+    "detached_receipt_id_rule": "SHA256(UTF8(schema_id + NUL + literal(receipt-id) + NUL) || RFC8785(receipt with receipt_id and signature removed))",
+    "signature_input_rule": "Ed25519 signs UTF8(schema_id + NUL + literal(signature) + NUL) || RFC8785(receipt including receipt_id and excluding signature)",
+    "signed_receipt_self_content_hash_field": "STRUCTURALLY_FORBIDDEN",
+    "challenge_signature_input_rule": "Ed25519 signs UTF8(schema_id + NUL + literal(challenge-signature) + NUL) || RFC8785(challenge excluding signature)",
+    "completed_action_signed_artifact_digest_rule": "SHA256(UTF8(schema_id + NUL + literal(completed-signed-artifact) + NUL) || RFC8785(complete action-signed challenge or receipt)); digest is stored only in downstream references and never inside the signed artifact",
+    "downstream_content_reference_rule": "bind schema_id artifact_id and content_sha256",
+    "downstream_receipt_reference_rule": "bind schema_id receipt_id completed_signed_artifact_sha256 and external CAS finalization receipt reference",
+    "full_stored_file_sha256_location": "outer packet manifest only; distinct from the semantic completed-signed-artifact digest",
+    "signature_encoding": "Ed25519 base64 detached signature",
+    "row_manifest_hash_rule": "SHA256(UTF8(FFDB-ROWS-V1 + NUL) || ordered concatenation of 167 row leaf digests)",
+    "merkle_leaf_rule": "SHA256(UTF8(FFDB-LEAF-V1 + NUL) || RFC8785(row))",
+    "merkle_node_rule": "SHA256(UTF8(FFDB-NODE-V1 + NUL) || left_digest_bytes || right_digest_bytes); promote an odd final node unchanged",
+    "hash_or_signature_cycle": "FORBIDDEN"
+  },
+  "deployment_observation_states": [
+    "OBSERVED_PRESENT_COMPLETE",
+    "OBSERVED_ABSENT",
+    "OBSERVED_PARTIAL",
+    "PROHIBITED_NOT_AUTHORIZED",
+    "OBSERVATION_BLOCKED"
+  ],
+  "effective_status_vocabulary": [
+    "OBSERVED_EXISTING_DEFINITION_ONLY",
+    "P0_CANDIDATE_BINDING_FOR_HOST_REVIEW",
+    "PARTIAL_NATIVE_SEAM__UNBOUND_BLOCKING",
+    "UNBOUND_BLOCKING",
+    "NOT_AUTHORIZED__UNBOUND_BLOCKING",
+    "BOUND_VERIFIED"
+  ],
+  "row_effective_status_law": {
+    "not_authorized_absorbing": true,
+    "observation_alone_can_issue_bound_verified": false,
+    "host_attestation_alone_can_issue_bound_verified": false,
+    "verifier_pass_without_nonrevocation_can_issue_bound_verified": false,
+    "pre_verifier_target_can_contain_bound_verified": false,
+    "bound_verified_first_legal_artifact": "factorforge_epistemic_host_binding_effective_snapshot_v1 after verifier PASS signature and verification-registry finalization",
+    "complete_requirements_for_bound_verified": [
+      "exact_p0_subject_identity",
+      "complete_sanitized_observation",
+      "same_atomic_cohort",
+      "exact_source_deployment_binding",
+      "valid_distinct_out_of_band_host_and_verifier_trust_pins",
+      "valid_host_attestation_signature",
+      "valid_pre_session_nonrevocation_anchors_and_per_signature_descendant_heads_with_consistency_proofs",
+      "independent_verifier_pass_and_signature",
+      "all_subject_specific_required_fields",
+      "no_sod_or_relationship_violation"
+    ],
+    "all_24_sod_closures_must_be_cleared_before_bound_verified": true,
+    "missing_or_unknown_field": "UNBOUND_BLOCKING",
+    "prose_or_hash_only_claim": "UNBOUND_BLOCKING"
+  },
+  "whole_snapshot_aggregation_law": {
+    "eligible_deployment_rows": 100,
+    "absorbing_not_authorized_deployment_rows": 1,
+    "eligible_adapters": 35,
+    "absorbing_not_authorized_adapters": 5,
+    "eligible_material_subjects": 161,
+    "absorbing_not_authorized_material_subjects": 6,
+    "all_167_material_subjects_folded_exactly_once": true,
+    "overall_bound_verified_requires_all_eligible_subjects_bound_verified": true,
+    "not_authorized_subjects_must_remain_not_authorized": true,
+    "prohibited_subject_actualized_or_uplifted": "NOT_AUTHORIZED__UNBOUND_BLOCKING_AND_NO_CONSUMABLE_SNAPSHOT",
+    "any_material_absent_unknown_or_unbound_subject": "UNBOUND_BLOCKING",
+    "all_remaining_gaps_are_exact_partial_native_seams": "PARTIAL_NATIVE_SEAM__UNBOUND_BLOCKING",
+    "partial_row_success_while_any_material_unbound_row_exists": "UNBOUND_BLOCKING",
+    "zero_dummy_binding_rows": true,
+    "runtime_authority_after_overall_bound_verified": false,
+    "automatic_next_gate_authority": false
+  },
+  "current_native_seam_audit": {
+    "complete_real_bindable_p0_rows": 0,
+    "authorities": {
+      "partial_native_seams": 1,
+      "partial_native_seam_ids": [
+        "FF_HOST_MEMORY_AUTHORITY_CURRENT"
+      ],
+      "absent_or_unbound": 4
+    },
+    "root_anchors": {
+      "partial_native_seams": 1,
+      "partial_native_seam_ids": [
+        "FF_HOST_MEMORY_AUTHORITY_CURRENT.CANONICAL_RESEARCHER_MEMORY_STORE_ROOT"
+      ],
+      "absent_or_unbound": 2
+    },
+    "delivery_and_relationships": {
+      "delivery_endpoints_absent": 2,
+      "required_relationship_proofs_absent": 4
+    },
+    "stores": {
+      "absent_or_unbound": 12
+    },
+    "principal_rows": {
+      "partial_native_seams": 1,
+      "absent_or_unbound": 32
+    },
+    "event_purpose_rows": {
+      "partial_native_seams": 1,
+      "absent_or_unbound": 65,
+      "not_authorized": 1
+    },
+    "external_trust_rows": {
+      "partial_native_seams": 1
+    },
+    "adapters": {
+      "partial_native_seams": [
+        "ADP_CURRENT_STEP1_NATIVE_CONJECTURE",
+        "ADP_CURRENT_WRAPPER_PAUSE",
+        "ADP_HOST_MEMORY_LIFECYCLE",
+        "ADP_CURRENT_EVO_LIFECYCLE",
+        "ADP_CURRENT_EVO_BASELINE_PROJECTION"
+      ],
+      "absent_or_unbound_count": 30,
+      "not_authorized_count": 5
+    },
+    "audit_authority": "READ_ONLY_SOURCE_SEAM_OBSERVATION_NOT_DEPLOYMENT_ATTESTATION"
+  },
+  "sanitized_output_allowlist": {
+    "allowed_value_classes": [
+      "frozen logical IDs and enums",
+      "schema IDs and versions",
+      "SHA-256 digests",
+      "opaque key IDs",
+      "nonnegative integer generations and counts",
+      "UTC timestamps and bounded validity intervals",
+      "closed boolean verdicts",
+      "detached signature algorithm and value"
+    ],
+    "forbidden_value_classes": [
+      "absolute or private paths and URIs",
+      "installation identity plaintext or identity seed",
+      "raw device inode mount namespace object prefix or table locator components",
+      "private key secret credential or token",
+      "public key bytes in the Agent-facing packet",
+      "canonical memory lesson review outcome or episode payload",
+      "OOS locator token carrier window content or overlap facts",
+      "factor metrics verdict promotion or decision",
+      "prompt free prose reasoning trace or chain-of-thought",
+      "exception text input value or unknown-field echo"
+    ]
+  },
+  "implementation_gates": {
+    "meta_contract_review_required": true,
+    "host_native_trust_contract_or_exact_out_of_band_pin_required": true,
+    "collector_implementation_authorized": false,
+    "signing_or_key_generation_authorized": false,
+    "live_host_readback_authorized": false,
+    "independent_verifier_implementation_authorized": false,
+    "p1a_fixture_execution_authorized": false,
+    "runtime_shadow_rag_skill_canonical_oos_authorized": false
+  },
+  "authority_ceiling": {
+    "deployment_authority": false,
+    "binding_authority": false,
+    "runtime_authority": false,
+    "skill_authority": false,
+    "canonical_write_authority": false,
+    "oos_authority": false,
+    "key_generation_authority": false,
+    "signature_generation_authority": false,
+    "next_gate_authority": false
+  }
+}

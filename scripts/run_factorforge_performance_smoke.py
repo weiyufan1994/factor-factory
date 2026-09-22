@@ -2313,7 +2313,7 @@ def run_ts_rank_candidate_non_tmp_root_blocks_case() -> dict[str, Any]:
         'scripts/run_ts_rank_candidate_benchmark.py',
         '--fresh',
         '--root',
-        '/Users/humphrey/tmp_factorforge_bad_ts_rank_candidates',
+        '/Users/researcher/tmp_factorforge_bad_ts_rank_candidates',
         '--windows',
         '5',
     ])
@@ -7188,7 +7188,7 @@ def run_non_tmp_selftest() -> dict[str, Any]:
     env = os.environ.copy()
     env['FACTORFORGE_PERF_SMOKE_SKIP_NON_TMP_SELFTEST'] = '1'
     proc = subprocess.run(
-        [sys.executable, 'scripts/run_factorforge_performance_smoke.py', '--fresh', '--root', '/Users/humphrey/tmp_factorforge_bad'],
+        [sys.executable, 'scripts/run_factorforge_performance_smoke.py', '--fresh', '--root', '/Users/researcher/tmp_factorforge_bad'],
         cwd=REPO_ROOT,
         env=env,
         text=True,

@@ -20,7 +20,11 @@ from factor_factory.research_release import (
     evaluation_contract_hash,
     observed_panel_dates,
     validate_evaluation_release_chain,
+    validate_evaluation_release_chain_current,
     validate_observed_oos_window,
+)
+from factor_factory.oos_exposure_incident import (
+    oos_exposure_private_registry_guard,
 )
 
 
@@ -1132,6 +1136,42 @@ def _build_metrics(
     if ic_std <= 0:
         raise ValueError("BLOCK_FACTORFORGE_METRIC_VERIFIER_IC_STD_INVALID")
     icir_value = ic_mean / ic_std
+    control_residualization: dict[str, Any] = {
+        "required_for_acceptance": bool(controls),
+        "control_columns": controls,
+        "residual_rank_ic_mean": None,
+        "period_count": 0,
+        "method": "daily_cross_sectional_ols_signal_on_controls_with_intercept",
+    }
+    if controls:
+        residual_parts: list[pd.DataFrame] = []
+        for _, group in frame.groupby(date_col, sort=True):
+            design = group[controls].to_numpy(dtype=float)
+            design = np.column_stack([np.ones(len(group)), design])
+            signal_values = group[signal_col].to_numpy(dtype=float)
+            beta, _, _, _ = np.linalg.lstsq(design, signal_values, rcond=None)
+            residual_group = group[[date_col, asset_col, return_col]].copy()
+            residual_group["__factorforge_control_residual_signal"] = (
+                signal_values - design @ beta
+            )
+            residual_parts.append(residual_group)
+        residual_frame = pd.concat(residual_parts, ignore_index=True)
+        residual_ic = _daily_rank_ic(
+            residual_frame,
+            date_col=date_col,
+            signal_col="__factorforge_control_residual_signal",
+            return_col=return_col,
+        )
+        if len(residual_ic) != frame[date_col].nunique():
+            raise ValueError(
+                "BLOCK_FACTORFORGE_METRIC_VERIFIER_CONTROL_RESIDUAL_SAMPLE_MISMATCH"
+            )
+        control_residualization.update(
+            {
+                "residual_rank_ic_mean": float(residual_ic.mean()),
+                "period_count": int(len(residual_ic)),
+            }
+        )
 
     long_series = _long_only_series(
         frame,
@@ -1205,6 +1245,7 @@ def _build_metrics(
             "reconciliation_tolerance": 1e-10,
             "evidence_role": "promotion_gate_evidence",
         },
+        "control_residualization": control_residualization,
         "volatility_cost": {
             "arithmetic_return_annual": arithmetic_growth_benchmark_annual,
             "geometric_return_annual": geometric_return_annual,
@@ -1430,7 +1471,35 @@ def run_metric_verifier(
     workspace_root: Path,
     panel_path: Path,
     spec: dict[str, Any],
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    _incident_guard: object | None = None,
 ) -> dict[str, Any]:
+    current_context = (
+        incident_trust_root is not None,
+        bool(incident_installation_id),
+    )
+    if current_context[0] != current_context[1] or (
+        _incident_guard is not None and not all(current_context)
+    ):
+        raise ValueError(
+            "BLOCK_FACTORFORGE_METRIC_VERIFIER_INCIDENT_HOST_CONTEXT_INCOMPLETE"
+        )
+    if all(current_context) and _incident_guard is None:
+        assert incident_trust_root is not None
+        trust_root = incident_trust_root.expanduser().resolve(strict=True)
+        with oos_exposure_private_registry_guard(
+            trust_root,
+            installation_id=str(incident_installation_id),
+        ) as guard:
+            return run_metric_verifier(
+                workspace_root=workspace_root,
+                panel_path=panel_path,
+                spec=spec,
+                incident_trust_root=trust_root,
+                incident_installation_id=incident_installation_id,
+                _incident_guard=guard,
+            )
     root = workspace_root.expanduser().resolve(strict=False)
     resolved_panel = panel_path.expanduser().resolve(strict=False)
     identities = metric_verifier_identities(
@@ -1445,13 +1514,25 @@ def run_metric_verifier(
         spec=spec,
         identities=identities,
     )
-    release_chain = validate_evaluation_release_chain(
-        workspace_root=root,
-        spec=spec,
-        identities=identities,
-        threshold_path=threshold_path,
-        threshold_payload=threshold_payload,
-    )
+    if incident_trust_root is not None and incident_installation_id:
+        release_chain = validate_evaluation_release_chain_current(
+            workspace_root=root,
+            spec=spec,
+            identities=identities,
+            threshold_path=threshold_path,
+            threshold_payload=threshold_payload,
+            incident_trust_root=incident_trust_root,
+            incident_installation_id=incident_installation_id,
+            _incident_guard=_incident_guard,
+        )
+    else:
+        release_chain = validate_evaluation_release_chain(
+            workspace_root=root,
+            spec=spec,
+            identities=identities,
+            threshold_path=threshold_path,
+            threshold_payload=threshold_payload,
+        )
     frame = _prepare_panel(_load_panel(resolved_panel), spec)
     metrics = _build_metrics(frame, spec)
     threshold_sha256 = sha256_file(threshold_path)
@@ -1465,6 +1546,8 @@ def run_metric_verifier(
         "drawdown",
         "long_end",
     }
+    if spec["panel"].get("control_columns"):
+        required_metrics.add("control_residualization")
     if spec["claim_class"] == "risk_premium":
         required_metrics.update({"fama_macbeth", "bucket_monotonicity"})
     evidence_bindings: dict[str, dict[str, Any]] = {}
@@ -1638,7 +1721,34 @@ def validate_metric_verifier_report(
     report: dict[str, Any],
     *,
     workspace_root: Path,
+    incident_trust_root: Path | None = None,
+    incident_installation_id: str | None = None,
+    _incident_guard: object | None = None,
 ) -> list[str]:
+    current_context = (
+        incident_trust_root is not None,
+        bool(incident_installation_id),
+    )
+    if current_context[0] != current_context[1] or (
+        _incident_guard is not None and not all(current_context)
+    ):
+        return [
+            "BLOCK_FACTORFORGE_METRIC_EVIDENCE_INCIDENT_HOST_CONTEXT_INCOMPLETE"
+        ]
+    if all(current_context) and _incident_guard is None:
+        assert incident_trust_root is not None
+        trust_root = incident_trust_root.expanduser().resolve(strict=True)
+        with oos_exposure_private_registry_guard(
+            trust_root,
+            installation_id=str(incident_installation_id),
+        ) as guard:
+            return validate_metric_verifier_report(
+                report,
+                workspace_root=workspace_root,
+                incident_trust_root=trust_root,
+                incident_installation_id=incident_installation_id,
+                _incident_guard=guard,
+            )
     reasons: list[str] = []
     if not isinstance(report, dict):
         return ["BLOCK_FACTORFORGE_METRIC_EVIDENCE_REPORT_INVALID"]
@@ -1674,13 +1784,44 @@ def validate_metric_verifier_report(
             spec=spec,
             identities=identities,
         )
-        release_chain = validate_evaluation_release_chain(
-            workspace_root=root,
-            spec=spec,
-            identities=identities,
-            threshold_path=threshold_path,
-            threshold_payload=threshold_payload,
+        current_replay = bool(
+            incident_trust_root is not None and incident_installation_id
         )
+        if current_replay:
+            release_chain = validate_evaluation_release_chain_current(
+                workspace_root=root,
+                spec=spec,
+                identities=identities,
+                threshold_path=threshold_path,
+                threshold_payload=threshold_payload,
+                incident_trust_root=incident_trust_root,
+                incident_installation_id=incident_installation_id,
+                _incident_guard=_incident_guard,
+            )
+        else:
+            release_chain = validate_evaluation_release_chain(
+                workspace_root=root,
+                spec=spec,
+                identities=identities,
+                threshold_path=threshold_path,
+                threshold_payload=threshold_payload,
+            )
+            claimed_chain = report.get("evaluation_release_chain")
+            if isinstance(claimed_chain, dict):
+                if "current_formal_authority_verified" in claimed_chain:
+                    release_chain["current_formal_authority_verified"] = (
+                        claimed_chain["current_formal_authority_verified"]
+                    )
+                else:
+                    release_chain.pop("current_formal_authority_verified", None)
+        claimed_chain = report.get("evaluation_release_chain")
+        if isinstance(claimed_chain, dict):
+            if "current_formal_authority_verified" in claimed_chain:
+                release_chain["current_formal_authority_verified"] = (
+                    claimed_chain["current_formal_authority_verified"]
+                )
+            else:
+                release_chain.pop("current_formal_authority_verified", None)
         frame = _prepare_panel(_load_panel(panel_path), spec)
         metrics = _build_metrics(frame, spec)
     except Exception as exc:

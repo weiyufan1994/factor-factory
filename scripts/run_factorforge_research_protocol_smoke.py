@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import shutil
 import subprocess
@@ -28,6 +29,9 @@ from factor_factory.research_conjecture import (
     write_json,
 )
 from factor_factory.research_evidence import sha256_file
+from factor_factory.oos_exposure_incident import (
+    ensure_empty_oos_exposure_private_registry,
+)
 from factor_factory.research_release import (
     write_oos_release_manifest,
     write_search_trial_ledger,
@@ -49,6 +53,21 @@ HASH_A = "a" * 64
 HASH_B = "b" * 64
 HASH_C = "c" * 64
 HASH_D = "d" * 64
+
+
+def smoke_incident_context(root: Path) -> tuple[Path, str]:
+    """Create a real Host-private empty incident registry for formal writers."""
+
+    trust_root = root.parent / f".{root.name}.factorforge-smoke-host-trust"
+    installation_id = (
+        "smoke-"
+        + hashlib.sha256(os.fspath(root.resolve()).encode()).hexdigest()[:20]
+    )
+    ensure_empty_oos_exposure_private_registry(
+        trust_root,
+        installation_id=installation_id,
+    )
+    return trust_root, installation_id
 
 
 def evidence_ref(root: Path, name: str) -> dict[str, Any]:
@@ -217,12 +236,15 @@ def component_obligation_evidence(
         spec=spec,
     )
     spec.update(identities)
+    incident_trust_root, incident_installation_id = smoke_incident_context(root)
     write_oos_release_manifest(
         release_path,
         workspace_root=root,
         spec=spec,
         identities=identities,
         threshold_path=registration_path,
+        incident_trust_root=incident_trust_root,
+        incident_installation_id=incident_installation_id,
     )
     result = run_component_obligation_verifier(
         workspace_root=root,
@@ -587,6 +609,10 @@ def run(command: list[str], root: Path) -> subprocess.CompletedProcess[str]:
 def main() -> int:
     root = Path("/tmp/factorforge_research_protocol_smoke")
     shutil.rmtree(root, ignore_errors=True)
+    shutil.rmtree(
+        root.parent / f".{root.name}.factorforge-smoke-host-trust",
+        ignore_errors=True,
+    )
     paths = research_protocol_paths(root, REPORT_ID)
     state = valid_state()
     conjecture = valid_conjecture()

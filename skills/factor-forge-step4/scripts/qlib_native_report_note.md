@@ -1,7 +1,7 @@
 # qlib native backtest status note
 
 - Price-volume native qlib minimal chain has been verified with:
-  - qlib.init(provider_uri=/home/ubuntu/.qlib/qlib_data/cn_data, region=cn)
+  - qlib.init(provider_uri=/home/researcher/.qlib/qlib_data/cn_data, region=cn)
   - TopkDropoutStrategy
   - SimulatorExecutor
   - backtest(...)

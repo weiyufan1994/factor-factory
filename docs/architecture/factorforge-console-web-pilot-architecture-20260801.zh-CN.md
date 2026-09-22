@@ -88,7 +88,7 @@ flowchart LR
   H --> S["S3 allowlist proxy"]
   S --> D["Data API / approved datamarts 只读"]
   AG --> B["固定模型 broker"]
-  B --> M["DeepSeek Reasoner"]
+  B --> M["DeepSeek V4 Flash（固定）"]
   FW --> V["官方 protocol/proof validator + isolation audit"]
   V --> L
   L --> W
@@ -129,7 +129,7 @@ SQLite 位于 repo 外部，使用 WAL 和原子 claim。Pilot 并发固定为 1
 - 服务重启只回收同时带 managed 和本 installation id 标签的遗留容器；任何停止/删除失败都使 runner readiness BLOCK。中断任务转为待复核，禁止旧 turn 与新 turn 重叠。
 - 任务 secret registry 存在加密 EBS 的专用最小权限目录中，跨 broker、runner 和主机重启保留，恢复时与新 lease 合并。单并发 runner 原子维护唯一 `active.registry` 指针；broker 只读取该指针指定的任务 registry，且只有它存在并包含固定 client token 时才接受请求，历史任务 registry 不能替代当前任务。只有任务完成公开扫描后才销毁 active 指针与 registry，防止崩溃前凭据片段在恢复后漏过检查。
 
-容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 拒绝该子网全部直接出口；`INPUT` 也拒绝来自该 bridge 的所有主机地址和端口，只在 bridge gateway 上暴露 S3 proxy 与模型 broker 的网络端点。这里的端点可达不等于研究 Agent 获得数据能力：Agent 容器没有 AWS lease、Data API 包、catalog/raw mount 或可用 DNS，且其任务合同禁止调用 S3 proxy；该端点只服务 runner 的启动期只读探针。Host formal 数据读取使用另行取得并核验的临时 lease。容器 DNS 固定指向不可用的本地 resolver，避免 Docker 内嵌 DNS 成为旁路；S3 hostname 只由主机 Squid 解析。Squid 只允许 `yufan-data-lake` 的两个精确 S3 hostname；模型 broker 只允许 bridge 子网、固定 completion path 和 `deepseek-v4-flash`，并在主机侧注入 key。私网、link-local、metadata、任意公网、外部 DNS 和经 proxy 访问 DeepSeek 均为启动负例。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现。
+容器只能加入 `factorforge-console-egress` 专用 bridge。主机 `DOCKER-USER` 拒绝该子网全部直接出口；`INPUT` 也拒绝来自该 bridge 的所有主机地址和端口，只在 bridge gateway 上暴露 S3 proxy 与模型 broker 的网络端点。这里的端点可达不等于研究 Agent 获得数据能力：Agent 容器没有 AWS lease、Data API 包、catalog/raw mount 或可用 DNS，且其任务合同禁止调用 S3 proxy；该端点只服务 runner 的启动期只读探针。Host formal 数据读取使用另行取得并核验的临时 lease。容器 DNS 固定指向不可用的本地 resolver，避免 Docker 内嵌 DNS 成为旁路；S3 hostname 只由主机 Squid 解析。Squid 只允许 `factorforge-example-data` 的两个精确 S3 hostname；模型 broker 只允许 bridge 子网、固定 completion path 和 `deepseek-v4-flash`，并在主机侧注入 key。私网、link-local、metadata、任意公网、外部 DNS 和经 proxy 访问 DeepSeek 均为启动负例。用户参考 URL 在 Pilot 中关闭；后续必须由不持有数据凭据的 GET-only 抓取/净化 broker 实现。
 
 当前 Pilot 固定使用 `deepseek/deepseek-v4-flash` 和 `thinking=high`。模型目录按官方合同声明 1M context 和 384K 最大输出能力，但 Console 运行参数和主机 model broker 都把单次模型输出硬限制为 64K；缺省请求由 broker 注入该上限，任何更高请求直接拒绝。后续 BYOK 必须新增 provider/model/thinking/auth-seed 的成组校验，不能只让用户填一个 key 字符串。
 

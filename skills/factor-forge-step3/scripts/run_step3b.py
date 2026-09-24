@@ -216,6 +216,12 @@ def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str, formula_ir: dict 
         normalized_dates = normalize_trade_date_series(work['trade_date']).dt.strftime('%Y%m%d')
         dates = sorted(normalized_dates.dropna().unique().tolist())
         formula_max_lookback = int(profile['formula_max_lookback'])
+        if formula_max_lookback > STEP3B_SAMPLE_MAX_ROWS:
+            raise ValueError(
+                'BLOCK_STEP3B_SAMPLE_HISTORY_INSUFFICIENT: '
+                f'formula requires {formula_max_lookback} observed rows per security; '
+                f'sample row budget is {STEP3B_SAMPLE_MAX_ROWS}'
+            )
         required_dates = max(STEP3B_SAMPLE_MAX_DATES, formula_max_lookback + 32 if formula_max_lookback else 0)
         selected_dates = dates[-required_dates:]
         date_count = max(1, len(selected_dates))
@@ -224,10 +230,14 @@ def limit_step3b_sample_frame(df: pd.DataFrame, *, label: str, formula_ir: dict 
         date_mask = normalized_dates.isin(set(selected_dates))
         dated = work.loc[date_mask].copy()
         counts = dated['ts_code'].dropna().astype(str).value_counts()
-        min_history = formula_max_lookback + 1 if formula_max_lookback else 1
+        # Shared lookback is the complete input span, including the current row.
+        min_history = max(1, formula_max_lookback)
         eligible = counts[counts >= min_history]
         if eligible.empty:
-            eligible = counts
+            raise ValueError(
+                'BLOCK_STEP3B_SAMPLE_HISTORY_INSUFFICIENT: '
+                f'no security has {min_history} observed rows in the bounded date window'
+            )
         tickers = sorted(eligible.index.astype(str).tolist()[:ticker_cap])
         mask = date_mask & work['ts_code'].astype(str).isin(set(tickers))
         sampled = work.loc[mask].copy()

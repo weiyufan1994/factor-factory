@@ -36,15 +36,23 @@ def _node(raw: ast.AST) -> dict[str, Any]:
     if isinstance(raw, ast.Call) and isinstance(raw.func, ast.Name):
         name = canonical_operator_name(raw.func.id)
         args = [_node(arg) for arg in raw.args]
+        seen_keywords: set[str] = set()
         for keyword in raw.keywords:
             if keyword.arg is None:
                 raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_SYNTAX: starred keyword in {raw.func.id}')
             key = str(keyword.arg).strip().lower()
+            if key in seen_keywords:
+                raise ValueError(f'BLOCK_DUPLICATE_FORMULA_KEYWORD: {raw.func.id}.{keyword.arg}')
+            seen_keywords.add(key)
             if name == 'cs_regression' and key == 'out_type':
                 args.append(_node(keyword.value))
             elif name == 'cs_regression' and key in {'with_one_col', 'fill_predict', 'dummies'}:
-                # Supported by the source operator contract but not needed by the
-                # current residual/predicted/beta evaluator. Defaults are enforced.
+                # The implementation is one-regressor OLS with an intercept,
+                # no missing-y prediction and no dummy regressors. Preserve
+                # explicit default spelling, but never discard other semantics.
+                default = {'with_one_col': True, 'fill_predict': False, 'dummies': None}[key]
+                if not isinstance(keyword.value, ast.Constant) or keyword.value.value is not default:
+                    raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_KEYWORD_VALUE: {raw.func.id}.{keyword.arg}')
                 continue
             else:
                 raise ValueError(f'BLOCK_UNSUPPORTED_FORMULA_KEYWORD: {raw.func.id}.{keyword.arg}')

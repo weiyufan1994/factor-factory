@@ -176,8 +176,12 @@ def compare_outputs(reference: pd.DataFrame, generated: pd.DataFrame, *, toleran
     gen_mask = gen.notna()
     if not (ref_mask == gen_mask).all():
         raise AssertionError('BLOCK_OPERATOR_PARITY_FAILED: non-null mask mismatch')
+    if not ref_mask.any():
+        raise AssertionError('BLOCK_OPERATOR_PARITY_FAILED: no finite observations; empty/all-null parity is unverified')
+    if not np.isfinite(ref[ref_mask]).all() or not np.isfinite(gen[gen_mask]).all():
+        raise AssertionError('BLOCK_OPERATOR_PARITY_FAILED: non-finite output values')
     diffs = (ref[ref_mask] - gen[gen_mask]).abs()
-    max_abs_diff = float(diffs.max()) if len(diffs) else 0.0
+    max_abs_diff = float(diffs.max())
     if not np.isfinite(max_abs_diff) or max_abs_diff > tolerance:
         raise AssertionError(f'BLOCK_OPERATOR_PARITY_FAILED: max_abs_diff={max_abs_diff} tolerance={tolerance}')
     return {

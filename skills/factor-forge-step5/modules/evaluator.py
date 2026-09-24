@@ -55,6 +55,12 @@ def _extract_key_metrics(payload: Dict[str, Any], run_item: Dict[str, Any]) -> D
         if isinstance(candidate, dict):
             merged.update(candidate)
 
+    # Carry the producer's evidence boundary through the Step5 archive. These
+    # descriptive fields do not change numeric metrics or authorize promotion.
+    for key in ('evaluation_scope', 'account_simulation', 'tradable_net_alpha_evidence', 'result_interpretation'):
+        if key in payload:
+            merged[key] = payload[key]
+
     wanted = [
         "rank_ic_mean",
         "rank_ic_std",
@@ -87,6 +93,9 @@ def _extract_key_metrics(payload: Dict[str, Any], run_item: Dict[str, Any]) -> D
         "cost_adjusted_long_side_max_drawdown",
         "cost_adjusted_long_side_recovery_days",
         "result_interpretation",
+        "evaluation_scope",
+        "account_simulation",
+        "tradable_net_alpha_evidence",
         "top_decile_mean_return",
         "bottom_decile_mean_return",
         "long_short_spread_mean",

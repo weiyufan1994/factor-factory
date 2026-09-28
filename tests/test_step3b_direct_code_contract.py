@@ -4,6 +4,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+import pytest
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -145,6 +147,17 @@ def test_direct_code_smoke_supplies_declared_exchange_calendar(tmp_path):
         "    return df[['ts_code', 'trade_date']].assign(factor_value=1.0)\n",
         encoding='utf-8',
     )
+    validate_step3b.run_direct_code_fixture_smoke(
+        impl,
+        {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        code_contract={
+            'required_fields': ['ts_code', 'trade_date'],
+            'input_schema': {
+                'daily_df': ['ts_code', 'trade_date'],
+                'exchange_calendar': ['trade_date'],
+            },
+        },
+    )
 
 
 def test_direct_code_smoke_supports_calendar_only_signature_and_policy_fields(tmp_path):
@@ -173,17 +186,40 @@ def test_direct_code_smoke_supports_calendar_only_signature_and_policy_fields(tm
             },
         },
     )
-    validate_step3b.run_direct_code_fixture_smoke(
-        impl,
-        {'columns': ['ts_code', 'trade_date', 'factor_value']},
-        code_contract={
-            'required_fields': ['ts_code', 'trade_date'],
-            'input_schema': {
-                'daily_df': ['ts_code', 'trade_date'],
-                'exchange_calendar': ['trade_date'],
-            },
-        },
-    )
+
+
+def _valid_step2_context() -> dict:
+    return {
+        'target_statistic': 'next-month return slope',
+        'economic_mechanism': 'liquidity compensation',
+        'expected_failure_modes': ['alias risk'],
+        'reuse_instruction_for_future_agents': ['preserve the frozen window'],
+        'implementation_invariants': ['do not change the estimand'],
+        'innovative_idea_seeds': ['robust location estimator'],
+        'similar_case_lessons_imported': ['prior liquidity lesson'],
+        'research_compatibility_profile': 'factorforge_ordinary_local_is_flexible_v1',
+    }
+
+
+def test_step2_context_nonempty_similar_lessons_needs_no_absence_reason():
+    validate_step3b = _load_validate_step3b()
+    validate_step3b.assert_step2_context('test', _valid_step2_context())
+
+
+def test_step2_context_empty_similar_lessons_accepts_canonical_absence_reason():
+    validate_step3b = _load_validate_step3b()
+    context = _valid_step2_context()
+    context['similar_case_lessons_imported'] = []
+    context['similar_case_lessons_absence_reason'] = 'Advisory retrieval was unavailable.'
+    validate_step3b.assert_step2_context('test', context)
+
+
+def test_step2_context_empty_similar_lessons_without_reason_blocks():
+    validate_step3b = _load_validate_step3b()
+    context = _valid_step2_context()
+    context['similar_case_lessons_imported'] = []
+    with pytest.raises(AssertionError, match='empty without explicit absence reason'):
+        validate_step3b.assert_step2_context('test', context)
 
 
 def test_lcr_float_value_denominator_law_registry_entry_executes():

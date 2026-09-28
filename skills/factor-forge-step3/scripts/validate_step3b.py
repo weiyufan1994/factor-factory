@@ -1531,13 +1531,17 @@ def assert_step2_context(label: str, ctx: dict):
     )
     profile = ctx.get('research_compatibility_profile')
     flexible_local = profile == 'factorforge_ordinary_local_is_flexible_v1'
+    absence_reason_fields = {
+        'innovative_idea_seeds': 'innovative_idea_seeds_absence_reason',
+        'similar_case_lessons_imported': 'similar_case_lessons_absence_reason',
+    }
     for key in ['innovative_idea_seeds', 'similar_case_lessons_imported']:
         value = ctx.get(key)
         assert isinstance(value, list), (
             f'{label}.step2_research_context.{key} must be a list'
         )
         if not value:
-            reason = ctx.get(f'{key}_absence_reason')
+            reason = ctx.get(absence_reason_fields[key])
             assert flexible_local and isinstance(reason, str) and reason.strip(), (
                 f'{label}.step2_research_context.{key} empty without explicit absence reason'
             )

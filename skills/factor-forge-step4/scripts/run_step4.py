@@ -99,6 +99,7 @@ from factor_factory.data_access import (
     infer_signal_column,
     list_open_trade_dates,
     normalize_trade_date_series,
+    resolve_local_tushare_paths,
 )
 from factor_factory.partitioned_direct_code import run_partitioned_controller
 from factor_factory.primary_evaluator import primary_evaluator_plan
@@ -3930,10 +3931,12 @@ def materialize_step4_data_inputs_from_contract(
         role = roles.get('exchange_calendar')
         if not isinstance(role, dict):
             return
+        calendar_paths = resolve_local_tushare_paths()
         dates = list_open_trade_dates(
             start=daily_query.get('start_date'),
             end=daily_query.get('end_date'),
             exchange=str(role.get('exchange') or 'SSE'),
+            paths=calendar_paths,
         )
         if not dates:
             raise SystemExit(
@@ -3949,6 +3952,8 @@ def materialize_step4_data_inputs_from_contract(
             'row_count': int(len(calendar_df)),
             'start': dates[0],
             'end': dates[-1],
+            'source_path': str(calendar_paths.trade_cal_csv),
+            'source_sha256': sha256_file(Path(calendar_paths.trade_cal_csv)),
             'materialized_sha256': sha256_file(calendar_path),
         }
 

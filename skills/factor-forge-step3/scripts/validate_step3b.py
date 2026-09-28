@@ -29,6 +29,7 @@ from factor_factory.formula.evaluator import evaluate_formula_frame
 from factor_factory.formula.parity import compare_outputs, make_operator_fixture, run_operator_parity
 from factor_factory.formula.parser import resolved_binding_hash_for_formula_ir
 from factor_factory.formula.registry import operator_meta
+from factor_factory.implementation_runtime import invoke_factor
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 
 FORBIDDEN_DIRECT_CODE_PATTERNS = [
@@ -944,11 +945,10 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
     if compute is None or not callable(compute):
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor missing')
     complete_minute_session = direct_code_requires_complete_minute_session_fixture(code_contract)
-    dates = (
-        [stamp.strftime('%Y%m%d') for stamp in pd.bdate_range('2026-01-05', periods=22)]
-        if complete_minute_session
-        else [f'202601{day:02d}' for day in range(1, 12)]
-    )
+    # Rolling daily factors commonly require twenty exchange sessions before
+    # their first valid output.  The generic fixture must exercise that
+    # boundary even when no minute session is required.
+    dates = [stamp.strftime('%Y%m%d') for stamp in pd.bdate_range('2026-01-05', periods=22)]
     minute_times = (
         a_share_raw_session_times()
         if complete_minute_session
@@ -961,7 +961,8 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
         for field in ((code_contract or {}).get('required_fields') or [])
         if str(field).strip()
     }
-    for stock_index, ts_code in enumerate(['000001.SZ', '000002.SZ']):
+    fixture_codes = ['000001.SZ', '000002.SZ', '000003.SZ']
+    for stock_index, ts_code in enumerate(fixture_codes):
         base = 10.0 + stock_index * 10.0
         for day_index, trade_date in enumerate(dates):
             close = base + day_index * 0.05
@@ -975,6 +976,15 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
                 'vol': 1000.0 + day_index * 10.0,
                 'amount': close * (1000.0 + day_index * 10.0),
                 'pct_chg': 0.1,
+                # Deterministic A-share execution-policy inputs.  These are
+                # ordinary fixture fields, not claims about live securities.
+                'is_bj': False,
+                'is_st': False,
+                'is_suspended': False,
+                'is_limit_event': False,
+                'is_abnormal_pct_move': False,
+                'listing_days': 500 + day_index,
+                'dropped_by_policy': False,
             }
             direction = 1.0 if stock_index == 0 else -1.0
             pressure_scale = 1000.0 + day_index * 20.0 + stock_index * 100.0
@@ -1091,7 +1101,7 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
     daily_df = add_direct_code_alias_columns(pd.DataFrame(daily_rows))
     if str((code_contract or {}).get('state_dataset') or '') == 'intraday_retained_chip_state_v1' or 'lcr_raw' in required_fields:
         state_rows = []
-        for stock_index, ts_code in enumerate(['000001.SZ', '000002.SZ']):
+        for stock_index, ts_code in enumerate(fixture_codes):
             for day_index, trade_date in enumerate(dates):
                 amount_sum = 200000000.0 + 1000000.0 * day_index
                 lcr_raw = 0.35 + 0.04 * stock_index + 0.005 * day_index
@@ -1136,23 +1146,37 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
         maybe_polars_frame(exchange_calendar, use_polars)
         if exchange_calendar is not None else None
     )
-    call_kwargs = {'daily_df': daily_input, 'minute_df': minute_input}
-    if calendar_input is not None:
-        call_kwargs['exchange_calendar'] = calendar_input
+    additional_inputs = (
+        {'exchange_calendar': calendar_input}
+        if calendar_input is not None else None
+    )
     try:
         signature = inspect.signature(compute)
-        params = list(signature.parameters.values())
     except (TypeError, ValueError) as exc:
-        raise AssertionError(f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: cannot inspect compute_factor signature: {exc}') from exc
-    try:
-        signature.bind(**call_kwargs)
-    except TypeError as exc:
         raise AssertionError(
-            f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: {exc}'
+            f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: cannot inspect compute_factor signature: {exc}'
         ) from exc
+    parameter_names = set(signature.parameters)
+    accepts_named_frames = bool({'daily_df', 'minute_df'} & parameter_names) or any(
+        item.kind == inspect.Parameter.VAR_KEYWORD
+        for item in signature.parameters.values()
+    )
+    if not accepts_named_frames:
+        raise AssertionError(
+            f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: {signature}'
+        )
     try:
-        result = compute(**call_kwargs)
+        result = invoke_factor(
+            compute,
+            daily_input,
+            minute_input,
+            additional_inputs=additional_inputs,
+        )
     except TypeError as exc:
+        if str(exc).startswith('BLOCK_FACTOR_IMPLEMENTATION_'):
+            raise AssertionError(
+                f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: {exc}'
+            ) from exc
         raise AssertionError(
             f'BLOCK_DIRECT_CODE_FIXTURE_EXECUTION_FAILED: factor body raised TypeError: {exc}'
         ) from exc

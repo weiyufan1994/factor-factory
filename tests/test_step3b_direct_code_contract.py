@@ -145,6 +145,34 @@ def test_direct_code_smoke_supplies_declared_exchange_calendar(tmp_path):
         "    return df[['ts_code', 'trade_date']].assign(factor_value=1.0)\n",
         encoding='utf-8',
     )
+
+
+def test_direct_code_smoke_supports_calendar_only_signature_and_policy_fields(tmp_path):
+    validate_step3b = _load_validate_step3b()
+    impl = tmp_path / 'calendar_only_rolling.py'
+    impl.write_text(
+        "import pandas as pd\n"
+        "def compute_factor(*, daily_df, exchange_calendar):\n"
+        "    required = {'is_bj','is_st','is_suspended','is_limit_event','is_abnormal_pct_move','listing_days','dropped_by_policy'}\n"
+        "    assert required.issubset(daily_df.columns)\n"
+        "    assert len(exchange_calendar) >= 20\n"
+        "    last = exchange_calendar['trade_date'].iloc[19]\n"
+        "    out = daily_df[daily_df['trade_date'] == last][['ts_code','trade_date']].copy()\n"
+        "    out['factor_value'] = 1.0\n"
+        "    return out\n",
+        encoding='utf-8',
+    )
+    validate_step3b.run_direct_code_fixture_smoke(
+        impl,
+        {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        code_contract={
+            'required_fields': ['ts_code', 'trade_date', 'amount'],
+            'input_schema': {
+                'daily_df': ['ts_code', 'trade_date', 'amount'],
+                'exchange_calendar': ['trade_date'],
+            },
+        },
+    )
     validate_step3b.run_direct_code_fixture_smoke(
         impl,
         {'columns': ['ts_code', 'trade_date', 'factor_value']},

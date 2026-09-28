@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 from factor_factory.primary_evaluator import primary_evaluator_plan, recovery_evidence_complete
+from factor_factory.provenance import classify_long_side_evidence
 
 VALID_FINAL_STATUS = {"validated", "partial", "failed"}
 
@@ -130,6 +131,11 @@ def determine_final_status(bundle: Dict[str, Any], evaluation: Dict[str, Any]) -
     for item in metric_sources:
         if isinstance(item.get("key_metrics"), dict):
             metric_bundle.update(item["key_metrics"])
+    evidence_class = classify_long_side_evidence(metric_bundle)
+    if evidence_class['evidence_mode'] == 'signal_event_diagnostic':
+        # A valid event study is useful Step6 evidence, but cannot validate the
+        # frozen next-month holding-period investment estimand.
+        return 'partial' if evidence_class['complete'] else 'failed'
     required_long_side = [
         "long_side_annual_return",
         "long_side_annual_volatility",

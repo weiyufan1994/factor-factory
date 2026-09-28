@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 from .rules import build_evaluation_summary
+from factor_factory.provenance import EVENT_STUDY_REQUIRED_METRICS, classify_long_side_evidence
 
 
 PLACEHOLDER_NEXT_ACTIONS = {
@@ -109,6 +110,17 @@ def _collect_backend_metrics(evaluation: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_factor_business_review(metrics: Dict[str, Any]) -> Dict[str, Any]:
     """Translate long-side performance into a factor-as-business lens."""
+    evidence_class = classify_long_side_evidence(metrics)
+    if evidence_class['evidence_mode'] == 'signal_event_diagnostic':
+        return {
+            "thresholds": LONG_SIDE_PERFORMANCE_THRESHOLDS,
+            "metric_unit_policy": {"return_unit": "per_signal_event", "volatility_unit": "per_signal_event_standard_deviation", "cost_unit": "per_rebalance", "turnover_unit": "per_rebalance_mean", "annualization_forbidden": True, "source": "Step4 signal-event diagnostic contract"},
+            "factor_business_quality": {"gross_revenue": None, "trading_cogs": None, "net_revenue_after_cogs": None, "volatility": None, "risk_capital_required": None, "capital_impairment": metrics.get('long_side_max_drawdown'), "economic_net_alpha": None, "cost_basis_status": "diagnostic_only_not_a_holding_period_backtest"},
+            "signal_event_diagnostics": {key: metrics.get(key) for key in sorted(EVENT_STUDY_REQUIRED_METRICS)},
+            "sharpe_status": "not_applicable_signal_event_ir_only", "drawdown_status": "diagnostic_only", "recovery_status": "diagnostic_only",
+            "promotion_eligible": False, "next_month_holding_estimand_executed": False,
+            "risk_budget_note": "Do not infer investable annual economics from sparse T+1 signal-event observations.",
+        }
     mean_return = _first_metric(metrics, [
         "long_side_annual_return",
         "self_quant_analyzer_long_side_annual_return",
@@ -303,6 +315,18 @@ def build_factor_business_review(metrics: Dict[str, Any]) -> Dict[str, Any]:
 
 def build_long_side_review(evaluation: Dict[str, Any]) -> Dict[str, Any]:
     metrics = _collect_backend_metrics(evaluation)
+    evidence_class = classify_long_side_evidence(metrics)
+    if evidence_class['evidence_mode'] == 'signal_event_diagnostic':
+        return {
+            "policy": LONG_ONLY_ADOPTION_CONSTRAINTS, "status": "diagnostic_revision_required",
+            "note": "The T+1 event study is valid diagnostic evidence, but it does not execute the frozen next-month holding-period estimand and cannot support adoption or promotion.",
+            "top_group_mean_return": metrics.get('long_side_mean_return_per_signal_event'), "top_group_return_unit": "per_signal_event",
+            "bottom_group_mean_return": metrics.get('bottom_decile_mean_return'), "rank_ic_mean": metrics.get('rank_ic_mean'),
+            "factor_as_business_review": build_factor_business_review(metrics), "monotonicity_diagnostic": "diagnostic_only",
+            "diagnostic_only": ["signal_event_t_plus_1", "long_short_spread", "short_leg_return", "decile_portfolio_nav"],
+            "adoption_rule": "Implement and execute the frozen next-month holding-period estimator before any factor-adoption decision.",
+            "promotion_eligible": False, "next_month_holding_estimand_executed": False,
+        }
     top_return = _first_metric(metrics, [
         "long_side_annual_return",
         "self_quant_analyzer_long_side_annual_return",
@@ -509,10 +533,19 @@ def derive_known_limits(bundle: Dict[str, Any], evaluation: Dict[str, Any]) -> L
         limits.append(str(warning))
     if not evaluation.get("backend_summary"):
         limits.append("No evaluation backend payload was available at Step 5 aggregation time.")
+    metrics = _collect_backend_metrics(evaluation)
+    if classify_long_side_evidence(metrics)['evidence_mode'] == 'signal_event_diagnostic':
+        limits.append("The executed T+1 signal-event diagnostic is not the frozen next-month holding-period estimand; annualized and tradable net-alpha claims are unavailable.")
     return list(dict.fromkeys(limits))
 
 
 def derive_next_actions(bundle: Dict[str, Any], evaluation: Dict[str, Any], final_status: str) -> List[str]:
+    metrics = _collect_backend_metrics(evaluation)
+    if classify_long_side_evidence(metrics)['evidence_mode'] == 'signal_event_diagnostic':
+        return [
+            "Send the valid T+1 event diagnostics to Step6 for mechanism review and revision design.",
+            "Implement and execute the frozen next-month holding-period evaluator; keep the current T+1 event study as diagnostic evidence only.",
+        ]
     next_actions = list(PLACEHOLDER_NEXT_ACTIONS.get(final_status, []))
     quality_gate = evaluation.get("step4_quality_gate") or {}
     if quality_gate.get("verdict") == "BLOCK":

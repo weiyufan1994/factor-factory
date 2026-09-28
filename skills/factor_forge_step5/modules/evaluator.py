@@ -13,6 +13,7 @@ from factor_factory.primary_evaluator import (
     primary_evaluator_plan,
     validate_primary_evaluator_payload,
 )
+from factor_factory.provenance import classify_long_side_evidence
 
 
 def _resolve_factorforge_root(root: Path) -> Path:
@@ -74,22 +75,33 @@ def _extract_key_metrics(payload: Dict[str, Any], run_item: Dict[str, Any]) -> D
         "turnover_mean",
         "metric_period",
         "annualization_factor",
+        "annualized_metrics_admissible",
+        "observation_spacing_days_median",
+        "holding_period_interpretation",
         "long_side_mean_return_daily",
+        "long_side_mean_return_per_signal_event",
         "long_side_annual_return",
         "long_side_return_std_daily",
+        "long_side_return_std_per_signal_event",
         "long_side_annual_volatility",
         "long_side_sharpe",
+        "long_side_signal_event_ir",
         "long_side_max_drawdown",
         "long_side_recovery_days",
         "long_side_recovery_status",
         "long_side_recovery_lower_bound_days",
         "long_side_recovery_observation_end",
         "long_side_turnover_mean_daily",
+        "long_side_turnover_mean_per_rebalance",
         "trading_cogs_daily",
+        "trading_cogs_per_rebalance",
         "trading_cogs_annual",
         "cost_adjusted_return_daily",
+        "cost_adjusted_return_per_signal_event",
         "cost_adjusted_annual_return",
+        "cost_adjusted_return_std_per_signal_event",
         "cost_adjusted_long_side_sharpe",
+        "cost_adjusted_long_side_signal_event_ir",
         "cost_adjusted_long_side_max_drawdown",
         "cost_adjusted_long_side_recovery_days",
         "result_interpretation",
@@ -263,32 +275,32 @@ def build_step4_quality_gate(payloads: List[Dict[str, Any]], frm: Dict[str, Any]
                 issues.append(_issue("BLOCK", "SELF_QUANT_STANDARD_CONTRACT_MISSING", "self_quant_analyzer must emit standard_metric_contract."))
 
             long_side = payload.get("long_side_performance") or {}
-            required_long_side_fields = [
-                "long_side_annual_return",
-                "long_side_sharpe",
-                "long_side_max_drawdown",
-                "long_side_recovery_days",
-                "long_side_turnover_mean_daily",
-                "trading_cogs_daily",
-                "cost_adjusted_long_side_sharpe",
-            ]
-            missing_long_side = [
-                key for key in required_long_side_fields
-                if _float_or_none(long_side.get(key)) is None
-            ]
-            if missing_long_side:
+            evidence_class = classify_long_side_evidence({**long_side, **{
+                key: payload.get(key) for key in ('tradable_net_alpha_evidence',) if key in payload
+            }})
+            evidence_errors = list(evidence_class['missing_metrics']) + list(evidence_class['boundary_errors'])
+            if evidence_errors:
                 issues.append(_issue(
                     "BLOCK",
                     "LONG_SIDE_RISK_ADJUSTED_EVIDENCE_MISSING",
-                    "self_quant_analyzer must emit complete long-side Sharpe/drawdown/recovery/turnover/cost evidence before Step5 can validate.",
-                    {"missing": missing_long_side, "payload_path": payload_path},
+                    "self_quant_analyzer must emit a complete, unit-consistent daily or signal-event evidence bundle.",
+                    {"missing_or_invalid": evidence_errors, "evidence_mode": evidence_class['evidence_mode'], "payload_path": payload_path},
                 ))
-            if long_side.get("metric_period") != "daily" or _float_or_none(long_side.get("annualization_factor")) is None:
+            if evidence_class['evidence_mode'] == 'daily_annualized' and (
+                long_side.get("metric_period") != "daily" or _float_or_none(long_side.get("annualization_factor")) is None
+            ):
                 issues.append(_issue(
                     "BLOCK",
                     "LONG_SIDE_METRIC_UNITS_MISSING",
                     "long-side payload must declare metric_period=daily and annualization_factor for annualized Step5/6 decisions.",
                     {"metric_period": long_side.get("metric_period"), "annualization_factor": long_side.get("annualization_factor")},
+                ))
+            if evidence_class['evidence_mode'] == 'signal_event_diagnostic' and not evidence_errors:
+                issues.append(_issue(
+                    "WARN",
+                    "SIGNAL_EVENT_DIAGNOSTIC_ONLY",
+                    "Sparse T+1 signal-event evidence is admissible for diagnosis and Step6 revision, but the frozen next-month holding estimand remains unexecuted and promotion is forbidden.",
+                    {"metric_period": long_side.get("metric_period"), "holding_period_interpretation": long_side.get("holding_period_interpretation")},
                 ))
 
             artifacts = payload.get("artifacts") or {}

@@ -36,6 +36,7 @@ from factor_factory.measurement_program import (
 )
 from factor_factory.evo_child_execution import validate_evo_child_execution_gate
 from factor_factory.primary_evaluator import primary_evaluator_plan, recovery_evidence_complete
+from factor_factory.provenance import classify_long_side_evidence
 
 OBJ = FF / 'objects'
 ARCH = FF / 'archive'
@@ -115,6 +116,11 @@ def custom_primary_evidence(frm: dict, evaluation: dict) -> tuple[dict | None, d
     missing = []
     if not any(item.get('status') == 'success' for item in summaries):
         missing.append('declared_primary_backend_success')
+    evidence_class = classify_long_side_evidence(metrics)
+    if evidence_class['evidence_mode'] == 'signal_event_diagnostic':
+        missing.extend(evidence_class['missing_metrics'])
+        missing.extend(evidence_class['boundary_errors'])
+        return plan, metrics, missing
     required_finite = [
         'long_side_annual_return', 'long_side_annual_volatility',
         'long_side_sharpe', 'long_side_max_drawdown',

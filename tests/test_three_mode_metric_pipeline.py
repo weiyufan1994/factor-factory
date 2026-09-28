@@ -18,6 +18,7 @@ from factor_factory.formula.pandas_codegen import generate_pandas_formula_code
 from factor_factory.formula.parser import parse_formula
 from skills.factor_forge_step5.modules.evaluator import build_factor_evaluation
 from skills.factor_forge_step5.modules.rules import determine_final_status
+from factor_factory.provenance import classify_long_side_evidence
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +50,47 @@ def test_sparse_monthly_signal_is_event_study_not_daily_annualized(tmp_path, mon
     assert metrics["long_side_mean_return_per_signal_event"] == pytest.approx(0.02)
     assert metrics["trading_cogs_per_rebalance"] is not None
     assert all(check["status"] == "PASS" for check in checks)
+    classified = classify_long_side_evidence({**metrics, "tradable_net_alpha_evidence": False})
+    assert classified == {
+        "evidence_mode": "signal_event_diagnostic",
+        "required_metrics": classified["required_metrics"],
+        "missing_metrics": [],
+        "boundary_errors": [],
+        "complete": True,
+        "tradable_net_alpha_evidence": False,
+        "next_month_holding_estimand_executed": False,
+        "promotion_eligible": False,
+    }
+
+
+def test_signal_event_evidence_rejects_annualization_or_promotion_claims():
+    base = {
+        "metric_period": "signal_event_t_plus_1",
+        "annualization_factor": None,
+        "annualized_metrics_admissible": False,
+        "tradable_net_alpha_evidence": False,
+        "long_side_mean_return_per_signal_event": .01,
+        "long_side_return_std_per_signal_event": .02,
+        "long_side_signal_event_ir": .5,
+        "long_side_max_drawdown": -.1,
+        "long_side_recovery_days": 30,
+        "long_side_turnover_mean_per_rebalance": .4,
+        "trading_cogs_per_rebalance": .0012,
+        "cost_adjusted_return_per_signal_event": .0088,
+        "cost_adjusted_return_std_per_signal_event": .02,
+        "cost_adjusted_long_side_signal_event_ir": .44,
+        "cost_adjusted_long_side_max_drawdown": -.12,
+    }
+    assert classify_long_side_evidence(base)["complete"] is True
+    for mutation in (
+        {"annualization_factor": 252},
+        {"annualized_metrics_admissible": True},
+        {"tradable_net_alpha_evidence": True},
+        {"long_side_annual_return": .3},
+    ):
+        classified = classify_long_side_evidence({**base, **mutation})
+        assert classified["complete"] is False
+        assert classified["promotion_eligible"] is False
 
 
 def test_operator_direct_hybrid_compute_and_metric_consumers_agree(tmp_path, monkeypatch):

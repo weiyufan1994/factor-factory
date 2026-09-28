@@ -17,6 +17,92 @@ LONG_SIDE_REQUIRED_METRICS = {
     'cost_adjusted_long_side_sharpe',
 }
 
+EVENT_STUDY_METRIC_PERIOD = 'signal_event_t_plus_1'
+EVENT_STUDY_REQUIRED_METRICS = {
+    'long_side_mean_return_per_signal_event',
+    'long_side_return_std_per_signal_event',
+    'long_side_signal_event_ir',
+    'long_side_max_drawdown',
+    'long_side_turnover_mean_per_rebalance',
+    'trading_cogs_per_rebalance',
+    'cost_adjusted_return_per_signal_event',
+    'cost_adjusted_return_std_per_signal_event',
+    'cost_adjusted_long_side_signal_event_ir',
+    'cost_adjusted_long_side_max_drawdown',
+}
+
+
+def classify_long_side_evidence(metrics: dict[str, Any]) -> dict[str, Any]:
+    """Classify evidence without converting sparse events into daily returns.
+
+    A signal-event study is admissible as diagnostic evidence only.  It can be
+    archived and handed to Step6, but it cannot satisfy the tradable next-month
+    holding estimand or produce annualized investment-performance claims.
+    """
+    metric_period = metrics.get('metric_period')
+    if metric_period == EVENT_STUDY_METRIC_PERIOD:
+        missing = [key for key in sorted(EVENT_STUDY_REQUIRED_METRICS) if metrics.get(key) is None]
+        if not recovery_evidence_complete(metrics):
+            missing.append('long_side_recovery_evidence')
+        forbidden_annualized = [
+            key for key in sorted({
+                'long_side_mean_return_daily',
+                'long_side_annual_return',
+                'long_side_return_std_daily',
+                'long_side_annual_volatility',
+                'long_side_sharpe',
+                'long_side_turnover_mean_daily',
+                'trading_cogs_daily',
+                'trading_cogs_annual',
+                'cost_adjusted_return_daily',
+                'cost_adjusted_annual_return',
+                'cost_adjusted_return_std_daily',
+                'cost_adjusted_annual_volatility',
+                'cost_adjusted_long_side_sharpe',
+            })
+            if metrics.get(key) is not None
+        ]
+        boundary_errors: list[str] = []
+        if metrics.get('annualization_factor') is not None:
+            boundary_errors.append('annualization_factor_must_be_null')
+        if metrics.get('annualized_metrics_admissible') is not False:
+            boundary_errors.append('annualized_metrics_admissible_must_be_false')
+        if metrics.get('tradable_net_alpha_evidence') is not False:
+            boundary_errors.append('tradable_net_alpha_evidence_must_be_false')
+        if forbidden_annualized:
+            boundary_errors.append('annualized_metrics_must_be_null:' + ','.join(forbidden_annualized))
+        return {
+            'evidence_mode': 'signal_event_diagnostic',
+            'required_metrics': sorted(EVENT_STUDY_REQUIRED_METRICS),
+            'missing_metrics': missing,
+            'boundary_errors': boundary_errors,
+            'complete': not missing and not boundary_errors,
+            'tradable_net_alpha_evidence': False,
+            'next_month_holding_estimand_executed': False,
+            'promotion_eligible': False,
+        }
+
+    aliases = dict(metrics)
+    if 'long_side_turnover_mean_daily' in metrics:
+        aliases.setdefault('turnover', metrics.get('long_side_turnover_mean_daily'))
+    if 'trading_cogs_annual' in metrics:
+        aliases.setdefault('trading_cogs', metrics.get('trading_cogs_annual'))
+    if 'trading_cogs_daily' in metrics:
+        aliases.setdefault('trading_cogs', metrics.get('trading_cogs_daily'))
+    missing = [key for key in sorted(LONG_SIDE_REQUIRED_METRICS) if aliases.get(key) is None]
+    if 'long_side_recovery_days' in missing and recovery_evidence_complete(aliases):
+        missing.remove('long_side_recovery_days')
+    return {
+        'evidence_mode': 'daily_annualized',
+        'required_metrics': sorted(LONG_SIDE_REQUIRED_METRICS),
+        'missing_metrics': missing,
+        'boundary_errors': [],
+        'complete': not missing,
+        'tradable_net_alpha_evidence': metrics.get('tradable_net_alpha_evidence'),
+        'next_month_holding_estimand_executed': metrics.get('next_month_holding_estimand_executed'),
+        'promotion_eligible': not missing,
+    }
+
 
 def derive_identity(parent: dict[str, Any] | None, role: str, producer: str) -> dict[str, Any]:
     identity = dict(parent or {})
@@ -169,16 +255,8 @@ def build_evidence_quality(
     identity_chain_verified: bool,
 ) -> dict[str, Any]:
     metrics = _flatten_key_metrics(factor_evaluation)
-    aliases = dict(metrics)
-    if 'long_side_turnover_mean_daily' in metrics:
-        aliases.setdefault('turnover', metrics.get('long_side_turnover_mean_daily'))
-    if 'trading_cogs_annual' in metrics:
-        aliases.setdefault('trading_cogs', metrics.get('trading_cogs_annual'))
-    if 'trading_cogs_daily' in metrics:
-        aliases.setdefault('trading_cogs', metrics.get('trading_cogs_daily'))
-    missing_long = [key for key in sorted(LONG_SIDE_REQUIRED_METRICS) if aliases.get(key) is None]
-    if 'long_side_recovery_days' in missing_long and recovery_evidence_complete(aliases):
-        missing_long.remove('long_side_recovery_days')
+    long_side = classify_long_side_evidence(metrics)
+    missing_long = list(long_side['missing_metrics']) + list(long_side['boundary_errors'])
     try:
         primary_plan = primary_evaluator_plan(factor_run_master.get('evaluation_plan'))
     except ValueError:
@@ -190,6 +268,10 @@ def build_evidence_quality(
         'required_primary_evaluator': (primary_plan or {}).get('backend', 'self_quant_analyzer'),
         'long_side_metrics_present': not missing_long,
         'missing_long_side_metrics': missing_long,
+        'long_side_evidence_mode': long_side['evidence_mode'],
+        'tradable_net_alpha_evidence': long_side['tradable_net_alpha_evidence'],
+        'next_month_holding_estimand_executed': long_side['next_month_holding_estimand_executed'],
+        'promotion_eligible': long_side['promotion_eligible'],
         'identity_chain_verified': bool(identity_chain_verified),
         'mode_decision_present': bool(evidence_identity.get('implementation_mode_decision')),
     }

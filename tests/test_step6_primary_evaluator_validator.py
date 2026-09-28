@@ -130,3 +130,22 @@ def test_signal_event_diagnostic_evidence_status_is_explicitly_valid() -> None:
     checks = {item["name"]: item for item in module.validate_evidence_status_contract(status)}
     assert checks["evidence_status_long_side"]["ok"] is True
     assert checks["evidence_status_cost"]["ok"] is True
+
+
+def test_attached_advisory_final_strategy_overrides_pre_council_handoff_authorization() -> None:
+    module = _validator()
+    revision = {
+        "loop_authorization": "approved_for_step3b_handoff",
+        "revision_quality": "actionable",
+    }
+    comparison = {
+        "case_comparison_verdict": "usable",
+        "similar_success_condition_mismatch": False,
+    }
+    final = {
+        "source": "none",
+        "loop_authorization": "advisory_only",
+        "no_valid_council_proposal": True,
+    }
+    assert module.effective_handoff_authorized("iterate", revision, final, comparison) is False
+    assert module.effective_handoff_authorized("iterate", revision, {}, comparison) is True

@@ -534,6 +534,23 @@ def append_council_markdown(markdown: str, council_summary: dict[str, Any], prop
     return markdown.rstrip() + "\n\n" + "\n".join(section)
 
 
+def synchronize_loop_action_with_final_strategy(
+    iteration: dict[str, Any], final_strategy: dict[str, Any]
+) -> None:
+    """Keep the top-level runner state aligned with the Council terminal state."""
+    if not (
+        final_strategy.get("source") == "none"
+        and final_strategy.get("no_valid_council_proposal") is True
+    ):
+        return
+    loop_action = iteration.setdefault("loop_action", {})
+    loop_action["loop_authorization"] = "advisory_only"
+    loop_action["should_modify_step3b"] = False
+    loop_action["next_runner"] = "stop"
+    loop_action["requires_human_approval_before_code_change"] = True
+    loop_action["stop_reason"] = "awaiting_human_approval_after_no_valid_council_proposal"
+
+
 def block(token: str, payload: dict[str, Any]) -> None:
     print(token + ": " + json.dumps(payload, ensure_ascii=False), file=sys.stderr)
     raise SystemExit(1)
@@ -576,6 +593,7 @@ def main() -> None:
     research_memo["deterministic_revision_strategy"] = deterministic_revision
     research_memo["council_revision_strategy"] = council_revision
     research_memo["final_revision_strategy"] = final_revision
+    synchronize_loop_action_with_final_strategy(updated, final_revision)
 
     brief_ref = updated.get("loop_research_brief") or {}
     brief_json_path = Path(brief_ref.get("json_path") or "")

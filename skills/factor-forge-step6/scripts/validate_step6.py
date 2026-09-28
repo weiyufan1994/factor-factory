@@ -418,6 +418,31 @@ def _declares_usable_custom_primary(status: dict[str, Any]) -> bool:
     )
 
 
+def final_strategy_controls_handoff(final_strategy: Any) -> bool:
+    return (
+        isinstance(final_strategy, dict)
+        and final_strategy.get('source') in VALID_FINAL_REVISION_SOURCES
+    )
+
+
+def effective_handoff_authorized(
+    decision: Any,
+    revision_strategy: dict[str, Any],
+    final_strategy: Any,
+    case_comparison: dict[str, Any],
+) -> bool:
+    """Use the post-Council final strategy whenever it has been attached."""
+    if final_strategy_controls_handoff(final_strategy):
+        return final_strategy.get('loop_authorization') == 'approved_for_step3b_handoff'
+    return (
+        decision == 'iterate'
+        and revision_strategy.get('loop_authorization') == 'approved_for_step3b_handoff'
+        and revision_strategy.get('revision_quality') == 'actionable'
+        and case_comparison.get('case_comparison_verdict') != 'blocked'
+        and case_comparison.get('similar_success_condition_mismatch') is not True
+    )
+
+
 def validate_evidence_status_contract(status: dict[str, Any] | None) -> list[dict[str, Any]]:
     checks: list[dict[str, Any]] = []
     if not isinstance(status, dict) or not status:
@@ -1881,26 +1906,27 @@ if __name__ == '__main__':
             'reject requires revision_strategy.reject_reason_if_no_revision',
         ))
         final_strategy = research_memo.get('final_revision_strategy') or {}
-        if isinstance(final_strategy, dict) and final_strategy.get('source') == 'revision_council':
-            handoff_authorized = final_strategy.get('loop_authorization') == 'approved_for_step3b_handoff'
-        else:
-            handoff_authorized = (
-                decision == 'iterate'
-                and revision_strategy.get('loop_authorization') == 'approved_for_step3b_handoff'
-                and revision_strategy.get('revision_quality') == 'actionable'
-                and case_comparison.get('case_comparison_verdict') != 'blocked'
-                and case_comparison.get('similar_success_condition_mismatch') is not True
-            )
+        handoff_authorized = effective_handoff_authorized(
+            decision,
+            revision_strategy,
+            final_strategy,
+            case_comparison,
+        )
+        effective_loop_authorization = (
+            final_strategy.get('loop_authorization')
+            if final_strategy_controls_handoff(final_strategy)
+            else revision_strategy.get('loop_authorization')
+        )
         checks.append(check(
             'step3b_handoff_authorization_consistency',
-            (isinstance(final_strategy, dict) and final_strategy.get('source') == 'revision_council')
+            final_strategy_controls_handoff(final_strategy)
             or revision_strategy.get('loop_authorization') != 'approved_for_step3b_handoff'
             or handoff_authorized,
             'approved Step3B handoff requires decision=iterate, actionable revision, usable case comparison, and no similar-success condition mismatch',
         ))
         checks.append(check(
             'condition_mismatch_not_handoff_authorized',
-            case_comparison.get('similar_success_condition_mismatch') is not True or revision_strategy.get('loop_authorization') != 'approved_for_step3b_handoff',
+            case_comparison.get('similar_success_condition_mismatch') is not True or effective_loop_authorization != 'approved_for_step3b_handoff',
             'similar success condition mismatch must remain advisory and cannot authorize Step3B handoff',
         ))
 

@@ -74,3 +74,19 @@ def test_zero_valid_proposals_do_not_take_over_final_revision_strategy():
     assert strategy["loop_authorization"] == "advisory_only"
     assert strategy["no_valid_council_proposal"] is True
     assert strategy["council_disposition"] == "blocked_proposals_retained_as_negative_evidence"
+
+    iteration["loop_action"] = {
+        "loop_authorization": "approved_for_step3b_handoff",
+        "should_modify_step3b": True,
+        "next_runner": "step3b",
+        "requires_human_approval_before_code_change": True,
+        "stop_reason": None,
+    }
+    MODULE.synchronize_loop_action_with_final_strategy(iteration, strategy)
+    assert iteration["loop_action"] == {
+        "loop_authorization": "advisory_only",
+        "should_modify_step3b": False,
+        "next_runner": "stop",
+        "requires_human_approval_before_code_change": True,
+        "stop_reason": "awaiting_human_approval_after_no_valid_council_proposal",
+    }

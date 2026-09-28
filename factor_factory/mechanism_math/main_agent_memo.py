@@ -2871,9 +2871,13 @@ def _validated_v1_direct_code_measurement_program_projection_aliases(
 
     V1 direct-code programs predate V2's selected-primary/terminal roles.  The
     replacement authority is therefore deliberately narrower: every displayed
-    component must be an exact display of the validated program's component,
-    and the frozen formula must equal the executable formula projection.  This
-    is a binding check only; it does not validate the model's mechanism claim.
+    component must be an exact display of the validated program's component.
+    Some frozen V1 programs used ``executable_formula_projection`` to record
+    timing/effectiveness semantics rather than to duplicate the full canonical
+    formula.  We therefore require that field to be present and bind the
+    canonical formula through the exact component closure and observation map,
+    instead of requiring two semantically different fields to be byte-equal.
+    This is a binding check only; it does not validate the mechanism claim.
     """
     program, failures = _validated_measurement_program_from_factor_spec(
         factor_spec
@@ -2910,7 +2914,7 @@ def _validated_v1_direct_code_measurement_program_projection_aliases(
     selected_projection = str(selected.get("market_outcome_projection") or "")
     if (
         str(memo.get("formula") or "") != frozen_formula
-        or executable != frozen_formula
+        or not executable.strip()
         or not program_observation
         or not selected_projection
         or normalized(selected.get("observation_mapping"))

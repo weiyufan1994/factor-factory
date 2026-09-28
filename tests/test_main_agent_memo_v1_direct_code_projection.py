@@ -281,6 +281,22 @@ def test_v1_pfvv_style_direct_code_requires_a_dedicated_projection_path() -> Non
     assert _bound_measured_object_projection_aliases(memo, spec) == {"measured_object"}
 
 
+def test_v1_direct_code_accepts_distinct_frozen_timing_projection_when_components_bind_formula() -> None:
+    program = _program()
+    program["observation_and_estimation"]["executable_formula_projection"] = (
+        "score_{i,m} is frozen after month m final close and effective only "
+        "from month m+1 first legal executable price"
+    )
+    spec = _spec(program)
+    memo = _memo(program)
+
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(memo, spec) == {"measured_object"}
+
+    drifted = deepcopy(memo)
+    drifted["formula_component_map"][0]["formula_subexpression"] = "PF_i,t=0"
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(drifted, spec) == set()
+
+
 def test_v1_direct_code_rejects_formula_component_future_knowledge_and_copy_drift() -> None:
     program = _program()
     memo = _memo(program)

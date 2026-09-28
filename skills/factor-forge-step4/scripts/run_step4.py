@@ -4315,6 +4315,19 @@ def validate_local_is_delivery_receipt(
     }
 
 
+def is_full_contract_input_profile(
+    profile: dict[str, Any] | None,
+    *,
+    force_contract_inputs: bool,
+) -> bool:
+    if not isinstance(profile, dict):
+        return False
+    return bool(
+        force_contract_inputs
+        or profile.get('source') == 'ordinary_local_is_content_addressed_delivery'
+    )
+
+
 def _evo_prefetch_receipt_path(run_dir: Path, report_id: str) -> Path:
     return run_dir / f'evo_pre_release_data_receipt__{report_id}.json'
 
@@ -5491,6 +5504,15 @@ def main() -> None:
         # diagnostic into the formal signal.
         if result_df is not None and signal_col == 'warmup' and 'factor_value' in result_df.columns:
             signal_col = 'factor_value'
+        if (
+            result_df is not None
+            and {'ts_code', 'trade_date'}.issubset(result_df.columns)
+            and not may_reuse_existing_factor
+            and not parent_diagnostics_projection
+        ):
+            result_df = result_df.sort_values(
+                ['ts_code', 'trade_date'], kind='mergesort'
+            ).reset_index(drop=True)
         if not may_reuse_existing_factor and not prepared_derived_state:
             result_df.to_parquet(parquet_path, index=False)
         if (
@@ -5545,7 +5567,14 @@ def main() -> None:
         # Step3B sample snapshots may leave a short sample_window_actual in
         # data_prep_master. Once Step4 has materialized the formal Data API
         # full-query input, that sample window must not cap Step4 coverage.
-        full_contract_input = bool(data_api_profile is not None and force_contract_inputs)
+        # A validated ordinary local-IS delivery is the full contract input as
+        # surely as an in-process Data API materialization. ``force`` is
+        # disabled after receipt validation to avoid a redundant network fetch,
+        # so it cannot also serve as the coverage discriminator.
+        full_contract_input = is_full_contract_input_profile(
+            data_api_profile,
+            force_contract_inputs=force_contract_inputs,
+        )
         if full_contract_input:
             effective_target_start = input_daily_start or target_start
             effective_target_end = input_daily_end if str(target_end_raw) == 'current' else (input_daily_end or _normal_date_value(target_end_raw))

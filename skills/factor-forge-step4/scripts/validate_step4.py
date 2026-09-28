@@ -173,6 +173,33 @@ def validate_formal_signal_coverage(
         })
 
 
+def validate_output_key_order(
+    *,
+    run_master: dict[str, Any],
+    diagnostics: dict[str, Any],
+    issues: list[dict[str, Any]],
+) -> None:
+    """Require the declared canonical factor key order for usable outputs."""
+
+    if run_master.get('run_status') not in {'success', 'partial'}:
+        return
+    quality = (
+        diagnostics.get('quality_checks')
+        if isinstance(diagnostics.get('quality_checks'), dict)
+        else {}
+    )
+    if quality.get('sort_order_ok') is not True:
+        issues.append({
+            'severity': 'error',
+            'code': 'BLOCK_STEP4_FACTOR_KEY_ORDER_INVALID',
+            'message': 'formal factor values must be stably ordered by (ts_code, trade_date)',
+            'evidence': {
+                'canonical_order': ['ts_code', 'trade_date'],
+                'sort_order_ok': quality.get('sort_order_ok'),
+            },
+        })
+
+
 def validate_qlib_taxonomy(payload: dict[str, Any], *, mandatory: bool, issues: list[dict[str, Any]]) -> None:
     status = payload.get('qlib_native_status')
     if status not in QLIB_NATIVE_STATUS_VALUES:
@@ -233,6 +260,7 @@ def main() -> None:
         issues.append({'severity': 'error', 'code': 'INVALID_RUN_STATUS', 'message': f'invalid run_status={proposed_status}'})
         proposed_status = 'failed'
     validate_formal_signal_coverage(run_master=run_master, diagnostics=diagnostics, issues=issues)
+    validate_output_key_order(run_master=run_master, diagnostics=diagnostics, issues=issues)
     for reason in validate_evo_child_execution_gate(
         workspace_root=FACTORFORGE,
         report_id=rid,

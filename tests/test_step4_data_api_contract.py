@@ -616,6 +616,42 @@ def test_local_is_delivery_receipt_rejects_oos_or_hash_mismatch(tmp_path, monkey
         )
 
 
+def test_receipt_backed_local_is_profile_is_full_contract_input_without_refetch():
+    run_step4 = _load_run_step4()
+    assert run_step4.is_full_contract_input_profile(
+        {'source': 'ordinary_local_is_content_addressed_delivery'},
+        force_contract_inputs=False,
+    ) is True
+    assert run_step4.is_full_contract_input_profile(
+        {'source': 'legacy_local_snapshot'},
+        force_contract_inputs=False,
+    ) is False
+
+
+def test_step4_validator_blocks_noncanonical_factor_key_order():
+    validator = _load_validate_step4()
+    issues = []
+    validator.validate_output_key_order(
+        run_master={'run_status': 'partial'},
+        diagnostics={'quality_checks': {'sort_order_ok': False}},
+        issues=issues,
+    )
+    assert [issue['code'] for issue in issues] == [
+        'BLOCK_STEP4_FACTOR_KEY_ORDER_INVALID'
+    ]
+
+
+def test_step4_validator_accepts_canonical_factor_key_order():
+    validator = _load_validate_step4()
+    issues = []
+    validator.validate_output_key_order(
+        run_master={'run_status': 'partial'},
+        diagnostics={'quality_checks': {'sort_order_ok': True}},
+        issues=issues,
+    )
+    assert issues == []
+
+
 def test_step4_does_not_reuse_step3b_sample_or_legacy_factor_parquet():
     run_step4 = _load_run_step4()
 

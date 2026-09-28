@@ -173,6 +173,37 @@ CORE_LOOP_BRIEF_METRICS = {
     'group_long_short_spread_mean',
     'group_long_short_spread_ir',
 }
+EVENT_DIAGNOSTIC_LOOP_BRIEF_METRICS = {
+    'rank_ic_mean',
+    'rank_ic_ir',
+    'pearson_ic_mean',
+    'pearson_ic_ir',
+    'long_side_max_drawdown',
+    'long_side_recovery_days',
+    'cost_adjusted_long_side_max_drawdown',
+    'metric_period',
+    'annualized_metrics_admissible',
+    'long_side_mean_return_per_signal_event',
+    'long_side_signal_event_ir',
+    'long_side_turnover_mean_per_rebalance',
+    'trading_cogs_per_rebalance',
+    'cost_adjusted_return_per_signal_event',
+    'cost_adjusted_long_side_signal_event_ir',
+    'group_top_decile_mean_return',
+    'group_bottom_decile_mean_return',
+    'group_long_short_spread_mean',
+    'group_long_short_spread_ir',
+}
+EVENT_DIAGNOSTIC_FORBIDDEN_ANNUAL_METRICS = {
+    'annualization_factor',
+    'long_side_annual_return',
+    'long_side_annual_volatility',
+    'long_side_sharpe',
+    'long_side_turnover_mean_daily',
+    'trading_cogs_annual',
+    'cost_adjusted_annual_return',
+    'cost_adjusted_long_side_sharpe',
+}
 # A prepared local-IS custom primary evaluator is permitted to omit these
 # diagnostics.  They must remain absent/NOT_EVALUATED rather than being
 # manufactured from a self-quant or qlib payload.  The long-side accounting
@@ -405,8 +436,8 @@ def validate_evidence_status_contract(status: dict[str, Any] | None) -> list[dic
             'BLOCK_STEP6_EVIDENCE_STATUS_PRIMARY_MISSING: self_quant may be not_required only with a declared custom primary evaluator status',
         ),
         check('evidence_status_qlib', status.get('qlib_native_status') in VALID_STEP6_Q_LIB_NATIVE_STATUS, 'BLOCK_STEP6_EVIDENCE_STATUS_QLIB_MISSING: qlib_native_status missing'),
-        check('evidence_status_long_side', status.get('long_side_evidence_status') in {'complete', 'partial', 'missing', 'failed'}, 'BLOCK_STEP6_EVIDENCE_STATUS_LONG_SIDE_MISSING: long_side_evidence_status missing'),
-        check('evidence_status_cost', status.get('cost_model_status') in {'complete', 'partial', 'missing'}, 'BLOCK_STEP6_EVIDENCE_STATUS_COST_MISSING: cost_model_status missing'),
+        check('evidence_status_long_side', status.get('long_side_evidence_status') in {'complete', 'partial', 'missing', 'failed', 'diagnostic_only'}, 'BLOCK_STEP6_EVIDENCE_STATUS_LONG_SIDE_MISSING: long_side_evidence_status missing'),
+        check('evidence_status_cost', status.get('cost_model_status') in {'complete', 'partial', 'missing', 'per_rebalance_diagnostic_only'}, 'BLOCK_STEP6_EVIDENCE_STATUS_COST_MISSING: cost_model_status missing'),
         check('evidence_status_drawdown', status.get('drawdown_geometry_status') in {'complete', 'partial', 'missing'}, 'BLOCK_STEP6_EVIDENCE_STATUS_DRAWDOWN_MISSING: drawdown_geometry_status missing'),
         check('evidence_status_research_decision', status.get('research_decision') in {'promote', 'iterate', 'reject', 'needs_human_review'}, 'BLOCK_STEP6_EVIDENCE_STATUS_RESEARCH_DECISION_MISSING: research_decision missing'),
         check('evidence_status_promotion_gate', status.get('promotion_gate_status') in {'open', 'blocked_by_long_side', 'blocked_by_cost', 'blocked_by_drawdown', 'blocked_by_evidence', 'not_applicable'}, 'BLOCK_STEP6_EVIDENCE_STATUS_PROMOTION_GATE_MISSING: promotion_gate_status missing'),
@@ -626,15 +657,40 @@ def loop_brief_missing_core_metrics(iteration: dict, metrics: dict) -> list[str]
         evidence_status.get('self_quant_evidence_status') == 'not_required'
         and _declares_usable_custom_primary(evidence_status)
     )
+    event_diagnostic = (
+        metrics.get('metric_period') == 'signal_event_t_plus_1'
+        and metrics.get('annualized_metrics_admissible') is False
+    )
+    required_metrics = (
+        EVENT_DIAGNOSTIC_LOOP_BRIEF_METRICS
+        if event_diagnostic else CORE_LOOP_BRIEF_METRICS
+    )
     missing = {
-        key for key in CORE_LOOP_BRIEF_METRICS
-        if not present_metric(metrics.get(key))
+        key for key in required_metrics
+        if not (
+            (key == 'annualized_metrics_admissible' and metrics.get(key) is False)
+            or (key == 'metric_period' and metrics.get(key) == 'signal_event_t_plus_1')
+        )
+        and not present_metric(metrics.get(key))
     }
     if 'long_side_recovery_days' in missing and recovery_evidence_complete(headline_metrics):
         missing.remove('long_side_recovery_days')
     if custom_primary:
         missing.difference_update(CUSTOM_PRIMARY_OPTIONAL_LOOP_BRIEF_METRICS)
     return sorted(missing)
+
+
+def event_diagnostic_nonnull_annual_metrics(metrics: dict) -> list[str]:
+    """Reject fabricated annual fields for sparse signal-event diagnostics."""
+    if not (
+        metrics.get('metric_period') == 'signal_event_t_plus_1'
+        and metrics.get('annualized_metrics_admissible') is False
+    ):
+        return []
+    return sorted(
+        key for key in EVENT_DIAGNOSTIC_FORBIDDEN_ANNUAL_METRICS
+        if metrics.get(key) is not None
+    )
 
 
 def scan_forbidden_revision_text(value, prefix: str = '$') -> list[dict]:
@@ -834,6 +890,12 @@ def loop_research_brief_checks(iteration: dict, decision: str) -> list[dict]:
     metrics = brief.get('metrics') if isinstance(brief.get('metrics'), dict) else {}
     missing_metrics = loop_brief_missing_core_metrics(iteration, metrics)
     checks.append(check('loop_research_brief_core_metrics_present', not missing_metrics, f'loop brief core metrics missing/empty: {missing_metrics}'))
+    invalid_annual_metrics = event_diagnostic_nonnull_annual_metrics(metrics)
+    checks.append(check(
+        'loop_research_brief_event_diagnostic_annual_metrics_null',
+        not invalid_annual_metrics,
+        f'event diagnostic must not populate annual/daily metrics: {invalid_annual_metrics}',
+    ))
 
     charts = brief.get('chart_evidence') if isinstance(brief.get('chart_evidence'), dict) else {}
     missing_charts = sorted(REQUIRED_LOOP_BRIEF_CHART_KEYS - set(charts.keys()))

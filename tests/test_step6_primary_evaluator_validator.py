@@ -86,3 +86,47 @@ def test_legacy_or_undeclared_censoring_cannot_bypass_core_metrics() -> None:
     assert "long_side_recovery_days" in missing
     assert "rank_ic_ir" in missing
     assert "group_top_decile_mean_return" in missing
+
+
+def test_signal_event_diagnostic_requires_event_metrics_and_null_annual_metrics() -> None:
+    module = _validator()
+    iteration = {
+        "evidence_status": {
+            **_custom_status(),
+            "primary_evaluator_backend": "self_quant_analyzer",
+            "self_quant_evidence_status": "complete",
+            "long_side_evidence_status": "diagnostic_only",
+            "cost_model_status": "per_rebalance_diagnostic_only",
+        },
+        "evidence_summary": {"headline_metrics": {}},
+    }
+    metrics = {key: 0.1 for key in module.EVENT_DIAGNOSTIC_LOOP_BRIEF_METRICS}
+    metrics.update({
+        "metric_period": "signal_event_t_plus_1",
+        "annualized_metrics_admissible": False,
+        **{key: None for key in module.EVENT_DIAGNOSTIC_FORBIDDEN_ANNUAL_METRICS},
+    })
+    assert module.loop_brief_missing_core_metrics(iteration, metrics) == []
+    assert module.event_diagnostic_nonnull_annual_metrics(metrics) == []
+
+    metrics.pop("cost_adjusted_return_per_signal_event")
+    assert module.loop_brief_missing_core_metrics(iteration, metrics) == [
+        "cost_adjusted_return_per_signal_event"
+    ]
+
+    metrics["long_side_annual_return"] = 0.25
+    assert module.event_diagnostic_nonnull_annual_metrics(metrics) == [
+        "long_side_annual_return"
+    ]
+
+
+def test_signal_event_diagnostic_evidence_status_is_explicitly_valid() -> None:
+    module = _validator()
+    status = {
+        **_custom_status(),
+        "long_side_evidence_status": "diagnostic_only",
+        "cost_model_status": "per_rebalance_diagnostic_only",
+    }
+    checks = {item["name"]: item for item in module.validate_evidence_status_contract(status)}
+    assert checks["evidence_status_long_side"]["ok"] is True
+    assert checks["evidence_status_cost"]["ok"] is True

@@ -123,3 +123,14 @@ New hypothesis/child execution follows the active revision-approval contract;
 ordinary code fixes and re-review remain internal to the authorized work.
 Keep economic decision, native protocol status, wrapper execution, independent
 review, OOS and promotion claims separate in every completion report.
+
+## Self-improving research actions
+
+For a new response structure or when Step4/5 evidence changes the next research
+action, read [self-improving research](references/self-improving-research.md).
+Each new structure requires its responsible researcher to complete a
+mechanism-first math induction before formal efficacy evaluation. Hybrid policy
+advice is local evidence only: it cannot execute work, substitute for Step2/3
+review, or make a research conclusion. The repository candidate
+`math-derivation-tutor` is an optional focused audit, not an independent review
+or a required extra model call.

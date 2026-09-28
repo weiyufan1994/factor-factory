@@ -5,11 +5,14 @@ import argparse
 import hashlib
 import json
 import os
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 RUNTIME_ROOT = Path(os.getenv('FACTORFORGE_ROOT', str(REPO_ROOT))).expanduser()
 OBJECTS = RUNTIME_ROOT / 'objects'
 DEFAULT_OUTPUT = RUNTIME_ROOT / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl'
@@ -342,9 +345,18 @@ def active_workspace_exports(exports: Path) -> list[tuple[Path, dict[str, Any]]]
                 or data.get('canonical_promotion_allowed') is not False):
             raise CorpusBuildError(f'{path}: invalid advisory export boundary')
         records[path.name] = (path, data, raw)
+    return _select_revisions(
+        records, revision_field='export_revision', id_fields=('report_id', 'factor_id'),
+        identity_fields=('report_id', 'factor_id', 'source_record_relative_ref', 'source_record_sha256',
+                         'artifact_identity', 'export_status', 'advisory_only',
+                         'same_factor_not_generalized', 'canonical_promotion_allowed', 'decision'),
+    )
+
+
+def _select_revisions(records, *, revision_field, id_fields, identity_fields, append_source_refs=False):
     parents: dict[str, str] = {}
     for name, (path, data, _) in records.items():
-        revision = data.get('export_revision')
+        revision = data.get(revision_field)
         if revision is None:
             continue
         if not isinstance(revision, dict) or not str(revision.get('reason') or '').strip():
@@ -356,19 +368,29 @@ def active_workspace_exports(exports: Path) -> list[tuple[Path, dict[str, Any]]]
         if revision.get('supersedes_sha256') != hashlib.sha256(parent_raw).hexdigest():
             raise CorpusBuildError(f'{path}: correction predecessor content changed')
         changed = {key for key in set(data) | set(parent)
-                   if key != 'export_revision' and data.get(key) != parent.get(key)}
+                   if key != revision_field and data.get(key) != parent.get(key)}
         declared = revision.get('changed_fields')
         if (not isinstance(declared, list) or any(not isinstance(key, str) for key in declared)
                 or len(set(declared)) != len(declared) or set(declared) != changed):
             raise CorpusBuildError(f'{path}: correction changed_fields does not describe the actual edit')
         # This checks which fields changed, not whether new prose is true.
         # Economic interpretation still requires the researcher's source review.
-        for field in ('report_id', 'factor_id', 'source_record_relative_ref', 'source_record_sha256',
-                      'artifact_identity', 'export_status', 'advisory_only',
-                      'same_factor_not_generalized', 'canonical_promotion_allowed', 'decision'):
+        for field in identity_fields:
             if data.get(field) != parent.get(field):
                 raise CorpusBuildError(f'{path}: correction changes case identity or authority: {field}')
+        if append_source_refs:
+            before, after = parent.get('source_identity'), data.get('source_identity')
+            if not isinstance(before, dict) or not isinstance(after, dict):
+                raise CorpusBuildError('note source identity must be an object')
+            old_refs, new_refs = before.get('source_refs', []), after.get('source_refs', [])
+            if ({k: v for k, v in before.items() if k != 'source_refs'} !=
+                    {k: v for k, v in after.items() if k != 'source_refs'}
+                    or not isinstance(old_refs, list) or not isinstance(new_refs, list)
+                    or new_refs[:len(old_refs)] != old_refs):
+                raise CorpusBuildError('note source identity changed beyond appended source_refs')
         parents[name] = parent_name
+    if len(set(parents.values())) != len(parents):
+        raise CorpusBuildError('branched advisory corrections')
     for name in parents:
         seen: set[str] = set()
         cursor = name
@@ -379,10 +401,38 @@ def active_workspace_exports(exports: Path) -> list[tuple[Path, dict[str, Any]]]
             cursor = parents[cursor]
     superseded = set(parents.values())
     selected = [(path, data) for name, (path, data, _) in records.items() if name not in superseded]
-    case_ids = [(data.get('report_id'), data.get('factor_id')) for _, data in selected]
+    case_ids = [tuple(data.get(key) for key in id_fields) for _, data in selected]
     if len(set(case_ids)) != len(case_ids):
         raise CorpusBuildError('ambiguous active workspace export corrections')
     return selected
+
+
+def active_research_notes(notes: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Keep original note bytes; select one explicit successor per note ID."""
+    if notes.is_symlink():
+        raise CorpusBuildError('research notes directory must not be a symlink')
+    records = {}
+    for path in sorted(notes.glob('*.json')):
+        if path.is_symlink() or not path.is_file():
+            raise CorpusBuildError('research note must be a regular file')
+        raw = path.read_bytes()
+        data = json.loads(raw)
+        if (not isinstance(data, dict) or data.get('note_version') != 'factorforge_research_note_v1'
+                or data.get('advisory_only') is not True
+                or data.get('canonical_promotion_allowed') is not False
+                or data.get('formal_step6_completed') is not False
+                or not data.get('source_identity') or not data.get('evidence_class')):
+            raise CorpusBuildError('research note evidence/boundary missing')
+        required_text(data, 'note_id', path)
+        records[path.name] = (path, data, raw)
+    return _select_revisions(
+        records, revision_field='research_note_revision', id_fields=('note_id',),
+        identity_fields=('note_id', 'report_id', 'factor_id', 'artifact_identity', 'evidence_identity',
+                         'source_case_identity', 'decision', 'research_variant', 'paper_replication_status',
+                         'reported_research_recommendation', 'note_version', 'evidence_class', 'advisory_only',
+                         'canonical_promotion_allowed', 'formal_step6_completed'),
+        append_source_refs=True,
+    )
 
 
 def build_corpus(objects_root: Path | str, *, project_root: Path | None = None) -> list[dict[str, Any]]:
@@ -463,18 +513,7 @@ def build_corpus(objects_root: Path | str, *, project_root: Path | None = None) 
     # reached native Step6. They cannot masquerade as completed Step6 records.
     notes = project_root / 'knowledge/因子工厂/research_notes'
     if include_workspace_exports:
-        if notes.is_symlink():
-            raise CorpusBuildError('research notes directory must not be a symlink')
-        for path in sorted(notes.glob('*.json')):
-            if path.is_symlink() or not path.is_file():
-                raise CorpusBuildError('research note must be a regular file')
-            data = load_json(path)
-            if (data.get('note_version') != 'factorforge_research_note_v1'
-                    or data.get('advisory_only') is not True
-                    or data.get('canonical_promotion_allowed') is not False
-                    or data.get('formal_step6_completed') is not False
-                    or not data.get('source_identity') or not data.get('evidence_class')):
-                raise CorpusBuildError('research note evidence/boundary missing')
+        for path, data in active_research_notes(notes):
             if data.get('validity_status') == 'withdrawn':
                 if not str(data.get('invalidation_reason') or '').strip():
                     raise CorpusBuildError('withdrawn note requires reason')
@@ -580,8 +619,34 @@ def refresh_retrieval_index(
     if resolved_output == resolved_manifest:
         raise ValueError('output and manifest must be different paths')
 
+    from factor_factory.advisory_runtime import source_snapshot, configured_advisory_root
+    selectors = [
+        {'directory': 'objects/' + folder, 'pattern': pattern}
+        for folder, pattern in (
+            ('factor_library_all', 'factor_record__*.json'),
+            ('research_knowledge_base', 'knowledge_record__*.json'),
+            ('research_iteration_master', 'research_iteration_master__*.json'))
+    ] + [{'directory': 'knowledge/research_episodes', 'pattern': 'episode__*.json'}]
+    if runtime_root == Path(project_root or REPO_ROOT).resolve():
+        selectors += [
+            {'directory': 'knowledge/因子工厂/' + folder, 'pattern': pattern}
+            for folder, pattern in (
+                ('research_notes', '*.json'), ('workspace_experience_exports', 'knowledge_record__*.json'),
+                ('research_episode_exports', 'episode__*.json'))
+        ]
+    try:
+        snapshot = source_snapshot(runtime_root, selectors)
+    except ValueError as exc:
+        raise CorpusBuildError(str(exc)) from exc
     docs = build_corpus(objects_root, project_root=project_root)
-    if not docs:
+    if source_snapshot(runtime_root, selectors) != snapshot:
+        raise CorpusBuildError('knowledge sources changed during index refresh')
+    # A reviewed library whose last active item is explicitly withdrawn must
+    # publish an empty view, not accidentally revive the previous index.
+    advisory = configured_advisory_root()
+    withdrawn_only = (advisory is not None and advisory.resolve() == runtime_root
+                      and any(item['files'] for item in snapshot))
+    if not docs and not withdrawn_only:
         raise CorpusBuildError(f'{objects_root}: no retrieval source documents found')
 
     # Serialize first so unsupported values cannot partially refresh output.
@@ -605,6 +670,9 @@ def refresh_retrieval_index(
         'derived_only': True,
         'output_path': str(resolved_output),
         'manifest_path': str(resolved_manifest),
+        'source_root': str(runtime_root),
+        'source_snapshot': snapshot,
+        'index_sha256': hashlib.sha256(index_content.encode('utf-8')).hexdigest(),
     }
     manifest_content = json.dumps(summary, ensure_ascii=False, indent=2) + '\n'
 
@@ -618,6 +686,7 @@ def main() -> None:
     ap.add_argument('--runtime-root', default=None, help='Explicit Factor Forge runtime root (defaults to FACTORFORGE_ROOT or repo root).')
     ap.add_argument('--output', default=None, help='JSONL output path')
     ap.add_argument('--manifest', default=None, help='Manifest output path')
+    ap.add_argument('--project-root', default=None, help='Explicit advisory export source root; never implies content approval.')
     args = ap.parse_args()
 
     runtime_root = Path(args.runtime_root).expanduser() if args.runtime_root else RUNTIME_ROOT
@@ -625,6 +694,7 @@ def main() -> None:
         runtime_root,
         output=Path(args.output) if args.output else None,
         manifest=Path(args.manifest) if args.manifest else None,
+        project_root=Path(args.project_root) if args.project_root else None,
     )
     print(f"[WRITE] {summary['output_path']}")
     print(f"[WRITE] {summary['manifest_path']}")

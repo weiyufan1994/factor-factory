@@ -68,11 +68,13 @@ def main() -> int:
     elif result.get("reason") == "completed_step6_uses_knowledge_record":
         from scripts.run_factorforge_ultimate import run_post_step6_knowledge_refresh_nonblocking
         result["completed_step6_maintenance"] = run_post_step6_knowledge_refresh_nonblocking(
-            args=argparse.Namespace(report_id=args.report_id, dry_run=bool(raw.get("dry_run"))),
+            args=argparse.Namespace(report_id=args.report_id, dry_run=bool(raw.get("dry_run")), local_is_only=True),
             proof=proof, factor_workspace=workspace,
         )
+    from factor_factory.advisory_runtime import configured_advisory_root
     result["maintenance_report"] = write_latest_maintenance_report(
-        repo_root=ROOT, payload={"report_id": args.report_id, "proof": str(proof_path), "result": result},
+        repo_root=workspace if configured_advisory_root() is not None else ROOT,
+        payload={"report_id": args.report_id, "proof": str(proof_path), "result": result},
     )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0

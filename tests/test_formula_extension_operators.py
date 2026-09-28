@@ -160,7 +160,7 @@ def test_registered_codegen_parity_reference_and_explicit_qlib_status(formula, t
 
 
 def test_metadata_supports_step3_sampling_and_existing_semantics_are_unchanged():
-    for expression, expected in [("ts_product(close,20)", 20), ("ts_decay_linear(close,15)", 15), ("ts_ffill(close,4)", 4)]:
+    for expression, expected in [("ts_product(close,20)", 20), ("ts_decay_linear(close,15)", 15), ("ts_ffill(close,4)", 5)]:
         assert max_formula_ir_lookback(parse_formula(expression)) == expected
     assert requires_cross_sectional_sample(parse_formula("ind_demean(close,volume)"))
     assert not requires_cross_sectional_sample(parse_formula("minimum(close,open)"))

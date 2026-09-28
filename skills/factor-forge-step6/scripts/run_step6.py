@@ -34,6 +34,8 @@ from factor_factory.provenance import (
     derive_identity as derive_provenance_identity,
 )
 from factor_factory.knowledge_context import graph_node_to_similar_case, retrieve_factor_knowledge_context
+from factor_factory.advisory_runtime import configured_advisory_root, read_visible_experience, carried_reference_is_current
+from factor_factory.knowledge_reference import resolve_runtime_retrieval_index
 from factor_factory.mechanism_math.formula_specific import (
     build_formula_specific_derivation,
     validate_formula_specific_derivation,
@@ -69,8 +71,16 @@ from factor_factory.primary_evaluator import (
 
 OBJ = FF / 'objects'
 EVAL = FF / 'evaluations'
-RETRIEVAL_INDEX = Path(os.getenv('FACTORFORGE_RETRIEVAL_INDEX') or (FF / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl'))
+
+
+def uses_local_advisory() -> bool:
+    return os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1' and configured_advisory_root() is not None
+
+
+RETRIEVAL_INDEX = (resolve_runtime_retrieval_index(REPO_ROOT) if uses_local_advisory() else
+                   Path(os.getenv('FACTORFORGE_RETRIEVAL_INDEX') or (FF / 'knowledge' / 'retrieval' / 'factorforge_retrieval_index.jsonl')))
 _RETRIEVAL_INDEX_ERROR: str | None = None
+_RETRIEVAL_INDEX_SHA256: str | None = None
 LOOP_RESEARCH_BRIEF_VERSION = 'factorforge_loop_research_brief_v1'
 REQUIRED_LOOP_BRIEF_CHART_KEYS = [
     'rank_ic_timeseries',
@@ -268,8 +278,16 @@ def load_researcher_journal(report_id: str) -> dict[str, Any] | None:
 
 
 def load_retrieval_docs() -> list[dict[str, Any]]:
-    global _RETRIEVAL_INDEX_ERROR
+    global _RETRIEVAL_INDEX_ERROR, _RETRIEVAL_INDEX_SHA256
     _RETRIEVAL_INDEX_ERROR = None
+    _RETRIEVAL_INDEX_SHA256 = None
+    if uses_local_advisory():
+        try:
+            rows, _RETRIEVAL_INDEX_SHA256 = read_visible_experience(RETRIEVAL_INDEX)
+            return rows
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            _RETRIEVAL_INDEX_ERROR = str(exc)
+            return []
     if not RETRIEVAL_INDEX.exists():
         return []
     docs: list[dict[str, Any]] = []
@@ -3094,6 +3112,7 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
     query_counter = Counter(query_tokens)
 
     retrieval_docs = load_retrieval_docs()
+    local_advisory = uses_local_advisory()
     candidates: list[dict[str, Any]] = []
     for doc in retrieval_docs:
         if str(doc.get('report_id')) == report_id:
@@ -3103,13 +3122,14 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
             score += 5.0
         if str(doc.get('decision')) == decision_hint:
             score += 1.5
-        doc_tokens = tokenize(str(doc.get('text') or ''))
+        doc_tokens = tokenize(str((doc.get('search_text') if local_advisory else None) or doc.get('text') or ''))
         overlap = set(query_tokens) & set(doc_tokens)
         score += float(len(overlap)) * 0.25
         if not overlap and str(doc.get('factor_id')) != factor_id:
             continue
         snippet = str(doc.get('text') or '')[:280]
         candidates.append({
+            **({'id': doc.get('id')} if local_advisory else {}),
             'score': round(score, 4),
             'lexical_score': round(score, 4),
             'report_id': doc.get('report_id'),
@@ -3129,7 +3149,7 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         })
 
     embedding_available = (
-        os.getenv('FACTORFORGE_DISABLE_EMBEDDING_RETRIEVAL') != '1'
+        not local_advisory and os.getenv('FACTORFORGE_DISABLE_EMBEDDING_RETRIEVAL') != '1'
         and EMBEDDING_MATRIX.exists()
         and EMBEDDING_META.exists()
     )
@@ -3171,6 +3191,42 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         except Exception:
             embedding_available = False
 
+    semantic_state = None
+    if local_advisory:
+        from factor_factory.semantic_knowledge_retrieval import retrieve_configured, unavailable
+        visible = [doc for doc in retrieval_docs if doc.get('doc_type') != 'research_episode'
+                   and str(doc.get('report_id')) != report_id]
+        semantic_state = (unavailable('experience_index_unavailable') if _RETRIEVAL_INDEX_ERROR else
+                          retrieve_configured(query_text, visible, RETRIEVAL_INDEX.parent / 'semantic_config.json',
+                                              top_k=max(top_k, 10)))
+        embedding_available = semantic_state['semantic_available']
+        if semantic_state['semantic_used']:
+            lexical_rank = {item['id']: rank for rank, item in enumerate(
+                sorted(candidates, key=lambda item: (-item['score'], str(item['id']))), 1)}
+            dense_rank = {hit['id']: rank for rank, hit in enumerate(semantic_state['hits'], 1)}
+            by_id = {item['id']: item for item in candidates}
+            for doc in visible:
+                if doc['id'] not in dense_rank or doc['id'] in by_id:
+                    continue
+                item = {
+                    'id': doc['id'], 'score': 0.0, 'lexical_score': 0.0,
+                    'report_id': doc.get('report_id'), 'factor_id': doc.get('factor_id'),
+                    'doc_type': doc.get('doc_type'), 'decision': doc.get('decision'),
+                    'knowledge_scope': doc.get('knowledge_scope'),
+                    'factor_family': doc.get('factor_family') or doc.get('mechanism_family'),
+                    'failure_signature': doc.get('failure_signature'), 'formula_hash': doc.get('formula_hash'),
+                    'artifact_identity': doc.get('artifact_identity') or doc.get('source_identity') or {},
+                    'source_identity': doc.get('source_identity') or doc.get('artifact_identity') or {},
+                    'source_path': doc.get('source_path'), 'overlap_terms': [],
+                    'snippet': str(doc.get('search_text') or doc.get('text') or '')[:280],
+                    'advisory_context': doc.get('advisory_projection') or {},
+                }
+                candidates.append(item)
+            for item in candidates:
+                key = item['id']
+                item['score'] = ((1 / (60 + lexical_rank[key]) if key in lexical_rank else 0)
+                                 + (1 / (60 + dense_rank[key]) if key in dense_rank else 0))
+
     factor_knowledge_context: dict[str, Any] = {
         'schema_version': 'factor_knowledge_context_v1',
         'node_count': 0,
@@ -3194,9 +3250,29 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
                 'related_edges': [],
                 'retrieval_error': str(exc),
             }
-    candidates.extend(graph_candidates)
-    candidates.sort(key=lambda item: (-item['score'], str(item.get('report_id') or ''), str(item.get('doc_type') or '')))
-    top = candidates[:top_k]
+    rank_key = lambda item: (-item['score'], str(item.get('report_id') or ''), str(item.get('doc_type') or ''))
+    if local_advisory:
+        # RRF experience scores and graph lexical scores are incomparable.
+        # Preserve each lane's ranking and alternate within the SAME total
+        # result budget. A sole nonempty lane can use the unused places.
+        experience = sorted(candidates, key=rank_key)
+        graph = sorted(graph_candidates, key=rank_key)
+        top, seen = [], set()
+        for position in range(max(len(experience), len(graph))):
+            for lane in (experience, graph):
+                if position >= len(lane) or len(top) >= top_k:
+                    continue
+                item = lane[position]
+                key = item.get('id') or item.get('graph_node_id') or (item.get('report_id'), item.get('doc_type'))
+                if key not in seen:
+                    seen.add(key)
+                    top.append(item)
+            if len(top) >= top_k:
+                break
+    else:
+        candidates.extend(graph_candidates)
+        candidates.sort(key=rank_key)
+        top = candidates[:top_k]
     return {
         'retrieval_index_path': str(RETRIEVAL_INDEX),
         'retrieval_index_available': RETRIEVAL_INDEX.exists(),
@@ -3207,16 +3283,58 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         'factor_knowledge_context_node_count': factor_knowledge_context.get('node_count') or 0,
         'factor_knowledge_context': factor_knowledge_context,
         'embedding_index_available': embedding_available,
-        'embedding_endpoint': EMBEDDING_ENDPOINT,
+        'embedding_endpoint': None if local_advisory else EMBEDDING_ENDPOINT,
+        **({'semantic_retrieval': semantic_state, 'experience_index_sha256': _RETRIEVAL_INDEX_SHA256,
+            'index_paths_checked': [str(RETRIEVAL_INDEX)]} if local_advisory else {}),
         'query_terms': query_tokens[:40],
         'similar_cases': top,
-        'retrieval_notes': [
+        'retrieval_notes': ([
+            'Local advisory retrieval is version-bound to the selected experience index; graph remains separate.',
+            'Semantic candidates are limited to visible non-episode IDs and current source text; no network endpoint is used.',
+            'Experience and graph are independently ranked and interleaved within the total top_k limit; raw scores are lane-local.',
+            'These references are advisory context, not new research findings.',
+        ] if local_advisory else [
             'retrieval currently uses lightweight lexical + metadata matching over factorforge_retrieval_index.jsonl',
             'factor knowledge graph context is appended as analogy/anti-pattern evidence when available',
             'if local embedding index + endpoint are available, similarity scores are added on top of lexical family-aware matching',
             'same-factor_id cases are boosted to prefer family-aware reflection',
-        ],
+        ]),
     }
+
+
+def _check_authored_advisory_imports(result, authored_learning, authored_reference):
+    """Preserve authored thought, but do not activate unbound historical imports."""
+    key = 'similar_case_lessons_imported'
+    if not uses_local_advisory():
+        return result
+    if key not in authored_learning:
+        result[key] = []
+        result['advisory_import_status'] = 'AUTHOR_IMPORT_NOT_DECLARED'
+        result['similar_case_lessons_absence_reason'] = (
+            'No authored advisory import was declared; current retrieval is separate reference context.'
+        )
+        return result
+    value = deepcopy(authored_learning[key])
+    result[key] = value  # Includes an author's explicit choice to import none.
+    for reason_key in ('similar_case_lessons_imported_absence_reason', 'similar_case_lessons_absence_reason'):
+        if reason_key in authored_learning:
+            result[reason_key] = authored_learning[reason_key]
+    if isinstance(value, list) and value:
+        reference = (authored_learning['knowledge_reference_contract']
+                     if 'knowledge_reference_contract' in authored_learning else authored_reference)
+        if not isinstance(reference, dict) or not carried_reference_is_current(reference, RETRIEVAL_INDEX):
+            result[key] = []
+            result['advisory_import_status'] = 'UNVERIFIED_OR_STALE_SOURCE_NOT_CURRENT'
+            result['similar_case_lessons_absence_reason'] = (
+                'Historical imported advisory has no verifiable current source version; '
+                'the original authored memo is retained for review, not used as a current prior.'
+            )
+            result['similar_case_lessons_imported_absence_reason'] = result['similar_case_lessons_absence_reason']
+        else:
+            result['advisory_import_status'] = 'CURRENT_SOURCE_VERSION'
+    elif value == []:
+        result['advisory_import_status'] = 'AUTHOR_IMPORTED_NONE'
+    return result
 
 
 def build_learning_and_innovation(
@@ -3228,6 +3346,7 @@ def build_learning_and_innovation(
     retrieval_context: dict[str, Any],
     authored_learning: dict[str, Any] | None = None,
     flexible_local: bool = False,
+    authored_reference: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     authored_learning = authored_learning if isinstance(authored_learning, dict) else {}
     if flexible_local:
@@ -3251,7 +3370,7 @@ def build_learning_and_innovation(
             for candidate_reason_key in aliases:
                 if candidate_reason_key in authored_learning:
                     result[candidate_reason_key] = authored_learning[candidate_reason_key]
-        return result
+        return _check_authored_advisory_imports(result, authored_learning, authored_reference)
     similar_cases = retrieval_context.get('similar_cases') or []
     imported_lessons = []
     for item in similar_cases[:3]:
@@ -3343,7 +3462,7 @@ def build_learning_and_innovation(
             reason = authored_learning.get(f'{key}_absence_reason')
             if reason is not None:
                 result[f'{key}_absence_reason'] = reason
-    return result
+    return _check_authored_advisory_imports(result, authored_learning, authored_reference)
 
 
 def build_experience_chain(
@@ -4133,6 +4252,10 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         if 'learning_and_innovation' in handoff
         else authored_memo.get('learning_and_innovation')
     )
+    # Bind to the SAME authored source selected above. A newer unrelated
+    # contract in the spec/handoff cannot launder a stale current-agent memo.
+    learning_owner = (current_researcher_memo_body if current_learning_declared
+                      else handoff if 'learning_and_innovation' in handoff else authored_memo)
     if not isinstance(authored_learning, dict):
         authored_learning = (
             {'authored_learning_and_innovation_invalid': deepcopy(authored_learning)}
@@ -4143,6 +4266,9 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
             or contract.get('learning_and_innovation')
             or {}
         )
+        if not flexible_local:
+            spec = bundle.get('factor_spec_master') or {}
+            learning_owner = spec if spec.get('learning_and_innovation') else contract
     if current_policy_declared:
         retrieval_context['authored_program_search_policy'] = current_authored_policy
     elif 'program_search_policy' in handoff:
@@ -4158,6 +4284,7 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         retrieval_context,
         authored_learning=authored_learning,
         flexible_local=flexible_local,
+        authored_reference=learning_owner.get('knowledge_reference_contract'),
     )
     if compatibility_profile is not None:
         learning_and_innovation['research_compatibility_profile'] = compatibility_profile
@@ -4298,6 +4425,8 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     if researcher_agent_memo:
         research_memo = _project_authored_failure_regimes(research_memo, researcher_agent_memo)
         research_memo['researcher_agent_memo'] = researcher_agent_memo
+        if learning_and_innovation.get('advisory_import_status'):
+            research_memo['authored_advisory_import_status'] = learning_and_innovation['advisory_import_status']
         research_memo.setdefault('evidence_quality', {}).setdefault('notes', []).append(
             'External Step6 researcher-agent memo was loaded and preserved under research_memo.researcher_agent_memo.'
         )

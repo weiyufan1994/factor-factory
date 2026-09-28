@@ -21,7 +21,15 @@ Current intended backend structure:
 - future custom evaluators without forcing a fixed metric schema
 
 Current practical backend maturity:
-- `self_quant_analyzer` quick mode is production-usable on the current EC2 resource envelope
+- `self_quant_analyzer` quick mode produces signal diagnostics: IC, group-mean
+  returns and turnover-based cost estimates. Its payload and Step5 archive mark
+  `evaluation_scope=signal_diagnostic`, `account_simulation=false` and
+  `tradable_net_alpha_evidence=false`. It does not simulate a cash/position ledger
+  or blocked fills, even when the labels use delayed entry. Claims about
+  executable net alpha require the research's explicitly selected account
+  backend (for example, the PF/VV evaluator), with its separately evidenced
+  valuation prices, calendar, costs and buy/sell constraints. A filtered clean
+  signal view alone cannot establish that execution evidence.
 - `qlib_backtest` now has both a sample-stub layer and a native minimal backtest path; native execution depends on qlib-friendly signal formatting, especially `instrument` / `datetime` semantics
 - Qlib native requires the Microsoft Qlib package and a provider/store. A Python package named `qlib` is not sufficient; preflight must verify `qlib.init` plus `qlib.data.D`, and must skip native execution if a non-Microsoft `qlib` package is imported.
 - Direct-code child revisions over derived intraday state may be outside qlib's

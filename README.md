@@ -4,6 +4,18 @@ A researcher-led Step1–6 workflow: understand the source, formalize economic a
 
 [中文使用说明](README.zh-CN.md) · [Ultimate Skill](skills/factor-forge-ultimate/SKILL.md) · [Validation scope](docs/publish-verification.zh-CN.md)
 
+## D0.4 initial preview — 2026-09-28
+
+This branch adds mechanism-constrained GP proposals, bounded MCTS scheduling,
+forward mathematical induction, an optional derivation tutor, and an opt-in
+Ultimate evidence/reflection bridge. These are experimental research tools,
+not an automatically self-improving production system. Search remains off by
+default; no installed Skills, live runtime, market data or private knowledge
+store are changed by cloning this branch.
+
+See [initial-version scope and quickstart](docs/releases/d04-initial.zh-CN.md)
+for implemented features, remaining work and the offline test command.
+
 ## Start here
 
 Use the Ultimate Skill and scripts from the same checkout. Preserve the author's baseline before proposing extensions. New local IS research uses `--local-is-only`; it does not require a Host deployment. Independent code review and real research records remain required.

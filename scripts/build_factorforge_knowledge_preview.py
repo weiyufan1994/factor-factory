@@ -20,6 +20,7 @@ PACKAGE_FILES = (
     "factor_factory/__init__.py",
     "factor_factory/knowledge_context.py",
     "factor_factory/knowledge_reference.py",
+    "factor_factory/advisory_runtime.py",
     "factor_factory/semantic_knowledge_retrieval.py",
     "factor_factory/research_workspace.py",
     "factor_factory/research_org/contracts.py",

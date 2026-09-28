@@ -643,7 +643,11 @@ def _build_quality_warnings(
         warnings.append(f'Absolute rank_ic_mean={rank_ic_mean:.3f} under a tiny universe is suspiciously high; check for synthetic structure or leakage before trusting the signal.')
         flags['suspiciously_high_ic'] = True
 
-    interpretation = 'diagnostic_only' if warnings else 'normal'
+    warnings.append(
+        'Quick signal diagnostics use group-mean returns and turnover-based cost estimates; '
+        'no cash/position execution ledger is simulated. These results do not establish tradable net alpha.'
+    )
+    interpretation = 'diagnostic_only'
     return warnings, interpretation, flags
 
 
@@ -787,6 +791,9 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
         'report_id': report_id,
         'signal_name': signal_col,
         'engine': 'self_quant_adapter_quick_mode',
+        'evaluation_scope': 'signal_diagnostic',
+        'account_simulation': False,
+        'tradable_net_alpha_evidence': False,
         'resource_profile': {
             'server_aware': True,
             'avoids_signal_analyzer_heavy_paths': True,

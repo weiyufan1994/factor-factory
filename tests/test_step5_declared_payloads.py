@@ -42,6 +42,21 @@ def test_undeclared_old_payload_is_never_consumed(evaluator, tmp_path):
     assert old.exists()
 
 
+def test_declared_diagnostic_scope_survives_both_archive_import_paths(evaluator, tmp_path):
+    root = _workspace(tmp_path)
+    path = root / 'diagnostic.json'
+    boundary = {'evaluation_scope': 'signal_diagnostic', 'account_simulation': False,
+                'tradable_net_alpha_evidence': False, 'result_interpretation': 'diagnostic_only'}
+    path.write_text(json.dumps({'status': 'success', 'ic_summary': {'rank_ic_mean': .03}, **boundary}))
+    selected = evaluator.read_backend_payloads(
+        [{'backend': 'self_quant_analyzer', 'status': 'success', 'payload_path': str(path)}],
+        report_id='CURRENT', workspace_root=root,
+    )
+    metrics = selected[0]['key_metrics']
+    assert metrics['rank_ic_mean'] == .03
+    assert {key: metrics[key] for key in boundary} == boundary
+
+
 @pytest.mark.parametrize("raw", ["{broken", "[]", "null", '"text"', "true"])
 def test_bad_declared_payload_becomes_quality_block(evaluator, tmp_path, raw):
     root = _workspace(tmp_path)

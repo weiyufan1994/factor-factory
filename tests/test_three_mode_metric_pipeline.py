@@ -99,6 +99,10 @@ def test_operator_direct_hybrid_compute_and_metric_consumers_agree(tmp_path, mon
         computed.to_parquet(formal_path, index=False)
         payload = adapter.run_self_quant_quick(report_id)
         assert payload["signal_timing_contract"]["same_day_return_used_as_label"] is False
+        assert payload['evaluation_scope'] == 'signal_diagnostic'
+        assert payload['account_simulation'] is False
+        assert payload['tradable_net_alpha_evidence'] is False
+        assert payload['result_interpretation'] == 'diagnostic_only'
         payload_path = ff / "evaluations" / report_id / "self_quant_analyzer/evaluation_payload.json"
         payload_path.write_text(json.dumps(payload, allow_nan=False))
         frame = {"report_id": report_id, "factor_id": report_id, "run_status": payload["status"],
@@ -109,6 +113,9 @@ def test_operator_direct_hybrid_compute_and_metric_consumers_agree(tmp_path, mon
         bundle = {"report_id": report_id, "workspace_root": str(ff),
                   "objects": {"factor_run_master": frame}, "paths": {}}
         evaluation = build_factor_evaluation(bundle)
+        archived = evaluation['backend_summary'][0]['key_metrics']
+        for key in ('evaluation_scope', 'account_simulation', 'tradable_net_alpha_evidence', 'result_interpretation'):
+            assert archived[key] == payload[key]
         results[mode] = {"ic": payload["ic_summary"], "long_side": payload["long_side_performance"],
                          "key_metrics": evaluation["backend_summary"][0]["key_metrics"],
                          "quality_verdict": evaluation["step4_quality_gate"]["verdict"],

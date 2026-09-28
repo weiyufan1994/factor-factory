@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from typing import Any
 
 from .registry import operator_meta
@@ -38,21 +39,43 @@ def operator_lookback(node: dict[str, Any]) -> int | None:
 
 
 def max_formula_ir_lookback(formula_ir: dict[str, Any] | None) -> int:
+    """Raw-input span in observed rows, including the current output row.
+
+    Pointwise/cross-sectional formulas without history return zero. A rolling
+    n-row window adds n-1 rows to its longest input dependency; delay/delta and
+    bounded forward fill add n. Branches share history, so use their maximum,
+    not their sum. ADV fields may be derived from volume and need their own
+    warmup even when no explicit rolling operator appears in the IR.
+
+    This is a history budget, not a guarantee of finite values on missing or
+    degenerate data. Individual operator_lookback values remain window args.
+    """
     if not isinstance(formula_ir, dict):
         return 0
-    lookbacks: list[int] = []
+    has_history = False
 
-    def visit(node: Any) -> None:
+    def visit(node: Any) -> int:
+        nonlocal has_history
         if not isinstance(node, dict):
-            return
-        lookback = operator_lookback(node)
-        if lookback is not None:
-            lookbacks.append(lookback)
-        for child in node.get("args") or []:
-            visit(child)
+            return 1
+        if node.get('type') == 'field':
+            spans = [1]
+            for field in (node.get('name'), node.get('resolved_field')):
+                match = re.fullmatch(r'adv([1-9][0-9]*)', str(field or '').strip().lower())
+                if match:
+                    has_history = True
+                    spans.append(int(match.group(1)))
+            return max(spans)
+        span = max((visit(child) for child in node.get('args') or []), default=1)
+        window = operator_lookback(node)
+        if window is None:
+            return span
+        has_history = True
+        name = operator_meta(str(node.get('operator')))['name']
+        return span + (window if name in {'delay', 'delta', 'ts_ffill'} else window - 1)
 
-    visit(formula_ir.get("root"))
-    return max(lookbacks) if lookbacks else 0
+    span = visit(formula_ir.get('root'))
+    return span if has_history else 0
 
 
 def requires_cross_sectional_sample(formula_ir: dict[str, Any] | None) -> bool:

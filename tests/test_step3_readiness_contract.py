@@ -201,12 +201,23 @@ def _bind_event_state(prep, qcfg):
         query["dataset"] = "daily_event_state_v1"
         contract[query_set]["daily_event_state_v1"] = query
     contract["catalog_bindings"] = {"daily_event_state_v1": {}}
+    observability_fields = [
+        "is_tradable_default",
+        "tradable_exclusion_reason",
+        "tradable_policy_version",
+    ]
+    for query_set in ("full_queries", "sample_queries"):
+        contract[query_set]["daily_event_state_v1"]["fields"].extend(
+            observability_fields
+        )
     resolution = prep["local_input_paths"]["data_api_resolution"].pop(
         "clean_daily_bar"
     )
     prep["local_input_paths"]["data_api_resolution"][
         "daily_event_state_v1"
     ] = resolution
+    resolution["schema"] = {"columns": ["ts_code", "trade_date", *observability_fields]}
+    resolution["freshness"] = {"event_markers_complete": True}
     qcfg["step4_data_contract"] = contract
 
 

@@ -740,9 +740,36 @@ def validate_step3_readiness_contract(
 
     policy = _daily_filter_policy(prep, qcfg)
     if snapshot_source != 'data_api_moneyflow' and not prepared_derived_state:
-        assert policy.get('drop_suspended') is True and policy.get('drop_limit_events') is True, (
-            'BLOCK_STEP3A_DAILY_FILTER_POLICY_MISSING: clean daily policy must explicitly drop suspended and limit-event days'
+        contract = _step4_data_contract(prep, qcfg, handoff)
+        primary_daily_dataset_id = str(
+            contract.get('primary_daily_dataset_id') or 'clean_daily_bar'
         )
+        if primary_daily_dataset_id == 'daily_event_state_v1':
+            event_resolution = data_api.get(primary_daily_dataset_id) or {}
+            required_observability_fields = {
+                'is_tradable_default',
+                'tradable_exclusion_reason',
+                'tradable_policy_version',
+            }
+            schema_columns = set(
+                ((event_resolution.get('schema') or {}).get('columns') or [])
+            )
+            full_query_fields = set(
+                ((contract.get('full_queries') or {}).get(primary_daily_dataset_id) or {}).get('fields') or []
+            )
+            assert required_observability_fields <= schema_columns, (
+                'BLOCK_STEP3A_EVENT_STATE_OBSERVABILITY_MISSING: schema'
+            )
+            assert required_observability_fields <= full_query_fields, (
+                'BLOCK_STEP3A_EVENT_STATE_OBSERVABILITY_MISSING: full_query'
+            )
+            assert (event_resolution.get('freshness') or {}).get('event_markers_complete') is True, (
+                'BLOCK_STEP3A_EVENT_STATE_OBSERVABILITY_MISSING: event_markers_complete'
+            )
+        else:
+            assert policy.get('drop_suspended') is True and policy.get('drop_limit_events') is True, (
+                'BLOCK_STEP3A_DAILY_FILTER_POLICY_MISSING: clean daily policy must explicitly drop suspended and limit-event days'
+            )
 
     daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
     if daily_rel:

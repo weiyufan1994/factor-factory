@@ -28,6 +28,7 @@
 ```bash
 export PYTHONPATH="$PWD"
 export PFVV_MONTHLY_EXECUTION_ENGINE_PATH="$PWD/examples/mszq_intraday_momentum_pulse/local_is_execution_engine"
+python3 scripts/build_factorforge_retrieval_index.py --runtime-root "$PWD"
 PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -c pytest-offline.ini -p no:cacheprovider
 python3 scripts/run_factorforge_ultimate.py --help
 python3 scripts/run_hybrid_response_gp.py

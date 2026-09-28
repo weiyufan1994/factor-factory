@@ -200,6 +200,19 @@ def evo_agent_execution_env(source: dict[str, str]) -> dict[str, str]:
     return isolated
 
 
+def stage_execution_environment(
+    source: dict[str, str],
+    *,
+    stage_name: str,
+    web_is_evo_child: bool,
+) -> dict[str, str]:
+    """Apply the credential-free Agent environment only to an actual EVO child."""
+
+    if web_is_evo_child and stage_name in EVO_CHILD_AGENT_STAGE_NAMES:
+        return evo_agent_execution_env(source)
+    return dict(source)
+
+
 def capture_host_control_environment(
     source: dict[str, str],
 ) -> tuple[dict[str, str], dict[str, str]]:
@@ -3575,7 +3588,11 @@ def _run_formal_ultimate(args: argparse.Namespace) -> int:
                 return finish_local_maintenance(1)
         termination_ref: dict[str, Any] | None = None
         if name in EVO_CHILD_AGENT_STAGE_NAMES:
-            command_env = evo_agent_execution_env(env)
+            command_env = stage_execution_environment(
+                command_env,
+                stage_name=name,
+                web_is_evo_child=web_is_evo_child,
+            )
             if web_is_evo_child and not args.dry_run:
                 try:
                     result, termination_ref = run_evo_child_container_command(

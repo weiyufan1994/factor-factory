@@ -364,6 +364,36 @@ def test_agent_env_strips_all_four_host_control_values_and_secrets() -> None:
     assert isolated["FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY"] == "DENY"
 
 
+def test_ordinary_local_step4_keeps_host_managed_data_api_environment() -> None:
+    source = {
+        "PATH": "/usr/bin",
+        "FACTORFORGE_DATA_CATALOG": "/approved/catalog.json",
+    }
+    observed = ultimate.stage_execution_environment(
+        source,
+        stage_name="run_step4",
+        web_is_evo_child=False,
+    )
+    assert observed == source
+    assert "FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY" not in observed
+
+
+def test_actual_evo_child_step4_remains_network_denied() -> None:
+    source = {
+        "PATH": "/usr/bin",
+        "FACTORFORGE_DATA_CATALOG": "/private/catalog.json",
+        "AWS_SECRET_ACCESS_KEY": "secret",
+    }
+    observed = ultimate.stage_execution_environment(
+        source,
+        stage_name="run_step4",
+        web_is_evo_child=True,
+    )
+    assert observed["FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY"] == "DENY"
+    assert "FACTORFORGE_DATA_CATALOG" not in observed
+    assert "AWS_SECRET_ACCESS_KEY" not in observed
+
+
 def test_host_control_capture_strips_exact_four_before_any_child_env() -> None:
     source = {
         ultimate.OOS_HOST_TRUST_ROOT_ENV: "/private/trust",

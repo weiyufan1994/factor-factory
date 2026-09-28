@@ -16,7 +16,9 @@ consistency score is not a chief decision or semantic proof.
 
 Missing local PDF specs must not invoke the old generic price-volume-correlation
 template. Local `direct_code` additionally requires the actual code contract
-and the Step1-authored measurement program on the alpha idea. No template may
+and the Step1-authored measurement program on the alpha idea; follow the
+[direct-code input sequence](implementation-contracts.md#direct-code-contract).
+No template may
 invent a formula, economic hypothesis, model, neutralization, or success claim
 to make the pipeline proceed. Existing explicit hosted adapters and non-PDF
 routes retain their own inputs. Continue only through the Ultimate wrapper.

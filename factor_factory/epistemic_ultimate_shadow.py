@@ -363,6 +363,7 @@ def validate_native_factor_workspace(
     *,
     workspace: Path,
     repo_root: Path,
+    expected_factorforge_root: Path | None = None,
     expected_factor_id: str | None = None,
     expected_research_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], bytes]:
@@ -420,11 +421,22 @@ def validate_native_factor_workspace(
         "workspace_manifest:factorforge_root_real_directory_required",
     )
     factorforge_root = factorforge_root.resolve(strict=True)
+    if expected_factorforge_root is not None:
+        _require(
+            expected_factorforge_root.is_absolute()
+            and expected_factorforge_root.is_dir()
+            and not expected_factorforge_root.is_symlink()
+            and expected_factorforge_root == expected_factorforge_root.resolve(strict=True)
+            and expected_factorforge_root == factorforge_root,
+            "workspace_manifest:expected_factorforge_root_mismatch",
+        )
+        # A launcher-bound container name (e.g. factorforge-local-runtime) is
+        # not a protected directory. Literal protected ancestors still block.
+        root_components = {part.casefold() for part in factorforge_root.parts}
+    else:
+        root_components = _path_component_tokens(factorforge_root)
     _require(
-        not (
-            _path_component_tokens(factorforge_root)
-            & PROTECTED_FACTORFORGE_ROOT_COMPONENTS
-        ),
+        not (root_components & PROTECTED_FACTORFORGE_ROOT_COMPONENTS),
         "workspace_manifest:protected_factorforge_root_forbidden",
     )
     expected_workspace = default_workspace_root(
@@ -470,6 +482,7 @@ def validate_native_factor_workspace(
             "oos",
             "runtime",
             "scripts",
+            "skills",
             "tests",
         )
     )
@@ -477,7 +490,8 @@ def validate_native_factor_workspace(
         if candidate.exists() or candidate.is_symlink():
             protected = candidate.resolve(strict=True)
             _require(
-                not _is_within(resolved_workspace, protected),
+                not _is_within(resolved_workspace, protected)
+                and not _is_within(protected, resolved_workspace),
                 f"workspace:protected_repo_root_overlap:{candidate.name}",
             )
     for relative in REQUIRED_WORKSPACE_DIRS:

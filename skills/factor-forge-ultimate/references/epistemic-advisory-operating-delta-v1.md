@@ -105,6 +105,14 @@ source from `alpha_idea_master`.
 
 Run this before using historical knowledge to author the formal conjecture:
 
+Use the selected runtime's interpreter and operating context. For ordinary local
+IS, the launcher supplies `FACTORFORGE_SHARED_FACTORFORGE_ROOT` for the workspace
+parent; the code checkout may be elsewhere. `FACTORFORGE_ROOT` in a stage child
+names one study and is not that shared root. Run bridge and validator in the same
+context; never infer a replacement root from an unvalidated workspace manifest.
+An older pinned launcher lacking this connection needs the framework hotfix, not
+an invented lesson, manual knowledge-file read, or a renamed research directory.
+
 ```bash
 python3 scripts/run_factorforge_epistemic_source_first_advisory.py \
   --factor-workspace <factor-workspace> \

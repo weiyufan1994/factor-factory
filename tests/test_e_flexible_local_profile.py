@@ -592,7 +592,8 @@ def test_iteration_producer_preserves_current_author_and_never_loads_local_oos(m
     assert memo['next_research_tests'] == ['authored next test']
 
 
-def test_bounded_local_step1_to_consumer_chain_uses_real_producers_and_validators(tmp_path, monkeypatch):
+@pytest.mark.parametrize('empty_learning', [False, True], ids=['populated', 'reasoned-empty'])
+def test_bounded_local_step1_to_consumer_chain_uses_real_producers_and_validators(tmp_path, monkeypatch, empty_learning):
     import scripts.build_factorforge_retrieval_index as indexer
     from tests.test_run_factorforge_local_step1 import (
         REPORT_ID, inputs, invoke, make_workspace,
@@ -670,6 +671,14 @@ def test_bounded_local_step1_to_consumer_chain_uses_real_producers_and_validator
         'mathematical_object': 'conditional occupation state',
         'mechanism_equation_or_functional': 'E[r|state]-E[r]',
     }]
+    absence_reasons = {
+        'similar_case_lessons_absence_reason': 'No applicable advisory was consumed.',
+        'innovative_idea_seeds_absence_reason': 'This run reproduces only the original baseline.',
+    }
+    if empty_learning:
+        discipline['similar_case_lessons_imported'] = []
+        discipline['innovative_idea_seeds'] = []
+        discipline.update(absence_reasons)
     discipline['knowledge_reference_contract'] = build_legacy_knowledge_reference_contract(
         similar_case_lessons=discipline['similar_case_lessons_imported'],
         producer='bounded_chain_step1',
@@ -703,6 +712,44 @@ def test_bounded_local_step1_to_consumer_chain_uses_real_producers_and_validator
     handoff = json.loads((
         workspace / 'objects/handoff' / f'handoff_to_step3__{REPORT_ID}.json'
     ).read_text())
+    for payload in (spec, handoff):
+        learning = payload['learning_and_innovation']
+        assert learning['research_compatibility_profile'] == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        if empty_learning:
+            assert learning['similar_case_lessons_imported'] == []
+            assert learning['innovative_idea_seeds'] == []
+            for key, reason in absence_reasons.items():
+                assert learning[key] == reason
+    if empty_learning:
+        spec_path = workspace / 'objects/factor_spec_master' / f'factor_spec_master__{REPORT_ID}.json'
+        original_spec = spec_path.read_bytes()
+
+        def validate_mutated_spec(payload, *, local=True):
+            spec_path.write_text(json.dumps(payload))
+            validation_env = dict(env, FACTORFORGE_LOCAL_IS_ONLY='1' if local else '0')
+            completed = subprocess.run(
+                [sys.executable, str(ROOT / 'skills/factor-forge-step2/scripts/validate_step2.py'),
+                 '--report-id', REPORT_ID], cwd=ROOT, env=validation_env,
+                text=True, capture_output=True,
+            )
+            assert completed.returncode != 0, completed.stdout + completed.stderr
+            return {check['name']: check['ok'] for check in json.loads(completed.stdout)['checks']}
+
+        for field, reason_field in (
+            ('similar_case_lessons_imported', 'similar_case_lessons_absence_reason'),
+            ('innovative_idea_seeds', 'innovative_idea_seeds_absence_reason'),
+        ):
+            for invalid_reason in (None, '', [], False):
+                invalid = deepcopy(spec)
+                invalid['learning_and_innovation'][reason_field] = invalid_reason
+                assert not validate_mutated_spec(invalid)[field + '_present']
+            invalid = deepcopy(spec)
+            del invalid['learning_and_innovation'][reason_field]
+            assert not validate_mutated_spec(invalid)[field + '_present']
+        hosted_checks = validate_mutated_spec(spec, local=False)
+        assert not hosted_checks['innovative_idea_seeds_present']
+        assert not hosted_checks['similar_case_lessons_imported_present']
+        spec_path.write_bytes(original_spec)
     step3_actual = _load('skills/factor-forge-step3/scripts/run_step3.py', 'bounded_chain_step3_actual_e')
     validated_program = step3_actual.validated_measurement_program_for_step3(
         spec,

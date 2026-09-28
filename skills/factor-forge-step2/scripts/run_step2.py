@@ -3353,6 +3353,15 @@ def build_factor_spec_master(
             'expected_failure_modes': research_contract['expected_failure_modes'],
         },
         'learning_and_innovation': {
+            **{
+                key: research_contract[key]
+                for key in (
+                    'research_compatibility_profile',
+                    'similar_case_lessons_absence_reason',
+                    'innovative_idea_seeds_absence_reason',
+                )
+                if key in research_contract
+            },
             'similar_case_lessons_imported': research_contract['similar_case_lessons_imported'],
             'knowledge_reference_contract': research_contract.get('knowledge_reference_contract') or {},
             'factor_knowledge_context': research_contract.get('factor_knowledge_context') or {},

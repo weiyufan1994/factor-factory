@@ -71,7 +71,7 @@ when already present upstream, never generated for a new study.
 | New/finalized mathematical specification | [Measurement program](../../docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md) |
 | Write Step2 objects | [Schema and current fields](references/schema.md); [source/producer contract](../../docs/contracts/step2-contract.md) |
 | Local PDF input landing | [Local PDF inputs](references/local-pdf-inputs.md) |
-| Bind operator or hybrid implementation | Selected section of [implementation contracts](references/implementation-contracts.md) |
+| Bind operator, direct-code or hybrid implementation | Selected section of [implementation contracts](references/implementation-contracts.md) |
 | Author state/conjecture/approaches | [Ultimate research protocol](../factor-forge-ultimate/references/research-protocol.md) |
 | Interpret fixed fields/counts or a validator conflict | [Compatibility constraints](../factor-forge-ultimate/references/compatibility-constraints.md) |
 | Review code before local Step4 | [Local code review](../factor-forge-ultimate/references/local-code-review.md) |

@@ -887,7 +887,8 @@ def _run_source_first_advisory_bridge_with_context(
     workspace = workspace.resolve(strict=True)
     workspace_manifest, workspace_binding, workspace_manifest_raw = (
         validate_native_factor_workspace(
-            workspace=workspace, repo_root=repo
+            workspace=workspace, repo_root=repo,
+            expected_factorforge_root=expected_factorforge_root,
         )
     )
     root_binding = _external_factorforge_root_binding(
@@ -1133,7 +1134,10 @@ def _validate_source_first_advisory_package_with_context(
     )
     repo = repo_root.resolve(strict=True)
     workspace_manifest, workspace_binding, workspace_manifest_raw = (
-        validate_native_factor_workspace(workspace=workspace, repo_root=repo)
+        validate_native_factor_workspace(
+            workspace=workspace, repo_root=repo,
+            expected_factorforge_root=expected_factorforge_root,
+        )
     )
     root_binding = _external_factorforge_root_binding(
         expected_factorforge_root=expected_factorforge_root,
@@ -1497,6 +1501,24 @@ def _validate_source_first_advisory_package_with_context(
     )
 
 
+def _operating_factorforge_root() -> Path:
+    """Use the local launcher's shared root, never infer it from the manifest.
+
+    FACTORFORGE_ROOT is the *individual workspace* inside Ultimate children,
+    so it cannot serve as the shared root. Hosted callers retain the repo root.
+    """
+    selected = os.environ.get("FACTORFORGE_SHARED_FACTORFORGE_ROOT")
+    if selected is None:
+        return CANONICAL_REPO_ROOT
+    root = Path(selected)
+    _require(
+        root == CANONICAL_REPO_ROOT
+        or os.environ.get("FACTORFORGE_LOCAL_IS_ONLY") == "1",
+        "operating_context:external_factorforge_root_requires_local_is",
+    )
+    return root
+
+
 def run_source_first_advisory_bridge(
     *,
     workspace: Path,
@@ -1510,7 +1532,7 @@ def run_source_first_advisory_bridge(
         overlay_path=overlay_path,
         report_id=report_id,
         repo_root=CANONICAL_REPO_ROOT,
-        expected_factorforge_root=CANONICAL_REPO_ROOT,
+        expected_factorforge_root=_operating_factorforge_root(),
         secret_factory=secrets.token_hex,
     )
 
@@ -1523,7 +1545,7 @@ def validate_source_first_advisory_package(
     return _validate_source_first_advisory_package_with_context(
         receipt_path=receipt_path,
         repo_root=CANONICAL_REPO_ROOT,
-        expected_factorforge_root=CANONICAL_REPO_ROOT,
+        expected_factorforge_root=_operating_factorforge_root(),
     )
 
 

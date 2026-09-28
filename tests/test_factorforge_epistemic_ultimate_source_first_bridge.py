@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 import factor_factory.epistemic_ultimate_source_first_bridge as bridge
+from factor_factory.epistemic_ultimate_shadow import EpistemicUltimateShadowError
 from factor_factory.epistemic_ultimate_source_first_bridge import (
     EXPECTED_ATTESTATION,
     OVERLAY_SCHEMA_ID,
@@ -59,9 +60,11 @@ def _overlay(report_id: str = REPORT_ID) -> dict:
     }
 
 
-def _workspace(tmp_path: Path, report_id: str = REPORT_ID) -> Path:
-    factorforge_root = tmp_path / "factorforge-root"
-    factorforge_root.mkdir()
+def _workspace(
+    tmp_path: Path, report_id: str = REPORT_ID, *, factorforge_root: Path | None = None
+) -> Path:
+    factorforge_root = factorforge_root or tmp_path / "factorforge-root"
+    factorforge_root.mkdir(parents=True)
     workspace = default_workspace_root(
         factorforge_root=factorforge_root,
         factor_id="source-first-bridge-factor",
@@ -317,6 +320,82 @@ def test_public_operating_api_has_no_root_or_secret_injection_seam() -> None:
     assert "_validate_source_first_advisory_package_with_context" not in bridge.__all__
 
 
+def test_public_cli_roundtrip_uses_launcher_bound_external_workspaces(tmp_path: Path) -> None:
+    root = tmp_path / "factorforge-local-runtime" / "workspaces"
+    workspace = _workspace(tmp_path, factorforge_root=root)
+    overlay = _write_overlay(workspace, _overlay())
+    env = dict(os.environ, FACTORFORGE_LOCAL_IS_ONLY="1",
+               FACTORFORGE_SHARED_FACTORFORGE_ROOT=str(root),
+               FACTORFORGE_ROOT=str(workspace))
+    run = subprocess.run(
+        [sys.executable, str(CLI), "--factor-workspace", str(workspace),
+         "--report-id", REPORT_ID, "--source-first-overlay", str(overlay)],
+        env=env, cwd=REPO_ROOT, text=True, capture_output=True,
+    )
+    assert run.returncode == 0, run.stdout + run.stderr
+    receipt_path = Path(run.stdout.strip())
+    replay = subprocess.run(
+        [sys.executable, str(VALIDATOR_CLI), "--receipt", str(receipt_path)],
+        env=env, cwd=REPO_ROOT, text=True, capture_output=True,
+    )
+    assert replay.returncode == 0, replay.stdout + replay.stderr
+    assert isinstance(json.loads(replay.stdout), dict)
+    wrong_root = tmp_path / "another-root"
+    wrong_root.mkdir()
+    env["FACTORFORGE_SHARED_FACTORFORGE_ROOT"] = str(wrong_root)
+    rejected = subprocess.run(
+        [sys.executable, str(VALIDATOR_CLI), "--receipt", str(receipt_path)],
+        env=env, cwd=REPO_ROOT, text=True, capture_output=True,
+    )
+    assert rejected.returncode != 0
+    assert "expected_factorforge_root_mismatch" in rejected.stderr
+
+
+@pytest.mark.parametrize("invalid_binding", ["missing", "mismatch", "alias", "hosted"])
+def test_public_bridge_rejects_unbound_external_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, invalid_binding: str
+) -> None:
+    root = tmp_path / "factorforge-local-runtime" / "workspaces"
+    workspace = _workspace(tmp_path, factorforge_root=root)
+    overlay = _write_overlay(workspace, _overlay())
+    monkeypatch.setenv("FACTORFORGE_LOCAL_IS_ONLY", "1")
+    monkeypatch.setenv("FACTORFORGE_ROOT", str(workspace))
+    monkeypatch.setenv("FACTORFORGE_SHARED_FACTORFORGE_ROOT", str(root))
+    if invalid_binding == "missing":
+        monkeypatch.delenv("FACTORFORGE_SHARED_FACTORFORGE_ROOT")
+    elif invalid_binding == "mismatch":
+        other = tmp_path / "other"
+        other.mkdir()
+        monkeypatch.setenv("FACTORFORGE_SHARED_FACTORFORGE_ROOT", str(other))
+    elif invalid_binding == "alias":
+        alias = tmp_path / "root-alias"
+        alias.symlink_to(root, target_is_directory=True)
+        monkeypatch.setenv("FACTORFORGE_SHARED_FACTORFORGE_ROOT", str(alias))
+    else:
+        monkeypatch.delenv("FACTORFORGE_LOCAL_IS_ONLY")
+    with pytest.raises((EpistemicUltimateShadowError, SourceFirstAdvisoryBridgeError), match="expected_factorforge_root_mismatch|external_factorforge_root_requires_local_is"):
+        bridge.run_source_first_advisory_bridge(
+            workspace=workspace, overlay_path=overlay, report_id=REPORT_ID
+        )
+    assert not (workspace / bridge.OUTPUT_PARENT_NAME).exists()
+
+
+@pytest.mark.parametrize("protected", ["oos", "runtime", "skills", "canonical", "host", "deployment"])
+def test_local_root_binding_does_not_allow_literal_protected_ancestors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, protected: str
+) -> None:
+    root = tmp_path / protected / "workspaces"
+    workspace = _workspace(tmp_path, factorforge_root=root)
+    overlay = _write_overlay(workspace, _overlay())
+    monkeypatch.setenv("FACTORFORGE_LOCAL_IS_ONLY", "1")
+    monkeypatch.setenv("FACTORFORGE_SHARED_FACTORFORGE_ROOT", str(root))
+    with pytest.raises(EpistemicUltimateShadowError, match="protected_factorforge_root_forbidden"):
+        bridge.run_source_first_advisory_bridge(
+            workspace=workspace, overlay_path=overlay, report_id=REPORT_ID
+        )
+    assert not (workspace / bridge.OUTPUT_PARENT_NAME).exists()
+
+
 def test_validator_cli_emits_exact_validated_bytes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -384,8 +463,8 @@ def test_external_factorforge_root_binding_cannot_be_self_declared(
     alternate.mkdir()
 
     with pytest.raises(
-        SourceFirstAdvisoryBridgeError,
-        match="manifest_external_equality",
+        EpistemicUltimateShadowError,
+        match="expected_factorforge_root_mismatch",
     ):
         run_source_first_advisory_bridge(
             workspace=workspace,

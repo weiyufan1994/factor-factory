@@ -10,6 +10,15 @@ The pandas reference evaluator is the correctness oracle for operator mode. Qlib
 
 Field alias resolution must prefer actual Step3A Data API schema columns, then legacy local snapshot header columns, and use the default schema only for plan-only/no-sample mode. If sample queries are absent, pending sample outputs must record the reason explicitly.
 
+## Direct Code
+
+Consume the source-bound algorithm already supplied through Step2's
+[direct-code contract](../../factor-forge-step2/references/implementation-contracts.md#direct-code-contract),
+then bind the real inputs and runnable helpers here. A missing contract returns
+to Step2's authored inputs, not a factor-specific patch to a shared runner.
+The early source contract does not replace independent Step2 review of the
+actual Step3B implementation before acceptance tests and Step4.
+
 ## Hybrid Execution Engine
 
 Hybrid mode must execute as `operator_subgraph + custom_block`, not as unbounded Python. Step3B validates the operator subgraph through Formula IR/pandas parity, scans the custom block with the direct-code leakage rules, checks `formula_hash`, `custom_block_hash`, and `hybrid_hash`, and validates the boundary schema before writing ready artifacts.

@@ -408,18 +408,32 @@ def main() -> None:
                                 issues.append({'severity': 'error', 'code': 'SELF_QUANT_ARTIFACT_MISSING', 'message': f'missing self_quant standard artifact: {key}', 'evidence': artifacts})
                                 proposed_status = 'failed'
                         long_side = payload.get('long_side_performance') or {}
-                        required_long_side_fields = [
-                            'long_side_annual_return',
-                            'long_side_annual_volatility',
-                            'long_side_sharpe',
-                            'long_side_max_drawdown',
-                            'long_side_recovery_days',
-                            'long_side_turnover_mean_daily',
-                            'turnover',
-                            'trading_cogs_daily',
-                            'trading_cogs',
-                            'cost_adjusted_long_side_sharpe',
-                        ]
+                        event_study = long_side.get('metric_period') == 'signal_event_t_plus_1'
+                        required_long_side_fields = (
+                            [
+                                'long_side_mean_return_per_signal_event',
+                                'long_side_signal_event_ir',
+                                'long_side_max_drawdown',
+                                'long_side_recovery_days',
+                                'long_side_turnover_mean_per_rebalance',
+                                'turnover',
+                                'trading_cogs_per_rebalance',
+                                'cost_adjusted_return_per_signal_event',
+                                'cost_adjusted_long_side_signal_event_ir',
+                            ]
+                            if event_study else [
+                                'long_side_annual_return',
+                                'long_side_annual_volatility',
+                                'long_side_sharpe',
+                                'long_side_max_drawdown',
+                                'long_side_recovery_days',
+                                'long_side_turnover_mean_daily',
+                                'turnover',
+                                'trading_cogs_daily',
+                                'trading_cogs',
+                                'cost_adjusted_long_side_sharpe',
+                            ]
+                        )
                         aliases = {
                             'long_side_turnover_mean_daily': ['long_side_turnover_mean_daily', 'turnover'],
                             'turnover': ['turnover', 'long_side_turnover_mean_daily'],
@@ -433,8 +447,23 @@ def main() -> None:
                         if missing_long_side:
                             issues.append({'severity': 'error', 'code': 'SELF_QUANT_LONG_SIDE_EVIDENCE_MISSING', 'message': 'self_quant_analyzer must emit complete long-side risk-adjusted evidence', 'evidence': {'missing': missing_long_side}})
                             proposed_status = 'failed'
-                        if long_side.get('metric_period') != 'daily' or long_side.get('annualization_factor') is None:
-                            issues.append({'severity': 'error', 'code': 'SELF_QUANT_LONG_SIDE_UNITS_MISSING', 'message': 'self_quant_analyzer long-side evidence must declare metric_period and annualization_factor', 'evidence': long_side})
+                        if event_study:
+                            forbidden_annualized = [
+                                key for key in (
+                                    'long_side_annual_return',
+                                    'long_side_annual_volatility',
+                                    'long_side_sharpe',
+                                    'trading_cogs_annual',
+                                    'cost_adjusted_annual_return',
+                                    'cost_adjusted_annual_volatility',
+                                    'cost_adjusted_long_side_sharpe',
+                                ) if long_side.get(key) is not None
+                            ]
+                            if long_side.get('annualization_factor') is not None or forbidden_annualized:
+                                issues.append({'severity': 'error', 'code': 'SELF_QUANT_EVENT_STUDY_FALSE_ANNUALIZATION', 'message': 'sparse signal-event diagnostics must not be annualized as daily returns', 'evidence': {'annualization_factor': long_side.get('annualization_factor'), 'forbidden_fields': forbidden_annualized}})
+                                proposed_status = 'failed'
+                        elif long_side.get('metric_period') != 'daily' or long_side.get('annualization_factor') is None:
+                            issues.append({'severity': 'error', 'code': 'SELF_QUANT_LONG_SIDE_UNITS_MISSING', 'message': 'daily self_quant evidence must declare metric_period=daily and annualization_factor', 'evidence': long_side})
                             proposed_status = 'failed'
                     if primary_plan is not None and item.get('backend') == primary_plan['backend']:
                         for issue in validate_primary_evaluator_payload(payload, eval_plan):

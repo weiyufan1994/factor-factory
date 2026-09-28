@@ -12,6 +12,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from factor_factory.formula.pandas_codegen import generate_pandas_formula_code
 from factor_factory.formula.parser import parse_formula
@@ -27,6 +28,27 @@ def _load(path: Path):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+def test_sparse_monthly_signal_is_event_study_not_daily_annualized(tmp_path, monkeypatch):
+    monkeypatch.setenv("MPLCONFIGDIR", str(tmp_path / "matplotlib"))
+    adapter = _load(ROOT / "skills/factor-forge-step4/scripts/self_quant_adapter.py")
+    rows = []
+    for index, dt in enumerate(pd.to_datetime(["2024-01-31", "2024-02-29", "2024-03-29"])):
+        for group_id, code, ret in ((1, "000001.SZ", 0.01), (10, "000002.SZ", 0.01 + index * 0.01)):
+            rows.append({"datetime": dt, "code": code, "group_id": group_id, "future_return_1d": ret})
+    metrics, _artifacts, checks = adapter._build_long_side_evidence_from_assigned(
+        pd.DataFrame(rows), tmp_path / "eval", "MONTHLY_TEST"
+    )
+
+    assert metrics["metric_period"] == "signal_event_t_plus_1"
+    assert metrics["annualization_factor"] is None
+    assert metrics["annualized_metrics_admissible"] is False
+    assert metrics["long_side_annual_return"] is None
+    assert metrics["cost_adjusted_annual_return"] is None
+    assert metrics["long_side_mean_return_per_signal_event"] == pytest.approx(0.02)
+    assert metrics["trading_cogs_per_rebalance"] is not None
+    assert all(check["status"] == "PASS" for check in checks)
 
 
 def test_operator_direct_hybrid_compute_and_metric_consumers_agree(tmp_path, monkeypatch):

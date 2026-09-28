@@ -628,6 +628,29 @@ def test_receipt_backed_local_is_profile_is_full_contract_input_without_refetch(
     ) is False
 
 
+def test_existing_local_is_profile_survives_no_fetch_materialization(tmp_path):
+    run_step4 = _load_run_step4()
+    daily = tmp_path / 'daily.parquet'
+    daily.write_bytes(b'already-materialized')
+    profile = {'source': 'ordinary_local_is_content_addressed_delivery'}
+
+    local_inputs, observed = run_step4.materialize_step4_contract_inputs_if_required(
+        report_id='R',
+        contract={},
+        run_dir=tmp_path,
+        local_inputs={'daily_df_parquet': str(daily), 'input_mode': 'daily_only'},
+        force_contract_inputs=False,
+        evo_pre_release=False,
+        existing_profile=profile,
+        materializer=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError('must not fetch')
+        ),
+    )
+
+    assert local_inputs['daily_df_parquet'] == str(daily)
+    assert observed == profile
+
+
 def test_step4_validator_blocks_noncanonical_factor_key_order():
     validator = _load_validate_step4()
     issues = []

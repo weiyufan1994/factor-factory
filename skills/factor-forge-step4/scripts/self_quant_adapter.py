@@ -444,15 +444,32 @@ def _build_long_side_evidence_from_assigned(
     net_daily_mean = _safe_float(cost_adjusted_returns.mean()) if not cost_adjusted_returns.empty else None
     net_daily_std = _safe_float(cost_adjusted_returns.std()) if not cost_adjusted_returns.empty else None
     turnover_mean = _safe_float(turnover_series.iloc[1:].mean()) if len(turnover_series) > 1 else _safe_float(turnover_series.mean())
+    observation_dates = pd.Series(pd.to_datetime(long_returns.index).unique()).sort_values()
+    median_spacing_days = (
+        _safe_float(observation_dates.diff().dropna().dt.days.median())
+        if len(observation_dates) > 1 else None
+    )
+    event_study = bool(median_spacing_days is not None and median_spacing_days > 7)
+    annualization_factor = None if event_study else ANNUALIZATION_DAYS
+    metric_period = 'signal_event_t_plus_1' if event_study else 'daily'
     metrics = {
-        'metric_period': 'daily',
-        'annualization_factor': ANNUALIZATION_DAYS,
+        'metric_period': metric_period,
+        'annualization_factor': annualization_factor,
+        'observation_spacing_days_median': median_spacing_days,
+        'annualized_metrics_admissible': not event_study,
+        'holding_period_interpretation': (
+            'one-day event return observed after each sparse signal; not a monthly holding-period portfolio'
+            if event_study else 'daily one-period return'
+        ),
         'long_side_label': f'G{top_group_id:02d}',
-        'long_side_mean_return_daily': daily_mean,
-        'long_side_annual_return': _safe_float(daily_mean * ANNUALIZATION_DAYS) if daily_mean is not None else None,
-        'long_side_return_std_daily': daily_std,
-        'long_side_annual_volatility': _safe_float(daily_std * np.sqrt(ANNUALIZATION_DAYS)) if daily_std is not None else None,
-        'long_side_sharpe': _safe_float(daily_mean / daily_std * np.sqrt(ANNUALIZATION_DAYS)) if daily_mean is not None and daily_std not in {None, 0} else None,
+        'long_side_mean_return_daily': None if event_study else daily_mean,
+        'long_side_mean_return_per_signal_event': daily_mean if event_study else None,
+        'long_side_annual_return': _safe_float(daily_mean * ANNUALIZATION_DAYS) if daily_mean is not None and not event_study else None,
+        'long_side_return_std_daily': None if event_study else daily_std,
+        'long_side_return_std_per_signal_event': daily_std if event_study else None,
+        'long_side_annual_volatility': _safe_float(daily_std * np.sqrt(ANNUALIZATION_DAYS)) if daily_std is not None and not event_study else None,
+        'long_side_sharpe': _safe_float(daily_mean / daily_std * np.sqrt(ANNUALIZATION_DAYS)) if daily_mean is not None and daily_std not in {None, 0} and not event_study else None,
+        'long_side_signal_event_ir': _safe_float(daily_mean / daily_std) if daily_mean is not None and daily_std not in {None, 0} and event_study else None,
         'long_side_final_nav': _safe_float(gross_nav.iloc[-1]) if not gross_nav.empty else None,
         'long_side_max_drawdown': _max_drawdown(gross_nav),
         'long_side_recovery_days': _max_recovery_days(gross_nav),
@@ -460,17 +477,22 @@ def _build_long_side_evidence_from_assigned(
         'long_side_normalized_drawdown_area': gross_drawdown_geometry['normalized_drawdown_area'],
         'long_side_max_drawdown_episode_area': gross_drawdown_geometry['max_drawdown_episode_area'],
         'long_side_recovery_pain_area': gross_drawdown_geometry['recovery_pain_area'],
-        'long_side_turnover_mean_daily': turnover_mean,
+        'long_side_turnover_mean_daily': None if event_study else turnover_mean,
+        'long_side_turnover_mean_per_rebalance': turnover_mean if event_study else None,
         'turnover_mean': turnover_mean,
         'trading_cogs_model': 'turnover * 0.003',
         'trading_cogs_rate': TRADING_COST_RATE,
-        'trading_cogs_daily': _safe_float(turnover_mean * TRADING_COST_RATE) if turnover_mean is not None else None,
-        'trading_cogs_annual': _safe_float(turnover_mean * TRADING_COST_RATE * ANNUALIZATION_DAYS) if turnover_mean is not None else None,
-        'cost_adjusted_return_daily': net_daily_mean,
-        'cost_adjusted_annual_return': _safe_float(net_daily_mean * ANNUALIZATION_DAYS) if net_daily_mean is not None else None,
-        'cost_adjusted_return_std_daily': net_daily_std,
-        'cost_adjusted_annual_volatility': _safe_float(net_daily_std * np.sqrt(ANNUALIZATION_DAYS)) if net_daily_std is not None else None,
-        'cost_adjusted_long_side_sharpe': _safe_float(net_daily_mean / net_daily_std * np.sqrt(ANNUALIZATION_DAYS)) if net_daily_mean is not None and net_daily_std not in {None, 0} else None,
+        'trading_cogs_daily': _safe_float(turnover_mean * TRADING_COST_RATE) if turnover_mean is not None and not event_study else None,
+        'trading_cogs_per_rebalance': _safe_float(turnover_mean * TRADING_COST_RATE) if turnover_mean is not None and event_study else None,
+        'trading_cogs_annual': _safe_float(turnover_mean * TRADING_COST_RATE * ANNUALIZATION_DAYS) if turnover_mean is not None and not event_study else None,
+        'cost_adjusted_return_daily': None if event_study else net_daily_mean,
+        'cost_adjusted_return_per_signal_event': net_daily_mean if event_study else None,
+        'cost_adjusted_annual_return': _safe_float(net_daily_mean * ANNUALIZATION_DAYS) if net_daily_mean is not None and not event_study else None,
+        'cost_adjusted_return_std_daily': None if event_study else net_daily_std,
+        'cost_adjusted_return_std_per_signal_event': net_daily_std if event_study else None,
+        'cost_adjusted_annual_volatility': _safe_float(net_daily_std * np.sqrt(ANNUALIZATION_DAYS)) if net_daily_std is not None and not event_study else None,
+        'cost_adjusted_long_side_sharpe': _safe_float(net_daily_mean / net_daily_std * np.sqrt(ANNUALIZATION_DAYS)) if net_daily_mean is not None and net_daily_std not in {None, 0} and not event_study else None,
+        'cost_adjusted_long_side_signal_event_ir': _safe_float(net_daily_mean / net_daily_std) if net_daily_mean is not None and net_daily_std not in {None, 0} and event_study else None,
         'cost_adjusted_long_side_final_nav': _safe_float(net_nav.iloc[-1]) if not net_nav.empty else None,
         'cost_adjusted_long_side_max_drawdown': _max_drawdown(net_nav),
         'cost_adjusted_long_side_recovery_days': _max_recovery_days(net_nav),
@@ -487,13 +509,13 @@ def _build_long_side_evidence_from_assigned(
         'cost_adjusted_long_side_nav_png': str(cost_adjusted_nav_plot),
     }
     checks = [
-        _check(metrics['long_side_mean_return_daily'] is not None, 'LONG_SIDE_RETURN_PRESENT', 'long-side daily return is missing'),
-        _check(metrics['long_side_sharpe'] is not None, 'LONG_SIDE_SHARPE_PRESENT', 'long-side Sharpe is missing'),
+        _check((metrics['long_side_mean_return_per_signal_event'] if event_study else metrics['long_side_mean_return_daily']) is not None, 'LONG_SIDE_RETURN_PRESENT', 'long-side return is missing'),
+        _check((metrics['long_side_signal_event_ir'] if event_study else metrics['long_side_sharpe']) is not None, 'LONG_SIDE_SHARPE_PRESENT', 'long-side risk-adjusted statistic is missing'),
         _check(metrics['long_side_max_drawdown'] is not None, 'LONG_SIDE_DRAWDOWN_PRESENT', 'long-side max drawdown is missing'),
         _check(metrics['long_side_recovery_days'] is not None, 'LONG_SIDE_RECOVERY_PRESENT', 'long-side recovery days are missing'),
-        _check(metrics['long_side_turnover_mean_daily'] is not None, 'LONG_SIDE_TURNOVER_PRESENT', 'long-side turnover is missing'),
-        _check(metrics['trading_cogs_daily'] is not None, 'LONG_SIDE_TRADING_COGS_PRESENT', 'long-side trading COGS is missing'),
-        _check(metrics['cost_adjusted_long_side_sharpe'] is not None, 'COST_ADJUSTED_LONG_SIDE_SHARPE_PRESENT', 'cost-adjusted long-side Sharpe is missing'),
+        _check((metrics['long_side_turnover_mean_per_rebalance'] if event_study else metrics['long_side_turnover_mean_daily']) is not None, 'LONG_SIDE_TURNOVER_PRESENT', 'long-side turnover is missing'),
+        _check((metrics['trading_cogs_per_rebalance'] if event_study else metrics['trading_cogs_daily']) is not None, 'LONG_SIDE_TRADING_COGS_PRESENT', 'long-side trading COGS is missing'),
+        _check((metrics['cost_adjusted_long_side_signal_event_ir'] if event_study else metrics['cost_adjusted_long_side_sharpe']) is not None, 'COST_ADJUSTED_LONG_SIDE_SHARPE_PRESENT', 'cost-adjusted long-side risk-adjusted statistic is missing'),
     ]
     for key, path_text in artifacts.items():
         p = Path(path_text)
@@ -899,7 +921,24 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
         'standard_metric_contract': {
             'version': 'step4-standard-metrics-v2-long-side',
             'required_outputs': sorted(artifacts),
-            'required_long_side_fields': [
+            'required_long_side_fields': ([
+                'long_side_mean_return_per_signal_event',
+                'long_side_signal_event_ir',
+                'long_side_max_drawdown',
+                'long_side_recovery_days',
+                'long_side_drawdown_area',
+                'long_side_normalized_drawdown_area',
+                'long_side_max_drawdown_episode_area',
+                'long_side_recovery_pain_area',
+                'long_side_turnover_mean_per_rebalance',
+                'trading_cogs_per_rebalance',
+                'cost_adjusted_return_per_signal_event',
+                'cost_adjusted_long_side_signal_event_ir',
+                'cost_adjusted_long_side_drawdown_area',
+                'cost_adjusted_long_side_normalized_drawdown_area',
+                'cost_adjusted_long_side_max_drawdown_episode_area',
+                'cost_adjusted_long_side_recovery_pain_area',
+            ] if long_side_metrics.get('metric_period') == 'signal_event_t_plus_1' else [
                 'long_side_annual_return',
                 'long_side_sharpe',
                 'long_side_max_drawdown',
@@ -915,7 +954,7 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
                 'cost_adjusted_long_side_normalized_drawdown_area',
                 'cost_adjusted_long_side_max_drawdown_episode_area',
                 'cost_adjusted_long_side_recovery_pain_area',
-            ],
+            ]),
             'checks': standard_checks,
             'blocking_issue_count': len(blocking_checks),
             'warning_issue_count': len(warning_checks),

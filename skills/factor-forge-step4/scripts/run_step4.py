@@ -438,6 +438,7 @@ def build_step4_reuse_identity(
     return {
         'producer': 'step4_formal_compute',
         'is_formal_factor_values': True,
+        'artifact_semantics_version': 'factorforge_step4_formal_artifact_v2_canonical_order',
         'report_id': report_id,
         'factor_id': factor_id,
         'implementation_mode': base_identity.get('implementation_mode'),
@@ -524,6 +525,7 @@ def evaluate_reuse_gate(source_identity: dict[str, Any], expected_identity: dict
         'factor_id',
         'implementation_mode',
         'spec_hash',
+        'artifact_semantics_version',
         'data_catalog_hash',
         'data_api_contract_version',
         'universe_hash',
@@ -4207,7 +4209,7 @@ def materialize_step4_contract_inputs_if_required(
             )
         return dict(local_inputs), existing_profile
     if not required:
-        return dict(local_inputs), None
+        return dict(local_inputs), existing_profile
     fetch = materializer or materialize_step4_data_inputs_from_contract
     fetched_inputs, profile = fetch(report_id, contract, run_dir)
     return {**local_inputs, **fetched_inputs}, profile

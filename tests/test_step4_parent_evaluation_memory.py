@@ -209,6 +209,7 @@ def _formal_step4_identity() -> dict[str, object]:
     return {
         "producer": "step4_formal_compute",
         "is_formal_factor_values": True,
+        "artifact_semantics_version": "factorforge_step4_formal_artifact_v2_canonical_order",
         "report_id": "RPT_PFVV",
         "factor_id": "PFVV_SOURCE_BASELINE",
         "implementation_mode": "direct_code",
@@ -220,6 +221,22 @@ def _formal_step4_identity() -> dict[str, object]:
         "frequency": "daily",
         "window": {"start": "20160104", "end": "20250711"},
     }
+
+
+def test_prior_formal_artifact_semantics_version_forces_recompute() -> None:
+    run_step4 = _load_run_step4()
+    expected = _formal_step4_identity()
+    prior = dict(expected)
+    prior.pop("artifact_semantics_version")
+
+    gate = run_step4.evaluate_reuse_gate(
+        prior,
+        expected,
+        source_artifact="/tmp/prior-factor.parquet",
+    )
+
+    assert gate["decision"] == "recompute_required"
+    assert gate["reason"] == "artifact_semantics_version"
 
 
 def _prior_step4_metadata(identity: dict[str, object]) -> dict[str, object]:

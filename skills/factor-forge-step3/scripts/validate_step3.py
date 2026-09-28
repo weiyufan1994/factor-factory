@@ -26,6 +26,7 @@ from factor_factory.formula.field_aliases import validate_standard_formula_field
 from factor_factory.formula.extension_registry import EXTENSION_OPERATORS, extension_output_unit
 from factor_factory.formula.semantics import operator_lookback as shared_operator_lookback
 from factor_factory.data_api import default_catalog_path
+from factor_factory.step3_execution_readiness import require_execution_readiness
 from factor_factory.evo_data_boundary import (
     BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID,
     BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING,
@@ -723,6 +724,7 @@ if __name__ == '__main__':
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
+    ap.add_argument('--require-ready', action='store_true', help='Require native readiness, not only a structurally valid blocked record.')
     args = ap.parse_args()
     _manifest, manifest_rid = apply_runtime_manifest(args.manifest)
     report_id = args.report_id or manifest_rid
@@ -741,6 +743,11 @@ if __name__ == '__main__':
     qcfg = load(qlib_path)
     impl = load(impl_path)
     handoff = load(handoff_path)
+    if args.require_ready:
+        feasibility_path = OBJ / 'validation' / f'data_feasibility_report__{report_id}.json'
+        require_execution_readiness(
+            prep, handoff, load(feasibility_path) if feasibility_path.is_file() else None,
+        )
     expected_step3a_ready = prep['feasibility'] in {'ready', 'proxy_ready'}
 
     assert prep.get('report_id') == report_id, f'data_prep_master.report_id mismatch: expected {report_id}, got {prep.get("report_id")}'
@@ -873,4 +880,5 @@ if __name__ == '__main__':
         for bad in ['TODO', 'TO_BE_FILLED', 'placeholder', 'PLACEHOLDER', '待补']:
             assert bad not in text
 
+    print(f'NATIVE_STEP3A_FEASIBILITY: {prep["feasibility"]}')
     print('RESULT: PASS')

@@ -2999,11 +2999,11 @@ def _run_formal_ultimate(args: argparse.Namespace) -> int:
                 return 1
             step3_command.extend(['--prepared-local-inputs', args.prepared_local_inputs])
         commands.append(('run_step3', step3_command))
-        commands.append(('validate_step3', [py, 'skills/factor-forge-step3/scripts/validate_step3.py', '--manifest', str(manifest_path)]))
+        commands.append(('validate_step3', [py, 'skills/factor-forge-step3/scripts/validate_step3.py', '--manifest', str(manifest_path), '--require-ready']))
 
     if '3b' in steps or ('3' in steps):
         commands.append(('run_step3b', [py, 'skills/factor-forge-step3/scripts/run_step3b.py', '--manifest', str(manifest_path)]))
-        commands.append(('validate_step3b', [py, 'skills/factor-forge-step3/scripts/validate_step3b.py', '--manifest', str(manifest_path)]))
+        commands.append(('validate_step3b', [py, 'skills/factor-forge-step3/scripts/validate_step3b.py', '--manifest', str(manifest_path), '--require-ready']))
 
     if '4' in steps:
         if local_is_only and not legacy_protocol_smoke:

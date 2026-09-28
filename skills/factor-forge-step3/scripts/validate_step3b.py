@@ -1634,9 +1634,12 @@ def assert_step3b_sample_signal_non_null(
         )
 
 if __name__ == '__main__':
+    from factor_factory.step3_execution_readiness import require_execution_readiness
+
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
+    ap.add_argument('--require-ready', action='store_true', help='Require native readiness before releasing Step3B.')
     a = ap.parse_args()
     _manifest, manifest_rid = apply_runtime_manifest(a.manifest)
     rid = a.report_id or manifest_rid
@@ -1674,6 +1677,12 @@ if __name__ == '__main__':
     data = load(impl)
     h = load(handoff)
     prep = load(prep_path)
+    if a.require_ready:
+        feasibility_path = OBJ / 'validation' / f'data_feasibility_report__{rid}.json'
+        require_execution_readiness(
+            prep, h, load(feasibility_path) if feasibility_path.is_file() else None,
+            step3b=True,
+        )
     if prep.get('feasibility') == 'blocked' and h.get('step3a_ready') is False and h.get('step3b_ready') is False:
         first_run = h.get('first_run_outputs') or data.get('first_run_outputs') or {}
         assert first_run.get('status') == 'blocked', 'blocked Step3A must carry blocked first_run_outputs'
@@ -1682,6 +1691,7 @@ if __name__ == '__main__':
         assert not real_impl.exists(), 'blocked Step3A must not allow Step3B implementation generation'
         assert not qlib.exists(), 'blocked Step3A must not allow Step3B qlib draft generation'
         assert not hybrid.exists(), 'blocked Step3A must not allow Step3B hybrid scaffold generation'
+        print('NATIVE_STEP3B_READINESS: blocked (blocked-record structure valid)')
         print('RESULT: PASS')
         raise SystemExit(0)
     qlib_data = load(qlib)

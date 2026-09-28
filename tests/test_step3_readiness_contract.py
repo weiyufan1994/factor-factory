@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import importlib.util
 from pathlib import Path
+import pytest
+
+from factor_factory.step3_execution_readiness import require_execution_readiness
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +101,47 @@ def test_blocked_step3a_cannot_claim_step3b_ready(tmp_path):
         assert "BLOCK_STEP3A_HANDOFF_CONTRADICTION" in str(exc)
     else:
         raise AssertionError("expected blocked Step3A + step3b_ready=true to fail")
+
+
+def test_blocked_record_can_be_structurally_valid_but_not_execution_ready(tmp_path):
+    validate_step3 = _load_validate_step3()
+    prep, qcfg, impl, handoff = _base_artifacts(tmp_path)
+    prep["feasibility"] = "blocked"
+    prep["blocked_items"] = [{"code": "CLEAN_DAILY_BAR_MISSING"}]
+    handoff["step3a_ready"] = False
+    handoff["step3b_ready"] = False
+
+    validate_step3.validate_step3_readiness_contract(
+        prep, qcfg, impl, handoff, workspace=tmp_path
+    )
+    with pytest.raises(ValueError, match="BLOCK_STEP3A_NOT_READY"):
+        require_execution_readiness(
+            prep,
+            handoff,
+            {"report_id": "R", "final_result": "blocked"},
+        )
+
+
+def test_execution_readiness_requires_matching_native_report(tmp_path):
+    prep, _qcfg, _impl, handoff = _base_artifacts(tmp_path)
+    with pytest.raises(ValueError, match="FEASIBILITY_REPORT_MISMATCH"):
+        require_execution_readiness(
+            prep,
+            handoff,
+            {"report_id": "OTHER", "final_result": "ready"},
+        )
+    require_execution_readiness(
+        prep,
+        handoff,
+        {"report_id": "R", "final_result": "ready"},
+    )
+    with pytest.raises(ValueError, match="BLOCK_STEP3B_NOT_READY"):
+        require_execution_readiness(
+            prep,
+            handoff,
+            {"report_id": "R", "final_result": "ready"},
+            step3b=True,
+        )
 
 
 def test_ready_daily_step3a_requires_data_api_resolution(tmp_path):

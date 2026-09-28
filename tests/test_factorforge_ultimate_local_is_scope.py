@@ -434,6 +434,8 @@ def test_local_is_only_executes_step3_to_6_without_host_or_oos_access(
         assert "finalize_factorforge_web_factor_proof.py" not in command
         assert all(key not in env for key in HOST_ENV_KEYS)
         assert env["FACTORFORGE_LOCAL_IS_ONLY"] == "1"
+        if name in {"validate_step3", "validate_step3b"}:
+            assert "--require-ready" in command
     proof = _proof(workspace)
     assert proof["status"] == "PASS"
     assert proof["proof_semantics"] == "local_is_research_execution"

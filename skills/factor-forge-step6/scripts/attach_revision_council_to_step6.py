@@ -411,6 +411,24 @@ def build_council_revision_strategy(iteration: dict[str, Any], council_summary: 
     selected_proposals = [proposals[item] for item in selected_ids if item in proposals]
     first_signature = next((item.get("target_failure_signature") for item in selected_proposals if item.get("target_failure_signature")), None)
     hypotheses = [hypothesis_from_proposal(item) for item in selected_proposals]
+    if not selected_proposals:
+        return {
+            "revision_needed": deterministic.get("revision_needed") is True,
+            "primary_failure_signature": deterministic.get("primary_failure_signature") or "none",
+            "revision_hypotheses": [],
+            "revision_quality": "blocked",
+            "loop_authorization": "advisory_only",
+            "requires_human_approval_before_code_change": True,
+            "source": "none",
+            "selected_council_proposal_ids": [],
+            "derivation_records": [],
+            "approval_required_before_step3b": True,
+            "fallback_used": False,
+            "no_valid_council_proposal": True,
+            "council_disposition": "blocked_proposals_retained_as_negative_evidence",
+            "why_selected": "No Council strategy was selected because no valid derivation-backed proposal exists.",
+            "why_deterministic_fallback_not_used": "A blocked Council scaffold cannot authorize or replace the existing researcher-authored advisory strategy.",
+        }
     return {
         "revision_needed": bool(hypotheses) or deterministic.get("revision_needed") is True,
         "primary_failure_signature": first_signature or deterministic.get("primary_failure_signature") or "none",
@@ -544,15 +562,16 @@ def main() -> None:
     deterministic_revision = copy.deepcopy(research_memo.get("revision_strategy") or {})
     council_revision = build_council_revision_strategy(updated, summary, proposals)
     final_revision = copy.deepcopy(council_revision)
-    final_revision.update(
-        {
-            "source": "revision_council",
-            "fallback_used": False,
-            "approval_required_before_step3b": True,
-            "why_selected": council_revision.get("why_selected"),
-            "why_deterministic_fallback_not_used": "Council produced valid derivation-backed proposals.",
-        }
-    )
+    if council_revision.get("selected_council_proposal_ids"):
+        final_revision.update(
+            {
+                "source": "revision_council",
+                "fallback_used": False,
+                "approval_required_before_step3b": True,
+                "why_selected": council_revision.get("why_selected"),
+                "why_deterministic_fallback_not_used": "Council produced valid derivation-backed proposals.",
+            }
+        )
     updated["revision_council_ref"] = build_revision_council_ref(report_id, summary, proposals)
     research_memo["deterministic_revision_strategy"] = deterministic_revision
     research_memo["council_revision_strategy"] = council_revision

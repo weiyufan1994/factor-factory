@@ -1251,6 +1251,17 @@ def revision_council_attachment_checks(iteration: dict, research_memo: dict, ste
                 not forbidden,
                 FORBIDDEN_TEXT_TOKEN + ':' + ','.join(f"{item['path']}={item['pattern']}" for item in forbidden[:5]),
             ))
+    elif source == 'none':
+        checks.append(check(
+            'final_revision_strategy_none_has_no_selected_proposals',
+            not (final_strategy.get('selected_council_proposal_ids') or []),
+            'source=none cannot carry selected Council proposal ids',
+        ))
+        checks.append(check(
+            'final_revision_strategy_none_is_advisory_only',
+            final_strategy.get('loop_authorization') == 'advisory_only',
+            'source=none must remain advisory_only',
+        ))
 
     checks.append(check(
         'handoff_absent_without_approved_final_revision_strategy',

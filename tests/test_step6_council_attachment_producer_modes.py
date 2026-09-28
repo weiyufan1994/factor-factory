@@ -47,3 +47,30 @@ def test_all_three_attachment_outputs_use_the_same_mode():
     assert brief["mode"] == "agentic_dispatch_manifest"
     assert "- Council mode: agentic_dispatch_manifest" in markdown
 
+
+def test_zero_valid_proposals_do_not_take_over_final_revision_strategy():
+    iteration = {
+        "research_judgment": {
+            "research_memo": {
+                "revision_strategy": {
+                    "revision_needed": True,
+                    "primary_failure_signature": "mechanism_unclear",
+                    "revision_hypotheses": [{"hypothesis_id": "researcher-authored"}],
+                    "loop_authorization": "advisory_only",
+                }
+            }
+        }
+    }
+    summary = {
+        **_summary(None),
+        "blocked_proposals": [
+            {"proposal_id": "blocked-scaffold", "producer": "deterministic_scaffold"}
+        ],
+    }
+    strategy = MODULE.build_council_revision_strategy(iteration, summary, {})
+    assert strategy["source"] == "none"
+    assert strategy["selected_council_proposal_ids"] == []
+    assert strategy["revision_hypotheses"] == []
+    assert strategy["loop_authorization"] == "advisory_only"
+    assert strategy["no_valid_council_proposal"] is True
+    assert strategy["council_disposition"] == "blocked_proposals_retained_as_negative_evidence"

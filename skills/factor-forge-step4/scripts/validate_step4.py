@@ -416,7 +416,6 @@ def main() -> None:
                                 'long_side_max_drawdown',
                                 'long_side_recovery_days',
                                 'long_side_turnover_mean_per_rebalance',
-                                'turnover',
                                 'trading_cogs_per_rebalance',
                                 'cost_adjusted_return_per_signal_event',
                                 'cost_adjusted_long_side_signal_event_ir',

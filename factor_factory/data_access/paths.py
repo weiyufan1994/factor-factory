@@ -32,6 +32,10 @@ class LocalTusharePaths:
     stock_st_csv: Path
     stock_st_daily_csv: Path
     source_label: str = 'unknown'
+    # Some Tushare exports omit the constant exchange column because the
+    # request itself is pinned to SSE.  This field is the explicit source
+    # binding; absence means a column-less file must not be guessed.
+    trade_calendar_exchange: str | None = None
 
 
 def default_local_data_root() -> Path:
@@ -113,6 +117,7 @@ def _paths_for_root(root: Path, source_label: str) -> LocalTusharePaths:
         stock_st_csv=root / '基础数据' / 'stock_st.csv',
         stock_st_daily_csv=root / '基础数据' / 'stock_st_daily_20160101_current.csv',
         source_label=source_label,
+        trade_calendar_exchange='SSE',
     )
 
 

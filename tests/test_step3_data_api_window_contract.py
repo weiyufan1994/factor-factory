@@ -4,6 +4,10 @@ import importlib.util
 from pathlib import Path
 
 import pandas as pd
+import pytest
+
+from factor_factory.data_access.calendar import list_open_trade_dates
+from factor_factory.data_access.paths import LocalTusharePaths
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -69,6 +73,68 @@ def test_declared_sample_window_honors_source_window_start_only():
         "end": "current",
         "calendar": "A-share trading days",
     }
+
+
+def test_declared_sample_window_prefers_step2_requested_research_window():
+    run_step3 = _load_run_step3()
+
+    result = run_step3.declared_sample_window(
+        {
+            "canonical_spec": {},
+        },
+        {},
+        {"start": "20100104", "end": "current", "calendar": "A-share trading days"},
+        alpha_idea={
+            "research_window_contract": {
+                "scope": "local_IS_only",
+                "requested_start": "2016-01-04",
+                "requested_end": "2025-07-11",
+            },
+        },
+    )
+
+    assert result == {
+        "start": "20160104",
+        "end": "20250711",
+        "calendar": "A-share trading days",
+    }
+
+
+def _calendar_paths(tmp_path: Path, *, bound_exchange: str | None) -> LocalTusharePaths:
+    root = tmp_path / 'raw_tushare'
+    calendar = root / '基础数据' / 'trade_cal.csv'
+    calendar.parent.mkdir(parents=True)
+    calendar.write_text(
+        'cal_date,is_open\n20260105,1\n20260106,0\n',
+        encoding='utf-8',
+    )
+    return LocalTusharePaths(
+        root=root,
+        daily_csv=root / '行情数据/daily.csv',
+        adj_factor_csv=root / '行情数据/adj_factor.csv',
+        daily_basic_dir=root / '行情数据/daily_basic_incremental',
+        trade_cal_csv=calendar,
+        stock_basic_csv=root / '基础数据/stock_basic.csv',
+        stock_st_csv=root / '基础数据/stock_st.csv',
+        stock_st_daily_csv=root / '基础数据/stock_st_daily.csv',
+        source_label='test',
+        trade_calendar_exchange=bound_exchange,
+    )
+
+
+def test_exchange_less_trade_calendar_requires_and_uses_explicit_sse_binding(tmp_path):
+    paths = _calendar_paths(tmp_path, bound_exchange='SSE')
+    assert list_open_trade_dates(
+        start='20260105', end='20260106', exchange='SSE', paths=paths
+    ) == ['20260105']
+
+
+def test_exchange_less_trade_calendar_does_not_guess_exchange(tmp_path):
+    paths = _calendar_paths(tmp_path, bound_exchange=None)
+    with pytest.raises(ValueError, match='no matching explicit exchange binding'):
+        list_open_trade_dates(
+            start='20260105', end='20260106', exchange='SSE', paths=paths
+        )
 
 
 def test_enrich_report_local_daily_fields_emits_versioned_contract():

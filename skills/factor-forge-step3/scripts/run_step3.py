@@ -673,10 +673,21 @@ def step3a_executability_window(sample_window: dict, *, max_calendar_days: int |
     }
 
 
-def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
+def declared_sample_window(
+    fsm: dict,
+    handoff: dict,
+    fallback: dict,
+    *,
+    alpha_idea: dict | None = None,
+) -> dict:
     canonical = fsm.get('canonical_spec') or {}
     source_metadata = fsm.get('source_metadata') or {}
+    idea = alpha_idea if isinstance(alpha_idea, dict) else {}
     candidates = [
+        idea.get('research_window_contract'),
+        fsm.get('research_window_contract'),
+        canonical.get('research_window_contract'),
+        handoff.get('research_window_contract'),
         canonical.get('sample_window'),
         canonical.get('backtest_window'),
         fsm.get('sample_window'),
@@ -695,8 +706,12 @@ def declared_sample_window(fsm: dict, handoff: dict, fallback: dict) -> dict:
     for candidate in candidates:
         if not isinstance(candidate, dict):
             continue
-        start = _normalize_window_date(candidate.get('start'))
-        end = _normalize_window_date(candidate.get('end'))
+        start = _normalize_window_date(
+            candidate.get('requested_start') or candidate.get('start')
+        )
+        end = _normalize_window_date(
+            candidate.get('requested_end') or candidate.get('end')
+        )
         if start and end:
             return {
                 'start': start,
@@ -2606,7 +2621,12 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
         need_moneyflow = False
         need_daily_basic = False
 
-    sample_window = declared_sample_window(fsm, handoff_to_step3, infer_sample_window(factor_id, required_text))
+    sample_window = declared_sample_window(
+        fsm,
+        handoff_to_step3,
+        infer_sample_window(factor_id, required_text),
+        alpha_idea=_aim,
+    )
     if prepared_local_inputs is not None:
         prepared_local_inputs = validate_prepared_local_inputs(prepared_local_inputs)
         sample_window = dict(prepared_local_inputs['sample_window_actual'])

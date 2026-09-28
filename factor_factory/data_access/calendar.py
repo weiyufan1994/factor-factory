@@ -29,13 +29,29 @@ def get_trade_calendar(
     if not csv_path.exists():
         raise FileNotFoundError(f'trade_cal.csv not found: {csv_path}')
 
+    header = set(pd.read_csv(csv_path, nrows=0).columns)
+    if not {'cal_date', 'is_open'}.issubset(header):
+        raise ValueError(
+            f'trade_cal.csv missing cal_date/is_open columns: {csv_path}'
+        )
+    bound_exchange = resolved_paths.trade_calendar_exchange
+    if exchange is not None and 'exchange' not in header:
+        if not bound_exchange or str(bound_exchange).upper() != str(exchange).upper():
+            raise ValueError(
+                'trade_cal.csv omits exchange and has no matching explicit '
+                f'exchange binding: requested={exchange!r}, bound={bound_exchange!r}'
+            )
+
     requested_columns = list(columns) if columns else list(DEFAULT_CALENDAR_COLUMNS)
     required_columns = ['cal_date']
-    if exchange is not None:
+    if exchange is not None and 'exchange' in header:
         required_columns.append('exchange')
     if open_only:
         required_columns.append('is_open')
-    usecols = list(dict.fromkeys(required_columns + requested_columns))
+    usecols = [
+        column for column in dict.fromkeys(required_columns + requested_columns)
+        if column in header
+    ]
 
     frame = pd.read_csv(
         csv_path,
@@ -50,11 +66,13 @@ def get_trade_calendar(
         frame = frame[frame['cal_date'] >= start_date]
     if end_date:
         frame = frame[frame['cal_date'] <= end_date]
-    if exchange:
+    if exchange and 'exchange' in frame.columns:
         frame = frame[frame['exchange'] == exchange]
     if open_only:
         frame = frame[frame['is_open'].astype(str) == '1']
 
+    if 'exchange' in requested_columns and 'exchange' not in frame.columns:
+        frame['exchange'] = bound_exchange
     return frame[requested_columns].reset_index(drop=True)
 
 

@@ -2717,9 +2717,23 @@ def build_research_memo(bundle: dict[str, Any], payloads: dict[str, dict[str, An
     contract, profile, flexible_local = _research_contract_and_profile(bundle)
     authored_memo = authored_memo if isinstance(authored_memo, dict) else {}
     authored_memo_body = authored_memo.get('research_memo') if isinstance(authored_memo.get('research_memo'), dict) else authored_memo
+    authored_revision_brief = (
+        authored_memo_body.get('revision_brief_to_step3b')
+        if isinstance(authored_memo_body.get('revision_brief_to_step3b'), dict)
+        else {}
+    )
+    revision_brief_tests: list[str] = []
+    for key in ('specific_changes', 'expected_metric_movement'):
+        value = authored_revision_brief.get(key)
+        if isinstance(value, str) and value.strip():
+            revision_brief_tests.append(value.strip())
+        elif isinstance(value, list) and all(isinstance(item, str) and item.strip() for item in value):
+            revision_brief_tests.extend(item.strip() for item in value)
     authored_next_tests = (
         authored_memo_body['next_research_tests']
         if 'next_research_tests' in authored_memo_body
+        else revision_brief_tests
+        if revision_brief_tests
         else contract.get('next_research_tests')
     )
     authored_next_tests_reason = (
@@ -3650,7 +3664,40 @@ def build_program_search_policy(
             return {}
         authored_policy = retrieval_context['authored_program_search_policy']
         if isinstance(authored_policy, dict):
-            return deepcopy(authored_policy)
+            result = deepcopy(authored_policy)
+            recommended_methods = result.get('recommended_methods')
+            if (
+                'method_library' not in result
+                and isinstance(recommended_methods, list)
+                and recommended_methods
+                and all(isinstance(item, str) and item.strip() for item in recommended_methods)
+            ):
+                result['method_library'] = {
+                    item.strip(): {
+                        'source_field': 'recommended_methods',
+                        'researcher_selected': True,
+                    }
+                    for item in recommended_methods
+                }
+            recommended_next = result.get('recommended_next_search')
+            if not isinstance(recommended_next, dict):
+                recommended_next = {}
+            if 'branches' not in recommended_next:
+                branches: list[Any] = []
+                for key in ('exploit_branches', 'explore_branches'):
+                    value = result.get(key)
+                    if isinstance(value, list):
+                        branches.extend(deepcopy(value))
+                if branches:
+                    recommended_next['branches'] = branches
+            if (
+                'requires_human_approval_before_code_change' not in recommended_next
+                and isinstance(result.get('human_approval_required'), bool)
+            ):
+                recommended_next['requires_human_approval_before_code_change'] = result['human_approval_required']
+            if recommended_next:
+                result['recommended_next_search'] = recommended_next
+            return result
         return {'authored_program_search_policy_invalid': deepcopy(authored_policy)}
     verdict = str(metric_interpretation.get('verdict') or '')
     budget = 3 if decision == 'iterate' else 1 if decision == 'needs_human_review' else 0

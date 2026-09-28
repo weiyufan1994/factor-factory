@@ -443,6 +443,30 @@ def test_step6_search_policy_four_states_and_author_text_are_preserved():
     }) == []
 
 
+def test_step6_documented_researcher_search_policy_is_normalized_without_rewriting_source():
+    module = _load('skills/factor-forge-step6/scripts/run_step6.py', 'step6_documented_policy_e')
+    authored = {
+        'recommended_methods': [
+            'bayesian_search',
+            'genetic_algorithm',
+            'multi_agent_parallel_exploration',
+            'reinforcement_learning',
+        ],
+        'exploit_branches': ['unchanged baseline estimand'],
+        'explore_branches': ['separate future identity'],
+        'human_approval_required': True,
+    }
+    result = module.build_program_search_policy(
+        {}, {}, {}, 'iterate', [], {'authored_program_search_policy': authored}, flexible_local=True
+    )
+    assert result['recommended_methods'] == authored['recommended_methods']
+    assert set(result['method_library']) == set(authored['recommended_methods'])
+    assert result['recommended_next_search']['branches'] == [
+        'unchanged baseline estimand', 'separate future identity'
+    ]
+    assert result['recommended_next_search']['requires_human_approval_before_code_change'] is True
+
+
 def test_step6_state_gates_reject_non_string_items_and_non_object_methods():
     validator = _load('skills/factor-forge-step6/scripts/validate_step6.py', 'step6_typed_state_validator_e')
     assert not validator.learning_list_state_valid(
@@ -472,6 +496,11 @@ def test_step6_state_gates_reject_non_string_items_and_non_object_methods():
         ({'next_research_tests': 'wrong', 'next_research_tests_absence_reason': 'Reason.'}, [], None),
         ({'next_research_tests': [], 'next_research_tests_absence_reason': 'No next test after stop.'}, [], 'No next test after stop.'),
         ({'next_research_tests': ['authored next test']}, ['authored next test'], None),
+        ({'revision_brief_to_step3b': {
+            'specific_changes': ['implement the frozen estimand'],
+            'expected_metric_movement': ['rank IC remains positive'],
+            'kill_criteria': ['stop on non-positive payoff'],
+        }}, ['implement the frozen estimand', 'rank IC remains positive'], None),
     ],
 )
 def test_build_research_memo_preserves_next_test_four_states(monkeypatch, authored_body, expected_tests, expected_reason):

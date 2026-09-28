@@ -119,6 +119,14 @@ def test_primary_daily_dataset_defaults_without_declaration():
     assert run_step3.declared_primary_daily_dataset_id({"canonical_spec": {}}) == "clean_daily_bar"
 
 
+def test_primary_daily_dataset_rejects_unknown_explicit_declaration():
+    run_step3 = _load_run_step3()
+    with pytest.raises(ValueError, match="PRIMARY_DAILY_DATASET_UNSUPPORTED"):
+        run_step3.declared_primary_daily_dataset_id({
+            "canonical_spec": {"primary_daily_dataset_id": "unknown_daily"}
+        })
+
+
 def test_step4_contract_binds_declared_event_state_dataset():
     run_step3 = _load_run_step3()
     contract = run_step3.build_step4_data_contract(
@@ -132,6 +140,44 @@ def test_step4_contract_binds_declared_event_state_dataset():
     assert set(contract["full_queries"]) == {"daily_event_state_v1"}
     assert contract["full_queries"]["daily_event_state_v1"]["dataset"] == "daily_event_state_v1"
     assert set(contract["catalog_bindings"]) == {"daily_event_state_v1"}
+
+
+def test_event_state_resolution_keeps_observability_fields_and_blocks_when_unavailable(
+    monkeypatch, tmp_path
+):
+    run_step3 = _load_run_step3()
+    monkeypatch.setattr(run_step3, "RUNS", tmp_path / "runs")
+    observed = {}
+
+    def unavailable(dataset, **kwargs):
+        observed["dataset"] = dataset
+        observed["fields"] = kwargs["fields"]
+        return {
+            "dataset_id": dataset,
+            "status": "missing",
+            "schema": {"columns": []},
+            "request": kwargs,
+        }
+
+    monkeypatch.setattr(run_step3, "resolve_data_api_dataset", unavailable)
+    result = run_step3.materialize_shared_daily_slice(
+        "EVENT_STATE_UNAVAILABLE",
+        {"start": "20160104", "end": "20250711"},
+        required_fields=["ts_code", "trade_date", "amount", "pct_chg"],
+        formula_ir={"root": {}},
+        primary_daily_dataset_id="daily_event_state_v1",
+    )
+
+    assert observed["dataset"] == "daily_event_state_v1"
+    assert {
+        "is_tradable_default",
+        "tradable_exclusion_reason",
+        "tradable_policy_version",
+    } <= set(observed["fields"])
+    assert result["snapshot_source"] == "missing_data_api_daily_event_state_v1"
+    assert set(result["step4_data_contract"]["full_queries"]) == {
+        "daily_event_state_v1"
+    }
 
 
 def _calendar_paths(tmp_path: Path, *, bound_exchange: str | None) -> LocalTusharePaths:

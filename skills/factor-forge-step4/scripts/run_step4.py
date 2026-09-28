@@ -3198,7 +3198,7 @@ def validate_pre_release_step4_data_access(
             'BLOCK_FACTORFORGE_EVO_CHILD_PRE_RELEASE_DATA_ACCESS_INVALID: research_windows'
         )
     contract = _step4_data_contract(dpm, handoff)
-    allowed_datasets = {'clean_daily_bar', 'daily_basic', 'moneyflow'}
+    allowed_datasets = {'clean_daily_bar', 'daily_event_state_v1', 'daily_basic', 'moneyflow'}
     for query_set in ('full_queries', 'sample_queries'):
         raw_queries = contract.get(query_set) if isinstance(contract, dict) else None
         if raw_queries is None:
@@ -3640,9 +3640,12 @@ def _backtest_base_cache_root() -> Path:
 
 def _backtest_base_identity(contract: dict[str, Any]) -> dict[str, Any]:
     full_queries = contract.get('full_queries') if isinstance(contract.get('full_queries'), dict) else {}
+    primary_daily_dataset_id = str(
+        contract.get('primary_daily_dataset_id') or 'clean_daily_bar'
+    )
     relevant_queries = {
         key: full_queries.get(key)
-        for key in ['clean_daily_bar', 'daily_basic']
+        for key in [primary_daily_dataset_id, 'daily_basic']
         if full_queries.get(key)
     }
     return {
@@ -3819,7 +3822,12 @@ def _load_backtest_base_cache(contract: dict[str, Any]) -> tuple[Path | None, di
         or metadata.get('columns') != observed_columns
     ):
         return None, None
-    daily_query = _contract_query(contract, 'full_queries', 'clean_daily_bar')
+    primary_daily_dataset_id = str(
+        contract.get('primary_daily_dataset_id') or 'clean_daily_bar'
+    )
+    daily_query = _contract_query(
+        contract, 'full_queries', primary_daily_dataset_id
+    )
     if not daily_query or not _frame_within_query_window(cached_frame, daily_query):
         return None, None
     control_violation = _backtest_base_cache_control_violation(data_path, contract, metadata)
@@ -3912,9 +3920,20 @@ def materialize_step4_data_inputs_from_contract(
         raise SystemExit('BLOCK_STEP4_DATA_CONTRACT_MISSING: Step4 requires factorforge_step4_data_contract_v1 when local inputs are absent')
     if contract.get('formal_factor_values_owner') != 'Step4':
         raise SystemExit('BLOCK_STEP4_DATA_CONTRACT_OWNER_INVALID: formal factor_values owner must be Step4')
-    daily_query = _contract_query(contract, 'full_queries', 'clean_daily_bar')
+    primary_daily_dataset_id = str(
+        contract.get('primary_daily_dataset_id') or 'clean_daily_bar'
+    )
+    if primary_daily_dataset_id not in {'clean_daily_bar', 'daily_event_state_v1'}:
+        raise SystemExit(
+            'BLOCK_STEP4_DATA_CONTRACT_PRIMARY_DAILY_DATASET_INVALID: '
+            f'{primary_daily_dataset_id}'
+        )
+    daily_query = _contract_query(contract, 'full_queries', primary_daily_dataset_id)
     if not daily_query:
-        raise SystemExit('BLOCK_STEP4_DATA_CONTRACT_MISSING: clean_daily_bar full query is required')
+        raise SystemExit(
+            'BLOCK_STEP4_DATA_CONTRACT_MISSING: '
+            f'{primary_daily_dataset_id} full query is required'
+        )
 
     data_dir = run_dir / 'step4_data_inputs'
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -3965,7 +3984,7 @@ def materialize_step4_data_inputs_from_contract(
     if cached_base_path is not None and cached_base_profile is not None:
         cached_frame = pd.read_parquet(cached_base_path)
         _require_frame_within_query_window(
-            cached_frame, daily_query, dataset='clean_daily_bar_cache'
+            cached_frame, daily_query, dataset=f'{primary_daily_dataset_id}_cache'
         )
         report_daily_path = (
             data_dir / f'step4_daily_input__{report_id}__bounded.parquet'
@@ -3975,6 +3994,7 @@ def materialize_step4_data_inputs_from_contract(
             'input_mode': 'daily_only',
             'daily_df_parquet': str(report_daily_path),
             'data_source': 'factorforge_data_api_backtest_base_cache',
+            'formula_input_dataset': primary_daily_dataset_id,
         }
         meta = {
             'backtest_base_daily_controls_v1': cached_base_profile,
@@ -4039,9 +4059,9 @@ def materialize_step4_data_inputs_from_contract(
         # daily_basic product. The original clean query is still authoritative.
         daily_df, daily_meta = _fetch_contract_frame(daily_query)
     _require_frame_within_query_window(
-        daily_df, daily_query, dataset='clean_daily_bar'
+        daily_df, daily_query, dataset=primary_daily_dataset_id
     )
-    meta = {'clean_daily_bar': daily_meta}
+    meta = {primary_daily_dataset_id: daily_meta}
 
     daily_basic_required_fields = set(daily_basic_query.get('fields') or []) - {
         'ts_code', 'trade_date'
@@ -4095,6 +4115,7 @@ def materialize_step4_data_inputs_from_contract(
         'input_mode': 'daily_only',
         'daily_df_parquet': str(report_daily_path),
         'data_source': 'factorforge_data_api_full_query',
+        'formula_input_dataset': primary_daily_dataset_id,
     }
 
     moneyflow_query = _contract_query(contract, 'full_queries', 'moneyflow')
@@ -4200,10 +4221,13 @@ def _evo_required_fields_for_artifact(
     role: str,
     contract: dict[str, Any],
 ) -> list[str]:
+    primary_daily_dataset_id = str(
+        contract.get('primary_daily_dataset_id') or 'clean_daily_bar'
+    )
     query_names = (
         ("moneyflow",)
         if role.startswith("signal_daily")
-        else ("clean_daily_bar", "daily_basic")
+        else (primary_daily_dataset_id, "daily_basic")
     )
     fields = ["ts_code", "trade_date"]
     for name in query_names:

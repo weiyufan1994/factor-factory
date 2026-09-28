@@ -100,6 +100,40 @@ def test_declared_sample_window_prefers_step2_requested_research_window():
     }
 
 
+def test_primary_daily_dataset_follows_frozen_step2_declaration():
+    run_step3 = _load_run_step3()
+
+    fsm = {
+        "canonical_spec": {
+            "preprocessing": [
+                "Use daily_event_state_v1 so all event rows and exclusion reasons remain observable."
+            ]
+        }
+    }
+
+    assert run_step3.declared_primary_daily_dataset_id(fsm) == "daily_event_state_v1"
+
+
+def test_primary_daily_dataset_defaults_without_declaration():
+    run_step3 = _load_run_step3()
+    assert run_step3.declared_primary_daily_dataset_id({"canonical_spec": {}}) == "clean_daily_bar"
+
+
+def test_step4_contract_binds_declared_event_state_dataset():
+    run_step3 = _load_run_step3()
+    contract = run_step3.build_step4_data_contract(
+        sample_window={"start": "20160104", "end": "20250711"},
+        daily_resolution={"catalog_binding": {"catalog_sha256": "a" * 64}},
+        daily_fields=["ts_code", "trade_date", "amount", "pct_chg"],
+        primary_daily_dataset_id="daily_event_state_v1",
+    )
+
+    assert contract["primary_daily_dataset_id"] == "daily_event_state_v1"
+    assert set(contract["full_queries"]) == {"daily_event_state_v1"}
+    assert contract["full_queries"]["daily_event_state_v1"]["dataset"] == "daily_event_state_v1"
+    assert set(contract["catalog_bindings"]) == {"daily_event_state_v1"}
+
+
 def _calendar_paths(tmp_path: Path, *, bound_exchange: str | None) -> LocalTusharePaths:
     root = tmp_path / 'raw_tushare'
     calendar = root / '基础数据' / 'trade_cal.csv'

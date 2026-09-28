@@ -132,6 +132,52 @@ DAILY_BASIC_DATASET_FIELDS = [
     'total_mv',
     'circ_mv',
 ]
+SUPPORTED_PRIMARY_DAILY_DATASETS = {
+    'clean_daily_bar',
+    'daily_event_state_v1',
+}
+
+
+def declared_primary_daily_dataset_id(fsm: dict) -> str:
+    """Resolve the Step2-declared daily dataset without treating datasets as aliases.
+
+    New Step2 artifacts should use a structured ``primary_daily_dataset_id``.
+    Older frozen artifacts are supported only when exactly one closed, known
+    dataset identifier appears verbatim in their canonical specification.
+    """
+
+    canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    data_contract = canonical.get('data_contract') if isinstance(canonical.get('data_contract'), dict) else {}
+    candidates = [
+        fsm.get('primary_daily_dataset_id'),
+        canonical.get('primary_daily_dataset_id'),
+        data_contract.get('primary_daily_dataset_id'),
+    ]
+    explicit = [str(value).strip() for value in candidates if str(value or '').strip()]
+    if explicit:
+        unique = set(explicit)
+        if len(unique) != 1:
+            raise ValueError('BLOCK_STEP3A_PRIMARY_DAILY_DATASET_AMBIGUOUS')
+        dataset_id = explicit[0]
+        if dataset_id not in SUPPORTED_PRIMARY_DAILY_DATASETS:
+            raise ValueError(f'BLOCK_STEP3A_PRIMARY_DAILY_DATASET_UNSUPPORTED:{dataset_id}')
+        return dataset_id
+
+    text_values: list[str] = []
+    for value in [canonical.get('preprocessing'), canonical.get('formula_text')]:
+        if isinstance(value, list):
+            text_values.extend(str(item) for item in value)
+        elif value is not None:
+            text_values.append(str(value))
+    corpus = '\n'.join(text_values)
+    hits = {
+        dataset_id
+        for dataset_id in SUPPORTED_PRIMARY_DAILY_DATASETS
+        if re.search(rf'(?<![A-Za-z0-9_]){re.escape(dataset_id)}(?![A-Za-z0-9_])', corpus)
+    }
+    if len(hits) > 1:
+        raise ValueError('BLOCK_STEP3A_PRIMARY_DAILY_DATASET_AMBIGUOUS')
+    return next(iter(hits), 'clean_daily_bar')
 
 
 def select_daily_basic_fields_for_required_formula_fields(required_fields: list[str] | None) -> list[str]:
@@ -1133,14 +1179,19 @@ def build_step4_data_contract(
     moneyflow_fields: list[str] | None = None,
     daily_basic_fields: list[str] | None = None,
     minute_derived_state_requirements: list[dict] | None = None,
+    primary_daily_dataset_id: str = 'clean_daily_bar',
 ) -> dict:
+    if primary_daily_dataset_id not in SUPPORTED_PRIMARY_DAILY_DATASETS:
+        raise ValueError(
+            f'BLOCK_STEP3A_PRIMARY_DAILY_DATASET_UNSUPPORTED:{primary_daily_dataset_id}'
+        )
     full_queries = {}
     sample_queries = {}
     if daily_resolution:
         fields = daily_fields or ['open', 'high', 'low', 'close', 'vol', 'amount', 'pct_chg']
-        full_queries['clean_daily_bar'] = data_api_query_payload('clean_daily_bar', sample_window, fields)
-        sample_queries['clean_daily_bar'] = data_api_query_payload(
-            'clean_daily_bar',
+        full_queries[primary_daily_dataset_id] = data_api_query_payload(primary_daily_dataset_id, sample_window, fields)
+        sample_queries[primary_daily_dataset_id] = data_api_query_payload(
+            primary_daily_dataset_id,
             sample_window,
             fields,
             universe=['000001.SZ', '000002.SZ'],
@@ -1186,11 +1237,12 @@ def build_step4_data_contract(
         'full_queries': full_queries,
         'catalog_bindings': {
             key: resolution.get('catalog_binding', {})
-            for key, resolution in [('clean_daily_bar', daily_resolution), ('minute_bar', minute_resolution),
+            for key, resolution in [(primary_daily_dataset_id, daily_resolution), ('minute_bar', minute_resolution),
                                     ('moneyflow', moneyflow_resolution), ('daily_basic', daily_basic_resolution)]
             if isinstance(resolution, dict)
         },
         'sample_queries': sample_queries,
+        'primary_daily_dataset_id': primary_daily_dataset_id,
         'minute_derived_state_requirements': minute_derived_state_requirements or [],
         'research_window_contract': research_window_contract(sample_window),
         'formal_factor_values_owner': 'Step4',
@@ -1614,6 +1666,7 @@ def materialize_shared_daily_slice(
     formula_ir: dict | None = None,
     proof_control_fields: list[str] | None = None,
     requires_exchange_calendar: bool = False,
+    primary_daily_dataset_id: str = 'clean_daily_bar',
 ) -> dict:
     del symbols
     local_dir = RUNS / report_id / 'step3a_local_inputs'
@@ -1626,6 +1679,13 @@ def materialize_shared_daily_slice(
     daily_fields = select_clean_daily_fields_for_formula(
         [*(required_fields or []), *(proof_control_fields or [])], formula_ir
     )
+    if primary_daily_dataset_id == 'daily_event_state_v1':
+        daily_fields = list(dict.fromkeys([
+            *daily_fields,
+            'is_tradable_default',
+            'tradable_exclusion_reason',
+            'tradable_policy_version',
+        ]))
     daily_basic_fields = select_daily_basic_fields_for_required_formula_fields(
         [*(required_fields or []), *(proof_control_fields or [])]
     )
@@ -1634,7 +1694,7 @@ def materialize_shared_daily_slice(
     executability_window = step3a_executability_window(sample_window, formula_ir=formula_ir)
     query_window = data_api_window_bounds(executability_window)
     daily_resolution = resolve_data_api_dataset(
-        'clean_daily_bar',
+        primary_daily_dataset_id,
         start=query_window['start'],
         end=query_window['end'],
         fields=daily_fields,
@@ -1665,6 +1725,7 @@ def materialize_shared_daily_slice(
         daily_basic_resolution=daily_basic_resolution,
         daily_fields=daily_fields,
         daily_basic_fields=daily_basic_fields if daily_basic_required else None,
+        primary_daily_dataset_id=primary_daily_dataset_id,
     )
     if requires_exchange_calendar:
         step4_data_contract['additional_input_roles'] = {
@@ -1684,17 +1745,17 @@ def materialize_shared_daily_slice(
     if daily_resolution.get('status') != 'ready' or not daily_basic_ready:
         return {
             'snapshot_note': (
-                'Data API could not resolve ready clean_daily_bar/daily_basic. Factor Forge Step3A only consumes '
+                f'Data API could not resolve ready {primary_daily_dataset_id}/daily_basic. Factor Forge Step3A only consumes '
                 'published clean data products; publish or sync the Data API catalog before Step3A.'
             ),
-            'snapshot_source': 'missing_data_api_clean_daily_bar',
+            'snapshot_source': f'missing_data_api_{primary_daily_dataset_id}',
             'input_mode': 'daily_only',
-            'data_api_resolution': {'clean_daily_bar': daily_resolution, 'daily_basic': daily_basic_resolution},
+            'data_api_resolution': {primary_daily_dataset_id: daily_resolution, 'daily_basic': daily_basic_resolution},
             'step4_data_contract': step4_data_contract,
         }
 
     daily_result = fetch_data_api_dataset(
-        'clean_daily_bar',
+        primary_daily_dataset_id,
         start=query_window['start'],
         end=query_window['end'],
         fields=daily_fields,
@@ -1722,12 +1783,12 @@ def materialize_shared_daily_slice(
     if daily_result.status not in {'ready', 'proxy_ready'} or not daily_basic_fetch_ready:
         return {
             'snapshot_note': (
-                'Data API resolved clean_daily_bar/daily_basic metadata but failed to fetch the report-local daily snapshot.'
+                f'Data API resolved {primary_daily_dataset_id}/daily_basic metadata but failed to fetch the report-local daily snapshot.'
             ),
-            'snapshot_source': 'missing_data_api_clean_daily_bar',
+            'snapshot_source': f'missing_data_api_{primary_daily_dataset_id}',
             'input_mode': 'daily_only',
             'data_api_resolution': {
-                'clean_daily_bar': daily_result.to_metadata(),
+                primary_daily_dataset_id: daily_result.to_metadata(),
                 'daily_basic': daily_basic_result.to_metadata() if daily_basic_result is not None else daily_basic_resolution,
             },
             'step4_data_contract': step4_data_contract,
@@ -1764,9 +1825,9 @@ def materialize_shared_daily_slice(
                 'sample_window_actual': executability_window,
                 'step4_full_window': full_query_window,
                 'snapshot_note': 'Step3A could not build a valid cross-sectional sample for Formula-IR cross-sectional executability proof.',
-                'snapshot_source': 'data_api_clean_daily_bar',
+                'snapshot_source': f'data_api_{primary_daily_dataset_id}',
                 'input_mode': 'blocked_cross_sectional_sample',
-                'data_api_resolution': {'clean_daily_bar': daily_result.to_metadata()},
+                'data_api_resolution': {primary_daily_dataset_id: daily_result.to_metadata()},
                 'step4_data_contract': step4_data_contract,
                 'cross_sectional_sample_contract': cross_sectional_sample_contract,
             }
@@ -1807,7 +1868,7 @@ def materialize_shared_daily_slice(
         missing_authority_dates = sorted(observed_dates - set(calendar_dates))
         if missing_authority_dates:
             return {
-                'snapshot_note': 'clean_daily_bar contains dates outside the authoritative exchange calendar.',
+                'snapshot_note': f'{primary_daily_dataset_id} contains dates outside the authoritative exchange calendar.',
                 'snapshot_source': 'exchange_calendar_mismatch',
                 'input_mode': 'daily_only',
                 'step4_data_contract': step4_data_contract,
@@ -1842,15 +1903,16 @@ def materialize_shared_daily_slice(
     return {
         'sample_window_actual': executability_window,
         'step4_full_window': full_query_window,
-        'snapshot_note': 'Step3A resolved clean_daily_bar through Data API and wrote a bounded report-local daily snapshot for Step3B executability proof; Step4 owns full formal data execution.',
-        'snapshot_source': 'data_api_clean_daily_bar',
+        'snapshot_note': f'Step3A resolved {primary_daily_dataset_id} through Data API and wrote a bounded report-local daily snapshot for Step3B executability proof; Step4 owns full formal data execution.',
+        'snapshot_source': f'data_api_{primary_daily_dataset_id}',
+        'primary_dataset': primary_daily_dataset_id,
         'input_mode': 'daily_only',
         'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
         **exchange_calendar_payload,
         'preferred_daily_format': 'parquet',
         **audit_payload,
         'data_api_resolution': {
-            'clean_daily_bar': resolution_with_successful_sample_read(
+            primary_daily_dataset_id: resolution_with_successful_sample_read(
                 daily_resolution, daily_result
             ),
             'daily_basic': resolution_with_successful_sample_read(
@@ -2314,8 +2376,9 @@ def build_local_daily_snapshot(
     formula_ir: dict | None = None,
     proof_control_fields: list[str] | None = None,
     requires_exchange_calendar: bool = False,
+    primary_daily_dataset_id: str = 'clean_daily_bar',
 ):
-    # Daily-only factors resolve the published clean_daily_bar Data API contract.
+    # Daily-only factors resolve the exact Step2-declared published Data API contract.
     return materialize_shared_daily_slice(
         report_id,
         sample_window,
@@ -2324,6 +2387,7 @@ def build_local_daily_snapshot(
         formula_ir=formula_ir,
         proof_control_fields=proof_control_fields,
         requires_exchange_calendar=requires_exchange_calendar,
+        primary_daily_dataset_id=primary_daily_dataset_id,
     )
 
 
@@ -2566,6 +2630,10 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
 
     factor_id = fsm.get('factor_id', report_id)
     canonical = fsm.get('canonical_spec', {})
+    try:
+        primary_daily_dataset_id = declared_primary_daily_dataset_id(fsm)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
     formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
     required_fields = formula_required_daily_fields(fsm)
     evaluation_contract = (
@@ -2943,6 +3011,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
             formula_ir=formula_ir,
             proof_control_fields=proof_control_columns,
             requires_exchange_calendar=requires_exchange_calendar,
+            primary_daily_dataset_id=primary_daily_dataset_id,
         )
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
@@ -2951,13 +3020,14 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
         if snapshot_source in {
             'missing_clean_daily_layer',
             'missing_data_api_clean_daily_bar',
+            'missing_data_api_daily_event_state_v1',
             'missing_exchange_calendar',
             'exchange_calendar_mismatch',
         }:
             blocked.append({
                 'code': (
                     'DATA_API_CLEAN_DAILY_BAR_UNAVAILABLE'
-                    if snapshot_source == 'missing_data_api_clean_daily_bar'
+                    if snapshot_source in {'missing_data_api_clean_daily_bar', 'missing_data_api_daily_event_state_v1'}
                     else 'EXCHANGE_CALENDAR_UNAVAILABLE_OR_MISMATCH'
                     if snapshot_source in {'missing_exchange_calendar', 'exchange_calendar_mismatch'}
                     else 'SHARED_CLEAN_DAILY_LAYER_MISSING'
@@ -2991,7 +3061,10 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
     if evo_research_windows is not None:
         try:
             if data_prep_master['feasibility'] in {'ready', 'proxy_ready'}:
-                primary_dataset = 'clean_daily_bar'
+                primary_dataset = str(
+                    local_input_paths.get('primary_dataset')
+                    or primary_daily_dataset_id
+                )
                 if str(local_input_paths.get('snapshot_source') or '') == 'data_api_moneyflow':
                     raise ValueError(
                         'BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID:'

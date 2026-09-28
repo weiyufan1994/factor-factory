@@ -1022,3 +1022,53 @@ def test_web_shared_evaluation_rejects_whitespace_mutated_proof_control(
                 "proof_control_columns": [" pct_chg "],
             },
         )
+
+
+def test_step4_materializes_declared_event_state_dataset(tmp_path, monkeypatch):
+    run_step4 = _load_run_step4()
+    calls = []
+    frame = pd.DataFrame([
+        {
+            "ts_code": "000001.SZ",
+            "trade_date": "20250102",
+            "amount": 1000.0,
+            "pct_chg": 1.0,
+            "tradable_exclusion_reason": "",
+        }
+    ])
+
+    def fake_fetch(query):
+        calls.append(query["dataset"])
+        return frame.copy(), {"status": "ready", "dataset_id": query["dataset"]}
+
+    monkeypatch.setattr(run_step4, "_fetch_contract_frame", fake_fetch)
+    contract = {
+        "version": "factorforge_step4_data_contract_v1",
+        "formal_factor_values_owner": "Step4",
+        "primary_daily_dataset_id": "daily_event_state_v1",
+        "full_queries": {
+            "daily_event_state_v1": {
+                "dataset": "daily_event_state_v1",
+                "start_date": "20250102",
+                "end_date": "20250102",
+                "fields": [
+                    "ts_code",
+                    "trade_date",
+                    "amount",
+                    "pct_chg",
+                    "tradable_exclusion_reason",
+                ],
+            }
+        },
+    }
+
+    local_inputs, profile = run_step4.materialize_step4_data_inputs_from_contract(
+        "EVENT_STATE_FACTOR",
+        contract,
+        tmp_path / "run",
+        allow_persistent_cache=False,
+    )
+
+    assert calls == ["daily_event_state_v1"]
+    assert local_inputs["formula_input_dataset"] == "daily_event_state_v1"
+    assert "daily_event_state_v1" in profile["result_metadata"]

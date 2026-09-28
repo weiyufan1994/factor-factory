@@ -52,6 +52,7 @@ def _base_artifacts(tmp_path):
                     "frequency": "daily",
                 }
             },
+            "catalog_bindings": {"clean_daily_bar": {}},
         },
         "local_input_paths": {
             "input_mode": "daily_only",
@@ -190,3 +191,62 @@ def test_ready_daily_step3a_readiness_contract_passes(tmp_path):
     prep, qcfg, impl, handoff = _base_artifacts(tmp_path)
 
     validate_step3.validate_step3_readiness_contract(prep, qcfg, impl, handoff, workspace=tmp_path)
+
+
+def _bind_event_state(prep, qcfg):
+    contract = prep["step4_data_contract"]
+    contract["primary_daily_dataset_id"] = "daily_event_state_v1"
+    for query_set in ("full_queries", "sample_queries"):
+        query = contract[query_set].pop("clean_daily_bar")
+        query["dataset"] = "daily_event_state_v1"
+        contract[query_set]["daily_event_state_v1"] = query
+    contract["catalog_bindings"] = {"daily_event_state_v1": {}}
+    resolution = prep["local_input_paths"]["data_api_resolution"].pop(
+        "clean_daily_bar"
+    )
+    prep["local_input_paths"]["data_api_resolution"][
+        "daily_event_state_v1"
+    ] = resolution
+    qcfg["step4_data_contract"] = contract
+
+
+def test_declared_event_state_ready_passes(tmp_path):
+    validate_step3 = _load_validate_step3()
+    prep, qcfg, impl, handoff = _base_artifacts(tmp_path)
+    _bind_event_state(prep, qcfg)
+    validate_step3.validate_step3_readiness_contract(
+        prep, qcfg, impl, handoff, workspace=tmp_path
+    )
+
+
+@pytest.mark.parametrize("status", [None, "missing"])
+def test_declared_event_state_missing_or_unready_blocks(tmp_path, status):
+    validate_step3 = _load_validate_step3()
+    prep, qcfg, impl, handoff = _base_artifacts(tmp_path)
+    _bind_event_state(prep, qcfg)
+    if status is None:
+        prep["local_input_paths"]["data_api_resolution"].pop(
+            "daily_event_state_v1"
+        )
+    else:
+        prep["local_input_paths"]["data_api_resolution"][
+            "daily_event_state_v1"
+        ]["status"] = status
+    with pytest.raises(AssertionError, match="DATA_API_RESOLUTION_MISSING"):
+        validate_step3.validate_step3_readiness_contract(
+            prep, qcfg, impl, handoff, workspace=tmp_path
+        )
+
+
+def test_declared_event_state_mismatched_resolution_key_blocks(tmp_path):
+    validate_step3 = _load_validate_step3()
+    prep, qcfg, impl, handoff = _base_artifacts(tmp_path)
+    _bind_event_state(prep, qcfg)
+    resolution = prep["local_input_paths"]["data_api_resolution"].pop(
+        "daily_event_state_v1"
+    )
+    prep["local_input_paths"]["data_api_resolution"]["clean_daily_bar"] = resolution
+    with pytest.raises(AssertionError, match="DATA_API_RESOLUTION_MISSING"):
+        validate_step3.validate_step3_readiness_contract(
+            prep, qcfg, impl, handoff, workspace=tmp_path
+        )

@@ -680,15 +680,45 @@ def validate_step3_readiness_contract(
             f'{BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID}:'
             'qlib.step4_data_contract_binding'
         )
-    clean_daily = data_api.get('clean_daily_bar') if isinstance(data_api.get('clean_daily_bar'), dict) else {}
     moneyflow = data_api.get('moneyflow') if isinstance(data_api.get('moneyflow'), dict) else {}
     if snapshot_source == 'data_api_moneyflow':
         assert moneyflow.get('status') == 'ready', (
             'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: moneyflow Step3A requires ready moneyflow Data API resolution'
         )
     elif not prepared_derived_state:
-        assert clean_daily.get('status') == 'ready', (
-            'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: executable Step3A requires ready clean_daily_bar Data API resolution'
+        contract = _step4_data_contract(prep, qcfg, handoff)
+        primary_daily_dataset_id = str(
+            contract.get('primary_daily_dataset_id') or 'clean_daily_bar'
+        )
+        assert primary_daily_dataset_id in {'clean_daily_bar', 'daily_event_state_v1'}, (
+            'BLOCK_STEP3A_PRIMARY_DAILY_DATASET_INVALID: '
+            f'{primary_daily_dataset_id}'
+        )
+        primary_resolution = (
+            data_api.get(primary_daily_dataset_id)
+            if isinstance(data_api.get(primary_daily_dataset_id), dict)
+            else {}
+        )
+        assert primary_resolution.get('status') == 'ready', (
+            'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: executable Step3A requires ready '
+            f'{primary_daily_dataset_id} Data API resolution'
+        )
+        for query_set in ('full_queries', 'sample_queries'):
+            queries = contract.get(query_set)
+            assert isinstance(queries, dict), (
+                f'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: {query_set}'
+            )
+            query = queries.get(primary_daily_dataset_id)
+            assert isinstance(query, dict) and query.get('dataset') == primary_daily_dataset_id, (
+                'BLOCK_STEP3A_PRIMARY_DAILY_DATASET_BINDING_MISMATCH: '
+                f'{query_set}.{primary_daily_dataset_id}'
+            )
+        catalog_bindings = contract.get('catalog_bindings')
+        assert isinstance(catalog_bindings, dict) and isinstance(
+            catalog_bindings.get(primary_daily_dataset_id), dict
+        ), (
+            'BLOCK_STEP3A_PRIMARY_DAILY_DATASET_BINDING_MISMATCH: '
+            f'catalog_bindings.{primary_daily_dataset_id}'
         )
     if not prepared_derived_state:
         contract = _step4_data_contract(prep, qcfg, handoff)

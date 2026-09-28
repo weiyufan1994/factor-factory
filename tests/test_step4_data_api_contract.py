@@ -490,6 +490,132 @@ def test_step4_materializes_full_inputs_from_data_api_contract(tmp_path, monkeyp
     assert len(pd.read_parquet(daily_path)) == 2
 
 
+def test_local_is_delivery_receipt_validates_named_daily_and_calendar_inputs(
+    tmp_path, monkeypatch
+):
+    run_step4 = _load_run_step4()
+    monkeypatch.setenv('FACTORFORGE_LOCAL_IS_ONLY', '1')
+    daily = tmp_path / 'daily.parquet'
+    calendar = tmp_path / 'calendar.parquet'
+    daily.write_bytes(b'daily-content')
+    calendar.write_bytes(b'calendar-content')
+    contract = {
+        'primary_daily_dataset_id': 'daily_event_state_v1',
+        'full_queries': {
+            'daily_event_state_v1': {
+                'dataset': 'daily_event_state_v1',
+                'start_date': '20160104',
+                'end_date': '20250711',
+                'fields': ['close', 'amount'],
+            }
+        },
+    }
+    receipt = {
+        'status': 'PASS',
+        'scope': {
+            'start': '20160104',
+            'end': '20250711',
+            'local_is_only': True,
+            'oos_accessed': False,
+        },
+        'daily_input': {
+            'dataset_id': 'daily_event_state_v1',
+            'dataset_version': 'v2',
+            'mac_path': str(daily),
+            'sha256': run_step4.sha256_file(daily),
+            'physical_columns': ['ts_code', 'trade_date', 'close', 'amount'],
+        },
+        'exchange_calendar': {
+            'dataset_id': 'trade_cal',
+            'dataset_version': 'v1',
+            'exchange_authority': 'SSE',
+            'calendar_derived_from_security_observations': False,
+            'named_input': {
+                'role': 'exchange_calendar',
+                'mac_path': str(calendar),
+                'sha256': run_step4.sha256_file(calendar),
+            },
+        },
+        'handoff_boundary': {
+            'ordinary_local_is_input_delivery': True,
+            'extra_host_or_evo_authorization_required_by_this_delivery': False,
+        },
+    }
+    receipt_path = tmp_path / 'receipt.json'
+    receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+
+    profile = run_step4.validate_local_is_delivery_receipt(
+        receipt_path=receipt_path,
+        contract=contract,
+        local_inputs={
+            'daily_df_parquet': str(daily),
+            'exchange_calendar_parquet': str(calendar),
+        },
+    )
+
+    assert profile['source'] == 'ordinary_local_is_content_addressed_delivery'
+    assert profile['dataset_id'] == 'daily_event_state_v1'
+    assert profile['calendar_dataset_id'] == 'trade_cal'
+    assert profile['oos_accessed'] is False
+
+
+def test_local_is_delivery_receipt_rejects_oos_or_hash_mismatch(tmp_path, monkeypatch):
+    run_step4 = _load_run_step4()
+    monkeypatch.setenv('FACTORFORGE_LOCAL_IS_ONLY', '1')
+    daily = tmp_path / 'daily.parquet'
+    calendar = tmp_path / 'calendar.parquet'
+    daily.write_bytes(b'daily-content')
+    calendar.write_bytes(b'calendar-content')
+    receipt = {
+        'status': 'PASS',
+        'scope': {
+            'start': '20160104',
+            'end': '20250711',
+            'local_is_only': True,
+            'oos_accessed': True,
+        },
+        'daily_input': {
+            'dataset_id': 'daily_event_state_v1',
+            'mac_path': str(daily),
+            'sha256': '0' * 64,
+            'physical_columns': ['close'],
+        },
+        'exchange_calendar': {
+            'calendar_derived_from_security_observations': False,
+            'named_input': {
+                'role': 'exchange_calendar',
+                'mac_path': str(calendar),
+                'sha256': run_step4.sha256_file(calendar),
+            },
+        },
+        'handoff_boundary': {
+            'ordinary_local_is_input_delivery': True,
+            'extra_host_or_evo_authorization_required_by_this_delivery': False,
+        },
+    }
+    receipt_path = tmp_path / 'receipt.json'
+    receipt_path.write_text(json.dumps(receipt), encoding='utf-8')
+
+    with pytest.raises(SystemExit, match='no_oos'):
+        run_step4.validate_local_is_delivery_receipt(
+            receipt_path=receipt_path,
+            contract={
+                'primary_daily_dataset_id': 'daily_event_state_v1',
+                'full_queries': {
+                    'daily_event_state_v1': {
+                        'start_date': '20160104',
+                        'end_date': '20250711',
+                        'fields': ['close'],
+                    }
+                },
+            },
+            local_inputs={
+                'daily_df_parquet': str(daily),
+                'exchange_calendar_parquet': str(calendar),
+            },
+        )
+
+
 def test_step4_does_not_reuse_step3b_sample_or_legacy_factor_parquet():
     run_step4 = _load_run_step4()
 

@@ -4213,6 +4213,108 @@ def materialize_step4_contract_inputs_if_required(
     return {**local_inputs, **fetched_inputs}, profile
 
 
+def validate_local_is_delivery_receipt(
+    *,
+    receipt_path: str | Path,
+    contract: dict[str, Any],
+    local_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    """Validate an ordinary local-IS, content-addressed data delivery.
+
+    This is deliberately separate from the EVO Host-prefetch receipt.  It only
+    permits already-materialized IS inputs to replace a redundant Data API
+    fetch; it grants no OOS, runtime, promotion, or write authority.
+    """
+
+    if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1':
+        raise SystemExit(
+            'BLOCK_STEP4_LOCAL_IS_DELIVERY_RECEIPT_INVALID: local_is_only_required'
+        )
+    path = Path(receipt_path).expanduser().resolve()
+    if not path.is_file():
+        raise SystemExit(
+            'BLOCK_STEP4_LOCAL_IS_DELIVERY_RECEIPT_INVALID: receipt_missing'
+        )
+    receipt = load_json(path)
+    scope = receipt.get('scope') if isinstance(receipt.get('scope'), dict) else {}
+    boundary = (
+        receipt.get('handoff_boundary')
+        if isinstance(receipt.get('handoff_boundary'), dict)
+        else {}
+    )
+    daily = (
+        receipt.get('daily_input')
+        if isinstance(receipt.get('daily_input'), dict)
+        else {}
+    )
+    calendar = (
+        receipt.get('exchange_calendar')
+        if isinstance(receipt.get('exchange_calendar'), dict)
+        else {}
+    )
+    named_calendar = (
+        calendar.get('named_input')
+        if isinstance(calendar.get('named_input'), dict)
+        else {}
+    )
+    primary = str(contract.get('primary_daily_dataset_id') or 'clean_daily_bar')
+    query = _contract_query(contract, 'full_queries', primary)
+    expected_daily = Path(str(local_inputs.get('daily_df_parquet') or '')).expanduser().resolve()
+    expected_calendar = Path(
+        str(local_inputs.get('exchange_calendar_parquet') or '')
+    ).expanduser().resolve()
+    checks = {
+        'status': receipt.get('status') == 'PASS',
+        'ordinary_local_is': boundary.get('ordinary_local_is_input_delivery') is True,
+        'no_extra_authority': boundary.get('extra_host_or_evo_authorization_required_by_this_delivery') is False,
+        'local_is_only': scope.get('local_is_only') is True,
+        'no_oos': scope.get('oos_accessed') is False,
+        'dataset': daily.get('dataset_id') == primary,
+        'start': str(scope.get('start') or '') == str(query.get('start_date') or ''),
+        'end': str(scope.get('end') or '') == str(query.get('end_date') or ''),
+        'daily_path': Path(str(daily.get('mac_path') or '')).expanduser().resolve() == expected_daily,
+        'calendar_path': Path(str(named_calendar.get('mac_path') or '')).expanduser().resolve() == expected_calendar,
+        'calendar_role': named_calendar.get('role') == 'exchange_calendar',
+        'calendar_not_security_derived': calendar.get('calendar_derived_from_security_observations') is False,
+        'daily_exists': expected_daily.is_file(),
+        'calendar_exists': expected_calendar.is_file(),
+    }
+    if not all(checks.values()):
+        failed = sorted(key for key, value in checks.items() if not value)
+        raise SystemExit(
+            'BLOCK_STEP4_LOCAL_IS_DELIVERY_RECEIPT_INVALID: ' + ','.join(failed)
+        )
+    if sha256_file(expected_daily) != str(daily.get('sha256') or ''):
+        raise SystemExit(
+            'BLOCK_STEP4_LOCAL_IS_DELIVERY_RECEIPT_INVALID: daily_sha256'
+        )
+    if sha256_file(expected_calendar) != str(named_calendar.get('sha256') or ''):
+        raise SystemExit(
+            'BLOCK_STEP4_LOCAL_IS_DELIVERY_RECEIPT_INVALID: calendar_sha256'
+        )
+    required_fields = {str(field) for field in (query.get('fields') or [])}
+    physical_fields = {str(field) for field in (daily.get('physical_columns') or [])}
+    missing_fields = sorted(required_fields - physical_fields)
+    if missing_fields:
+        raise SystemExit(
+            'BLOCK_STEP4_LOCAL_IS_DELIVERY_RECEIPT_INVALID: missing_fields=' + ','.join(missing_fields)
+        )
+    return {
+        'source': 'ordinary_local_is_content_addressed_delivery',
+        'receipt_path': str(path),
+        'receipt_sha256': sha256_file(path),
+        'dataset_id': primary,
+        'dataset_version': daily.get('dataset_version'),
+        'query': query,
+        'daily_sha256': daily.get('sha256'),
+        'calendar_dataset_id': calendar.get('dataset_id'),
+        'calendar_dataset_version': calendar.get('dataset_version'),
+        'calendar_sha256': named_calendar.get('sha256'),
+        'calendar_authority': calendar.get('exchange_authority'),
+        'oos_accessed': False,
+    }
+
+
 def _evo_prefetch_receipt_path(run_dir: Path, report_id: str) -> Path:
     return run_dir / f'evo_pre_release_data_receipt__{report_id}.json'
 
@@ -4802,9 +4904,23 @@ def main() -> None:
             )
         else:
             data_api_profile = None
+        local_is_delivery_receipt = (
+            handoff.get('local_is_input_delivery_receipt')
+            or dpm.get('local_is_input_delivery_receipt')
+        )
+        if local_is_delivery_receipt:
+            if evo_pre_release:
+                raise SystemExit(
+                    'BLOCK_STEP4_LOCAL_IS_DELIVERY_RECEIPT_INVALID: evo_pre_release_forbidden'
+                )
+            data_api_profile = validate_local_is_delivery_receipt(
+                receipt_path=local_is_delivery_receipt,
+                contract=step4_contract,
+                local_inputs=local_inputs,
+            )
         force_contract_inputs = (
             False
-            if evo_pre_release
+            if evo_pre_release or data_api_profile is not None
             else bool(
                 (step4_contract.get('full_queries') or {})
                 if isinstance(step4_contract, dict)

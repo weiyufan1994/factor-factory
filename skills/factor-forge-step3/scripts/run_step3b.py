@@ -998,15 +998,25 @@ def normalize_direct_code_result(result) -> pd.DataFrame:
     return result
 
 
-def compute_factor_with_contract(module, daily_df, minute_df):
+def compute_factor_with_contract(module, daily_df, minute_df, *, exchange_calendar=None):
     """Resolve the invocation before executing user code, without retries."""
     from factor_factory.implementation_runtime import invoke_factor
 
     use_polars = direct_code_expects_polars(module)
     daily_input = maybe_polars_frame(add_direct_code_alias_columns(daily_df), use_polars)
     minute_input = maybe_polars_frame(add_direct_code_alias_columns(minute_df), use_polars)
+    calendar_input = maybe_polars_frame(exchange_calendar, use_polars) if exchange_calendar is not None else None
+    additional_inputs = (
+        {'exchange_calendar': calendar_input}
+        if exchange_calendar is not None else None
+    )
     return normalize_direct_code_result(
-        invoke_factor(module.compute_factor, daily_input, minute_input)
+        invoke_factor(
+            module.compute_factor,
+            daily_input,
+            minute_input,
+            additional_inputs=additional_inputs,
+        )
     )
 
 
@@ -1440,12 +1450,14 @@ def generate_first_run_factor_values(
     daily_parquet_rel = local_inputs.get('daily_df_parquet')
     daily_csv_rel = local_inputs.get('daily_df_csv')
     daily_rel = local_inputs.get('daily_df_parquet') or local_inputs.get('daily_df_csv')
+    exchange_calendar_rel = local_inputs.get('exchange_calendar_parquet')
     derived_state_root = resolve_local_input_path(local_inputs.get('derived_state_root') if prepared_derived_state else None)
     minute_required = input_mode != 'daily_only' and not prepared_derived_state
     minute_path = resolve_local_input_path(minute_rel)
     daily_path = resolve_local_input_path(daily_rel)
     daily_parquet_path = resolve_local_input_path(daily_parquet_rel)
     daily_csv_path = resolve_local_input_path(daily_csv_rel)
+    exchange_calendar_path = resolve_local_input_path(exchange_calendar_rel)
     daily_selected_format = 'parquet' if daily_path and daily_path.suffix.lower() == '.parquet' else 'csv'
     csv_policy = resolve_csv_policy(csv_output_policy)
     trust_sort_contract = resolve_trust_step3a_sort_contract(trust_step3a_sort_contract)
@@ -1473,6 +1485,12 @@ def generate_first_run_factor_values(
         raise SystemExit(f'Step3B first-run daily input missing: {daily_path}')
     if minute_required and (minute_path is None or not minute_path.exists()):
         raise SystemExit(f'Step3B first-run minute input missing: {minute_path}')
+    if exchange_calendar_rel and (
+        exchange_calendar_path is None or not exchange_calendar_path.exists()
+    ):
+        raise SystemExit(
+            f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: exchange_calendar={exchange_calendar_path}'
+        )
     if prepared_derived_state and (derived_state_root is None or not derived_state_root.is_dir()):
         raise SystemExit(f'Step3B prepared derived-state root missing: {derived_state_root}')
 
@@ -1510,6 +1528,10 @@ def generate_first_run_factor_values(
 
     with timer.phase('read_inputs'):
         minute_df = read_df(minute_path) if minute_path is not None and not has_partitioned_controller else pd.DataFrame()
+        exchange_calendar_df = (
+            read_df(exchange_calendar_path)
+            if exchange_calendar_path is not None else None
+        )
         if use_lazy_polars_parquet:
             try:
                 from factor_factory.formula.polars_evaluator import read_formula_parquet_sample_for_polars_parity
@@ -1570,7 +1592,12 @@ def generate_first_run_factor_values(
                 if profiled_result is not None:
                     result_df = profiled_result
                 else:
-                    result_df = compute_factor_with_contract(module, daily_df, minute_df)
+                    result_df = compute_factor_with_contract(
+                        module,
+                        daily_df,
+                        minute_df,
+                        exchange_calendar=exchange_calendar_df,
+                    )
         except ModuleNotFoundError as exc:
             if 'BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING' in str(exc):
                 raise SystemExit('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING') from exc
@@ -1617,9 +1644,16 @@ def generate_first_run_factor_values(
         # Step3B signal.
         signal_col = (
             'factor_value'
-            if has_partitioned_controller and 'factor_value' in result_df.columns
+            if 'factor_value' in result_df.columns
             else infer_signal_column(result_df, factor_id=factor_id)
         )
+        audit_result_df = result_df.copy()
+        audit_result_df['trade_date'] = normalize_trade_date_series(
+            audit_result_df['trade_date']
+        ).dt.strftime('%Y%m%d')
+        audit_result_df = audit_result_df.sort_values(
+            ['ts_code', 'trade_date']
+        ).reset_index(drop=True)
         result_df = result_df[['ts_code', 'trade_date', signal_col]]
         result_df['trade_date'] = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
         sort_contract = extract_sort_contract(local_inputs)
@@ -1646,19 +1680,28 @@ def generate_first_run_factor_values(
     run_dir.mkdir(parents=True, exist_ok=True)
     factor_parquet = run_dir / f'factor_values__{report_id}.parquet'
     step3b_cache_parquet = run_dir / f'step3b_sample_factor_values__{report_id}.parquet'
+    step3b_audit_parquet = run_dir / f'step3b_sample_factor_audit__{report_id}.parquet'
     step3b_cache_csv = run_dir / f'step3b_sample_factor_values__{report_id}.csv'
     step3b_cache_meta = run_dir / f'step3b_sample_run_metadata__{report_id}.json'
     factor_csv = run_dir / f'factor_values__{report_id}.csv'
     factor_csv_sample = run_dir / f'factor_values_sample__{report_id}.csv'
     run_meta = run_dir / f'run_metadata__{report_id}.json'
+    audit_columns = [
+        column for column in audit_result_df.columns
+        if column not in {'ts_code', 'trade_date', signal_col}
+    ]
     for stale_csv in [factor_csv, factor_csv_sample, step3b_cache_csv]:
         if stale_csv.exists() or stale_csv.is_symlink():
             stale_csv.unlink()
+    if not audit_columns and (step3b_audit_parquet.exists() or step3b_audit_parquet.is_symlink()):
+        step3b_audit_parquet.unlink()
     for stale_formal in [factor_parquet, run_meta]:
         if stale_formal.exists() or stale_formal.is_symlink():
             stale_formal.unlink()
     with timer.phase('write_parquet'):
         result_df.to_parquet(step3b_cache_parquet, index=False)
+        if audit_columns:
+            audit_result_df.to_parquet(step3b_audit_parquet, index=False)
     with timer.phase('write_csv'):
         if csv_policy == 'full_csv':
             result_df.to_csv(step3b_cache_csv, index=False)
@@ -1720,6 +1763,8 @@ def generate_first_run_factor_values(
         'write_csv_seconds': float(phase_seconds.get('write_csv') or 0.0),
     }
     output_paths = [step3b_output_reference(step3b_cache_parquet)]
+    if audit_columns:
+        output_paths.append(step3b_output_reference(step3b_audit_parquet))
     if csv_sample_path:
         output_paths.append(step3b_output_reference(csv_sample_path))
     actual_window = {
@@ -1771,11 +1816,20 @@ def generate_first_run_factor_values(
         'input_paths': {
             'minute': str(minute_path) if minute_path else None,
             'daily': str(daily_path),
+            'exchange_calendar': (
+                str(exchange_calendar_path) if exchange_calendar_path else None
+            ),
             'prepared_sample_controller_config': (
                 str(prepared_sample_config_path) if prepared_sample_config_path else None
             ),
         },
         'prepared_sample_calendar_dates': prepared_sample_calendar,
+        'factor_audit_sidecar': {
+            'path': str(step3b_audit_parquet) if audit_columns else None,
+            'columns': list(audit_result_df.columns) if audit_columns else [],
+            'required_for_research_review': bool(audit_columns),
+            'consumer_projection_columns': ['ts_code', 'trade_date', signal_col],
+        },
         'step2_research_context': step2_research_context,
         'implementation_mode_decision': mode_decision,
         'created_at_utc': utc_now(),
@@ -1806,6 +1860,9 @@ def generate_first_run_factor_values(
             'formula_kernel_profile': formula_engine_profile.get('kernel_profile') or {},
             'output_bytes': {
                 'parquet': safe_file_size(step3b_cache_parquet),
+                'audit_parquet': (
+                    safe_file_size(step3b_audit_parquet) if audit_columns else 0
+                ),
                 'csv': safe_file_size(csv_path) if csv_path else 0,
                 'csv_sample': safe_file_size(csv_sample_path) if csv_sample_path else 0,
             },
@@ -1827,6 +1884,7 @@ def generate_first_run_factor_values(
         'is_formal_factor_values': False,
         'formal_factor_values_owner': 'Step4',
         'signal_column': signal_col,
+        'factor_audit_sidecar': metadata['factor_audit_sidecar'],
         'row_count': int(len(result_df)),
         'date_count': int(result_df['trade_date'].nunique()),
         'ticker_count': int(result_df['ts_code'].nunique()),
@@ -2377,12 +2435,34 @@ def resolve_direct_code_law_contract(contract: dict) -> dict:
     return resolved
 
 
-def ensure_direct_code_keyword_adapter(source_code: str) -> str:
+def ensure_direct_code_keyword_adapter(source_code: str, input_schema: dict | None = None) -> str:
     # Keep the selected body and expose the shared single-invocation keyword API.
     marker = '_factorforge_user_compute_factor'
     if marker in source_code:
         return source_code
-    adapter = r'''
+    declared_roles = set(input_schema or {})
+    if 'exchange_calendar' in declared_roles:
+        adapter = r'''
+
+# Factor Forge formal API adapter: factorforge_implementation_runtime_v1.
+# The selected factor body remains above; argument binding happens before its
+# single invocation. Body exceptions propagate without positional retries.
+_factorforge_user_compute_factor = compute_factor
+
+def compute_factor(daily_df=None, minute_df=None, exchange_calendar=None):
+    from factor_factory.implementation_runtime import invoke_factor
+
+    if exchange_calendar is None:
+        raise TypeError("BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: exchange_calendar")
+    return invoke_factor(
+        _factorforge_user_compute_factor,
+        daily_df,
+        minute_df,
+        additional_inputs={"exchange_calendar": exchange_calendar},
+    )
+'''
+    else:
+        adapter = r'''
 
 # Factor Forge formal API adapter: factorforge_implementation_runtime_v1.
 # The selected factor body remains above; argument binding happens before its
@@ -2419,7 +2499,14 @@ def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity
         )
     if 'def compute_factor' not in source_code:
         raise SystemExit('BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: direct_code source_code must define compute_factor().')
-    source_code = ensure_direct_code_keyword_adapter(source_code)
+    source_code = ensure_direct_code_keyword_adapter(
+        source_code,
+        input_schema=(
+            code_contract.get('input_schema')
+            if isinstance(code_contract.get('input_schema'), dict)
+            else None
+        ),
+    )
 
     factor_id = spec.get('factor_id') or report_id
     code_contract_hash = code_contract.get('code_contract_hash') or (plan or {}).get('code_contract_hash') or identity.get('code_contract_hash') or stable_hash(code_contract)

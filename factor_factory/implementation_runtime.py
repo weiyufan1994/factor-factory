@@ -24,7 +24,13 @@ def _nonempty(frame: Any) -> bool:
     return len(frame) > 0
 
 
-def invoke_factor(fn: Callable, daily_df: Any, minute_df: Any) -> Any:
+def invoke_factor(
+    fn: Callable,
+    daily_df: Any,
+    minute_df: Any,
+    *,
+    additional_inputs: dict[str, Any] | None = None,
+) -> Any:
     """Bind a keyword or legacy interface, then execute it exactly once."""
     try:
         signature = inspect.signature(fn)
@@ -36,6 +42,12 @@ def invoke_factor(fn: Callable, daily_df: Any, minute_df: Any) -> Any:
     )]
     accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
     frames = {"daily_df": daily_df, "minute_df": minute_df}
+    for name, value in (additional_inputs or {}).items():
+        if name in frames:
+            raise TypeError(f"BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_DUPLICATE: {name}")
+        if not isinstance(name, str) or not name.isidentifier():
+            raise TypeError(f"BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_INVALID: {name!r}")
+        frames[name] = value
     keywords = {
         name: value for name, value in frames.items()
         if accepts_kwargs or (
@@ -55,6 +67,26 @@ def invoke_factor(fn: Callable, daily_df: Any, minute_df: Any) -> Any:
         for p in positional_inputs
     )
     candidates = [((), keywords)] if keywords and keyword_complete else []
+    # Named auxiliary roles must never be populated through the legacy
+    # daily/minute positional fallback.  In particular, an exchange calendar
+    # is a separate authority, not a synonym for minute bars.
+    missing_named_roles = [
+        p.name
+        for p in params
+        if p.name not in {"daily_df", "minute_df"}
+        and p.default is inspect.Parameter.empty
+        and p.kind in (
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+            inspect.Parameter.KEYWORD_ONLY,
+        )
+        and p.name not in frames
+        and any(token in p.name.lower() for token in ("calendar", "universe", "benchmark"))
+    ]
+    if missing_named_roles:
+        raise TypeError(
+            "BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: "
+            + ",".join(sorted(missing_named_roles))
+        )
     if positional:
         first = positional[0].name.lower()
         minute_first = "minute" in first or "intraday" in first

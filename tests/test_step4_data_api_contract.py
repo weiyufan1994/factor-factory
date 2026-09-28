@@ -448,11 +448,22 @@ def test_step4_materializes_full_inputs_from_data_api_contract(tmp_path, monkeyp
     monkeypatch.setenv("FACTORFORGE_BACKTEST_BASE_CACHE_ROOT", str(tmp_path / "backtest_base_cache"))
     monkeypatch.setenv("FACTORFORGE_DISABLE_CLEAN_DAILY_LOCAL_PARQUET", "1")
     catalog_path = _write_catalog(tmp_path)
+    monkeypatch.setattr(
+        run_step4,
+        'list_open_trade_dates',
+        lambda **_kwargs: ['20260105', '20260106'],
+    )
     contract = {
         "version": "factorforge_step4_data_contract_v1",
         "data_api_package": "factorforge_data_api",
         "catalog_path": str(catalog_path),
         "formal_factor_values_owner": "Step4",
+        "additional_input_roles": {
+            "exchange_calendar": {
+                "version": "factorforge_exchange_calendar_input_v1",
+                "exchange": "SSE",
+            }
+        },
         "full_queries": {
             "clean_daily_bar": {
                 "dataset": "clean_daily_bar",
@@ -470,6 +481,10 @@ def test_step4_materializes_full_inputs_from_data_api_contract(tmp_path, monkeyp
     daily_path = Path(local_inputs["daily_df_parquet"])
     assert local_inputs["input_mode"] == "daily_only"
     assert daily_path.exists()
+    calendar_path = Path(local_inputs['exchange_calendar_parquet'])
+    assert calendar_path.exists()
+    assert pd.read_parquet(calendar_path)['trade_date'].tolist() == ['20260105', '20260106']
+    assert profile['result_metadata']['exchange_calendar']['row_count'] == 2
     assert profile["source"] == "factorforge_data_api_full_query"
     assert profile["result_metadata"]["clean_daily_bar"]["status"] == "ready"
     assert len(pd.read_parquet(daily_path)) == 2

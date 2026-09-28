@@ -135,3 +135,47 @@ def test_operator_direct_hybrid_compute_and_metric_consumers_agree(tmp_path, mon
         "three_modes_exact_equal": True, "results": results,
         "formal_ultimate_or_research_review_executed": False,
     }, indent=2, allow_nan=False))
+
+
+def test_step3b_preserves_direct_code_diagnostics_as_audit_sidecar(tmp_path, monkeypatch):
+    ff = tmp_path / 'offline_fixture'
+    (ff / 'objects').mkdir(parents=True)
+    monkeypatch.setenv('FACTORFORGE_ROOT', str(ff))
+    stage3 = _load(ROOT / 'skills/factor-forge-step3/scripts/run_step3b.py')
+    report_id = 'IT_DIRECT_CODE_AUDIT_SIDECAR'
+    input_dir = ff / 'runs' / report_id / 'step3a_local_inputs'
+    input_dir.mkdir(parents=True)
+    daily = pd.DataFrame({
+        'ts_code': ['000001.SZ', '000002.SZ'],
+        'trade_date': ['20240102', '20240102'],
+        'close': [10.0, 20.0],
+    })
+    daily_path = input_dir / f'daily_input__{report_id}.parquet'
+    daily.to_parquet(daily_path, index=False)
+    implementation = tmp_path / 'audit_factor.py'
+    implementation.write_text(
+        "def compute_factor(daily_df, minute_df=None):\n"
+        "    return daily_df[['ts_code','trade_date']].assign(factor_value=daily_df.close, n_valid=20)\n",
+        encoding='utf-8',
+    )
+
+    metadata = stage3.generate_first_run_factor_values(
+        report_id,
+        report_id,
+        implementation,
+        {'input_mode': 'daily_only', 'daily_df_parquet': str(daily_path)},
+        {'scope': 'offline_engineering_fixture'},
+        csv_output_policy='no_csv',
+    )
+
+    core = pd.read_parquet(
+        ff / 'runs' / report_id / f'step3b_sample_factor_values__{report_id}.parquet'
+    )
+    audit_path = ff / 'runs' / report_id / f'step3b_sample_factor_audit__{report_id}.parquet'
+    audit = pd.read_parquet(audit_path)
+    assert core.columns.tolist() == ['ts_code', 'trade_date', 'factor_value']
+    assert audit.columns.tolist() == ['ts_code', 'trade_date', 'factor_value', 'n_valid']
+    assert metadata['factor_audit_sidecar']['path'] == str(audit_path)
+    assert any(
+        path.endswith(audit_path.name) for path in metadata['output_paths']
+    )

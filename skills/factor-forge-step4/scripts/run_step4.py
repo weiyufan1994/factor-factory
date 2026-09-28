@@ -94,7 +94,12 @@ WORKSPACE = FACTORFORGE.parent
 OBJ = FACTORFORGE / 'objects'
 RUNS = FACTORFORGE / 'runs'
 
-from factor_factory.data_access import build_forward_return_frame, infer_signal_column, normalize_trade_date_series
+from factor_factory.data_access import (
+    build_forward_return_frame,
+    infer_signal_column,
+    list_open_trade_dates,
+    normalize_trade_date_series,
+)
 from factor_factory.partitioned_direct_code import run_partitioned_controller
 from factor_factory.primary_evaluator import primary_evaluator_plan
 from factor_factory.evo_child_execution import (
@@ -2511,15 +2516,25 @@ def normalize_direct_code_result(result: Any) -> Any:
     return result
 
 
-def compute_factor_with_contract(module, daily_df, minute_df):
+def compute_factor_with_contract(module, daily_df, minute_df, *, exchange_calendar=None):
     """Resolve the invocation before executing user code, without retries."""
     from factor_factory.implementation_runtime import invoke_factor
 
     use_polars = direct_code_expects_polars(module)
     daily_input = maybe_polars_frame(add_direct_code_alias_columns(daily_df), use_polars)
     minute_input = maybe_polars_frame(add_direct_code_alias_columns(minute_df), use_polars)
+    calendar_input = maybe_polars_frame(exchange_calendar, use_polars) if exchange_calendar is not None else None
+    additional_inputs = (
+        {'exchange_calendar': calendar_input}
+        if exchange_calendar is not None else None
+    )
     return normalize_direct_code_result(
-        invoke_factor(module.compute_factor, daily_input, minute_input)
+        invoke_factor(
+            module.compute_factor,
+            daily_input,
+            minute_input,
+            additional_inputs=additional_inputs,
+        )
     )
 
 
@@ -3903,6 +3918,40 @@ def materialize_step4_data_inputs_from_contract(
     data_dir = run_dir / 'step4_data_inputs'
     data_dir.mkdir(parents=True, exist_ok=True)
 
+    def attach_exchange_calendar(
+        local_inputs: dict[str, Any],
+        metadata: dict[str, Any],
+    ) -> None:
+        roles = (
+            contract.get('additional_input_roles')
+            if isinstance(contract.get('additional_input_roles'), dict)
+            else {}
+        )
+        role = roles.get('exchange_calendar')
+        if not isinstance(role, dict):
+            return
+        dates = list_open_trade_dates(
+            start=daily_query.get('start_date'),
+            end=daily_query.get('end_date'),
+            exchange=str(role.get('exchange') or 'SSE'),
+        )
+        if not dates:
+            raise SystemExit(
+                'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: exchange_calendar empty'
+            )
+        calendar_df = pd.DataFrame({'trade_date': dates})
+        calendar_path = data_dir / f'exchange_calendar__{report_id}.parquet'
+        calendar_df.to_parquet(calendar_path, index=False)
+        local_inputs['exchange_calendar_parquet'] = str(calendar_path)
+        metadata['exchange_calendar'] = {
+            'version': 'factorforge_exchange_calendar_input_v1',
+            'exchange': str(role.get('exchange') or 'SSE'),
+            'row_count': int(len(calendar_df)),
+            'start': dates[0],
+            'end': dates[-1],
+            'materialized_sha256': sha256_file(calendar_path),
+        }
+
     cached_base_path, cached_base_profile = (
         _load_backtest_base_cache(contract)
         if allow_persistent_cache
@@ -3954,6 +4003,7 @@ def materialize_step4_data_inputs_from_contract(
                     'formal_factor_values_owner': 'Step4',
                 },
             }
+        attach_exchange_calendar(local_inputs, meta)
         return local_inputs, {
             'source': 'factorforge_data_api_full_query',
             'contract_version': contract.get('version'),
@@ -4071,6 +4121,8 @@ def materialize_step4_data_inputs_from_contract(
                 'formal_factor_values_owner': 'Step4',
             },
         }
+
+    attach_exchange_calendar(local_inputs, meta)
 
     return local_inputs, {
         'source': 'factorforge_data_api_full_query',
@@ -4799,6 +4851,7 @@ def main() -> None:
             or local_inputs.get('daily_df_csv')
             or legacy_daily_fallback
         )
+        exchange_calendar_path = local_inputs.get('exchange_calendar_parquet')
         input_mode = str(local_inputs.get('input_mode') or '')
         minute_required = bool(
             minute_path
@@ -4821,6 +4874,9 @@ def main() -> None:
         import pandas as pd  # local import to keep hard dependency only for real execution path
         minute_file = Path(minute_path) if minute_path else None
         daily_file = Path(daily_path)
+        exchange_calendar_file = (
+            Path(exchange_calendar_path) if exchange_calendar_path else None
+        )
         derived_state_root = (
             Path(local_inputs['derived_state_root'])
             if prepared_derived_state else None
@@ -4829,10 +4885,16 @@ def main() -> None:
             minute_file = WORKSPACE / minute_file
         if not daily_file.is_absolute():
             daily_file = WORKSPACE / daily_file
+        if exchange_calendar_file is not None and not exchange_calendar_file.is_absolute():
+            exchange_calendar_file = WORKSPACE / exchange_calendar_file
         if derived_state_root is not None and not derived_state_root.is_absolute():
             derived_state_root = WORKSPACE / derived_state_root
-        if (minute_required and minute_file is not None and not minute_file.exists()) or not daily_file.exists():
-            issues.append({'severity': 'error', 'code': 'LOCAL_INPUT_FILES_NOT_FOUND', 'message': 'declared local input files do not exist', 'evidence': {'minute': str(minute_file) if minute_file else None, 'daily': str(daily_file)}})
+        if (
+            (minute_required and minute_file is not None and not minute_file.exists())
+            or not daily_file.exists()
+            or (exchange_calendar_file is not None and not exchange_calendar_file.exists())
+        ):
+            issues.append({'severity': 'error', 'code': 'LOCAL_INPUT_FILES_NOT_FOUND', 'message': 'declared local input files do not exist', 'evidence': {'minute': str(minute_file) if minute_file else None, 'daily': str(daily_file), 'exchange_calendar': str(exchange_calendar_file) if exchange_calendar_file else None}})
             run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'LOCAL_INPUT_FILES_NOT_FOUND', 'execution_precheck', start_utc)
             write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
             write_json(OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json', diagnostics)
@@ -4879,6 +4941,10 @@ def main() -> None:
             read_df(minute_file)
             if minute_file is not None and not prepared_derived_state
             else pd.DataFrame()
+        )
+        exchange_calendar_df = (
+            read_df(exchange_calendar_file)
+            if exchange_calendar_file is not None else None
         )
         if parent_diagnostics_projection:
             parent_daily_summary, daily_profile = stream_parent_diagnostics_summary(
@@ -5203,7 +5269,12 @@ def main() -> None:
                     write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
                     return
             else:
-                result_df = compute_factor_with_contract(module, signal_daily_df, minute_df)
+                result_df = compute_factor_with_contract(
+                    module,
+                    signal_daily_df,
+                    minute_df,
+                    exchange_calendar=exchange_calendar_df,
+                )
             if evo_pre_release:
                 end_agent_execution_isolation()
             step4_factor_io_profile = {
@@ -5265,6 +5336,7 @@ def main() -> None:
         signal_col = (
             'factor_value'
             if parent_factor_summary is not None
+            or (result_df is not None and 'factor_value' in result_df.columns)
             else infer_signal_column(result_df, factor_id=factor_id)
         )
         # A prepared direct-code controller can retain source-component audit

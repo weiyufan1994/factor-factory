@@ -96,6 +96,60 @@ def test_unbindable_signature_does_not_execute(frames):
     assert calls == []
 
 
+def test_named_exchange_calendar_is_delivered_without_positional_guessing(runner, frames):
+    calendar = pd.DataFrame({'trade_date': ['20240109', '20240110']})
+
+    def compute_factor(daily_df, exchange_calendar):
+        pd.testing.assert_frame_equal(daily_df, frames[0])
+        assert exchange_calendar['trade_date'].tolist() == ['20240109', '20240110']
+        return daily_df.assign(factor_value=1.0)
+
+    result = runner.compute_factor_with_contract(
+        SimpleNamespace(compute_factor=compute_factor),
+        *frames,
+        exchange_calendar=calendar,
+    )
+    assert result.factor_value.tolist() == [1.0]
+
+
+def test_missing_named_exchange_calendar_blocks_before_body(frames):
+    calls = []
+
+    def compute_factor(daily_df, exchange_calendar):
+        calls.append(True)
+
+    with pytest.raises(TypeError, match='BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING'):
+        invoke_factor(compute_factor, *frames)
+    assert calls == []
+
+
+def test_generated_adapter_declares_exchange_calendar_role(frames):
+    stage3 = load(ROOT / "skills/factor-forge-step3/scripts/run_step3b.py")
+    source = (
+        "def compute_factor(daily_df, exchange_calendar):\n"
+        "    assert exchange_calendar.trade_date.iloc[-1] == '20240110'\n"
+        "    return daily_df.close\n"
+    )
+    namespace = {}
+    exec(
+        stage3.ensure_direct_code_keyword_adapter(
+            source,
+            input_schema={
+                'daily_df': ['ts_code', 'trade_date', 'close'],
+                'exchange_calendar': ['trade_date'],
+            },
+        ),
+        namespace,
+    )
+    calendar = pd.DataFrame({'trade_date': ['20240109', '20240110']})
+    assert namespace['compute_factor'](
+        daily_df=frames[0],
+        exchange_calendar=calendar,
+    ).tolist() == [2.0]
+    with pytest.raises(TypeError, match='BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING'):
+        namespace['compute_factor'](daily_df=frames[0])
+
+
 def test_numpy_select_and_comments_do_not_switch_dataframe_backend(runner, frames, tmp_path):
     path = tmp_path / "numpy_factor.py"
     path.write_text(

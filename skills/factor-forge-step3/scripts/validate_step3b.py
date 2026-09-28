@@ -1123,19 +1123,35 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
     use_polars = direct_code_expects_polars(module)
     daily_input = maybe_polars_frame(daily_df, use_polars)
     minute_input = maybe_polars_frame(minute_df, use_polars)
+    input_schema = (
+        (code_contract or {}).get('input_schema')
+        if isinstance((code_contract or {}).get('input_schema'), dict)
+        else {}
+    )
+    exchange_calendar = (
+        pd.DataFrame({'trade_date': dates})
+        if 'exchange_calendar' in input_schema else None
+    )
+    calendar_input = (
+        maybe_polars_frame(exchange_calendar, use_polars)
+        if exchange_calendar is not None else None
+    )
+    call_kwargs = {'daily_df': daily_input, 'minute_df': minute_input}
+    if calendar_input is not None:
+        call_kwargs['exchange_calendar'] = calendar_input
     try:
         signature = inspect.signature(compute)
         params = list(signature.parameters.values())
     except (TypeError, ValueError) as exc:
         raise AssertionError(f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: cannot inspect compute_factor signature: {exc}') from exc
     try:
-        signature.bind(daily_df=daily_input, minute_df=minute_input)
+        signature.bind(**call_kwargs)
     except TypeError as exc:
         raise AssertionError(
             f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: {exc}'
         ) from exc
     try:
-        result = compute(daily_df=daily_input, minute_df=minute_input)
+        result = compute(**call_kwargs)
     except TypeError as exc:
         raise AssertionError(
             f'BLOCK_DIRECT_CODE_FIXTURE_EXECUTION_FAILED: factor body raised TypeError: {exc}'

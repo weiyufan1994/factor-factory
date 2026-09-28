@@ -216,6 +216,86 @@ def test_daily_step3a_snapshot_uses_query_safe_current_end(monkeypatch, tmp_path
     assert all(call[2].get("end") == "20160808" for call in calls)
 
 
+def test_direct_code_calendar_role_is_not_treated_as_daily_field():
+    run_step3 = _load_run_step3()
+    fields = run_step3.formula_required_daily_fields({
+        'canonical_spec': {
+            'required_inputs': [
+                'daily_df.pct_chg',
+                'exchange_calendar.trade_date',
+            ],
+        },
+        'implementation_contract': {
+            'code_contract': {
+                'required_fields': ['ts_code', 'trade_date', 'pct_chg', 'amount'],
+                'input_schema': {
+                    'daily_df': ['ts_code', 'trade_date', 'pct_chg', 'amount'],
+                    'exchange_calendar': ['trade_date'],
+                },
+            },
+        },
+    })
+    assert set(fields) == {'ts_code', 'trade_date', 'pct_chg', 'amount'}
+    assert all(not field.startswith('exchange_calendar.') for field in fields)
+
+
+def test_step3a_materializes_declared_calendar_and_uses_full_market(monkeypatch, tmp_path):
+    run_step3 = _load_run_step3()
+    monkeypatch.setattr(run_step3, 'RUNS', tmp_path / 'runs')
+    monkeypatch.setattr(run_step3, 'WORKSPACE', tmp_path)
+    trade_cal = tmp_path / 'trade_cal.csv'
+    trade_cal.write_text('exchange,cal_date,is_open\nSSE,20260105,1\n', encoding='utf-8')
+    monkeypatch.setattr(
+        run_step3,
+        'LOCAL_TUSHARE',
+        type('Paths', (), {'trade_cal_csv': trade_cal})(),
+    )
+    monkeypatch.setattr(
+        run_step3,
+        'list_open_trade_dates',
+        lambda **_kwargs: ['20260105'],
+    )
+    monkeypatch.setattr(
+        run_step3,
+        'materialize_daily_audit_csv',
+        lambda *args, **kwargs: {'csv_output_policy': 'no_csv'},
+    )
+    resolutions = []
+
+    def fake_resolve(dataset, **kwargs):
+        resolutions.append((dataset, kwargs))
+        return _ready_resolution(dataset, **kwargs)
+
+    class FakeResult:
+        status = 'ready'
+        frame = pd.DataFrame({
+            'ts_code': ['000001.SZ', '000002.SZ', '000003.SZ'],
+            'trade_date': ['20260105'] * 3,
+            'pct_chg': [1.0, -1.0, 0.5],
+            'amount': [100.0, 200.0, 300.0],
+        })
+
+        def to_metadata(self):
+            return {'status': 'ready'}
+
+    monkeypatch.setattr(run_step3, 'resolve_data_api_dataset', fake_resolve)
+    monkeypatch.setattr(run_step3, 'fetch_data_api_dataset', lambda *args, **kwargs: FakeResult())
+
+    result = run_step3.materialize_shared_daily_slice(
+        'CALENDAR_ROLE',
+        {'start': '2026-01-05', 'end': '2026-01-05'},
+        required_fields=['ts_code', 'trade_date', 'pct_chg', 'amount'],
+        requires_exchange_calendar=True,
+    )
+
+    assert result['snapshot_source'] == 'data_api_clean_daily_bar'
+    assert Path(tmp_path / result['exchange_calendar_parquet']).exists()
+    assert result['exchange_calendar_contract']['row_count'] == 1
+    clean_requests = [kwargs for dataset, kwargs in resolutions if dataset == 'clean_daily_bar']
+    assert clean_requests and all(kwargs['universe'] == 'a_share_all' for kwargs in clean_requests)
+    assert 'exchange_calendar' in result['step4_data_contract']['additional_input_roles']
+
+
 def test_minute_step3a_snapshot_resolution_uses_query_safe_current_end(monkeypatch, tmp_path):
     run_step3 = _load_run_step3()
     monkeypatch.setenv("FACTORFORGE_DATA_API_CURRENT_END_DATE", "20260603")

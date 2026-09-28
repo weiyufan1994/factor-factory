@@ -49,7 +49,9 @@ from factor_factory.data_access import (
     CleanDailyLayerPaths,
     clean_daily_layer_ready,
     inspect_trade_date_csv_root,
+    list_open_trade_dates,
     minute_derived_flow_state_requirement,
+    normalize_trade_date_series,
     research_window_contract,
     resolve_clean_daily_layer_paths,
     resolve_local_tushare_paths,
@@ -1287,14 +1289,39 @@ def formula_required_daily_fields(fsm: dict) -> list[str]:
     formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
     contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
     code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    input_schema = code_contract.get('input_schema') if isinstance(code_contract.get('input_schema'), dict) else {}
+    daily_schema = input_schema.get('daily_df') if isinstance(input_schema.get('daily_df'), list) else []
+    non_daily_roles = {
+        str(role).strip()
+        for role in input_schema
+        if str(role).strip() not in {'daily_df', 'grain', 'state_dataset'}
+    }
     candidates = (
         list(formula_ir.get('required_fields') or [])
         + list(canonical.get('required_inputs') or [])
         + list(code_contract.get('required_fields') or [])
+        + list(daily_schema)
         + list(contract.get('required_fields') or [])
         + list(fsm.get('required_inputs') or [])
     )
-    return list(dict.fromkeys(str(field).strip().lower() for field in candidates if str(field).strip()))
+    fields = []
+    for raw_field in candidates:
+        field = str(raw_field).strip().lower()
+        if not field:
+            continue
+        if field.startswith('daily_df.'):
+            field = field.split('.', 1)[1]
+        if any(field == role.lower() or field.startswith(role.lower() + '.') for role in non_daily_roles):
+            continue
+        fields.append(field)
+    return list(dict.fromkeys(fields))
+
+
+def direct_code_requires_exchange_calendar(fsm: dict) -> bool:
+    contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
+    code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    input_schema = code_contract.get('input_schema') if isinstance(code_contract.get('input_schema'), dict) else {}
+    return 'exchange_calendar' in input_schema
 
 
 def moneyflow_required_fields(fsm: dict) -> list[str]:
@@ -1571,11 +1598,15 @@ def materialize_shared_daily_slice(
     required_fields: list[str] | None = None,
     formula_ir: dict | None = None,
     proof_control_fields: list[str] | None = None,
+    requires_exchange_calendar: bool = False,
 ) -> dict:
     del symbols
     local_dir = RUNS / report_id / 'step3a_local_inputs'
     local_dir.mkdir(parents=True, exist_ok=True)
-    needs_cross_sectional_sample = requires_cross_sectional_sample(formula_ir)
+    needs_cross_sectional_sample = (
+        requires_cross_sectional_sample(formula_ir)
+        or requires_exchange_calendar
+    )
     step3_sample_universe: str | list[str] = 'a_share_all' if needs_cross_sectional_sample else ['000001.SZ', '000002.SZ']
     daily_fields = select_clean_daily_fields_for_formula(
         [*(required_fields or []), *(proof_control_fields or [])], formula_ir
@@ -1620,6 +1651,17 @@ def materialize_shared_daily_slice(
         daily_fields=daily_fields,
         daily_basic_fields=daily_basic_fields if daily_basic_required else None,
     )
+    if requires_exchange_calendar:
+        step4_data_contract['additional_input_roles'] = {
+            'exchange_calendar': {
+                'version': 'factorforge_exchange_calendar_input_v1',
+                'authority': 'local_tushare_trade_cal',
+                'exchange': 'SSE',
+                'open_only': True,
+                'columns': ['trade_date'],
+                'binding_rule': 'materialize_from_authoritative_trade_cal_for_exact_query_window',
+            }
+        }
 
     daily_basic_ready = (not daily_basic_required) or (
         isinstance(daily_basic_resolution, dict) and daily_basic_resolution.get('status') in {'ready', 'proxy_ready'}
@@ -1723,6 +1765,57 @@ def materialize_shared_daily_slice(
     daily_csv = local_dir / f'daily_input__{report_id}.csv'
     daily_sample_csv = local_dir / f'daily_input_sample__{report_id}.csv'
     daily_df.to_parquet(daily_parquet, index=False)
+    exchange_calendar_payload = {}
+    if requires_exchange_calendar:
+        try:
+            calendar_dates = list_open_trade_dates(
+                start=query_window['start'],
+                end=query_window['end'],
+                exchange='SSE',
+                paths=LOCAL_TUSHARE,
+            )
+        except (FileNotFoundError, OSError, ValueError) as exc:
+            return {
+                'snapshot_note': f'Authoritative exchange calendar could not be materialized: {exc}',
+                'snapshot_source': 'missing_exchange_calendar',
+                'input_mode': 'daily_only',
+                'step4_data_contract': step4_data_contract,
+            }
+        if not calendar_dates:
+            return {
+                'snapshot_note': 'Authoritative exchange calendar was empty for the Step3A query window.',
+                'snapshot_source': 'missing_exchange_calendar',
+                'input_mode': 'daily_only',
+                'step4_data_contract': step4_data_contract,
+            }
+        observed_dates = set(normalize_trade_date_series(daily_df['trade_date']).dt.strftime('%Y%m%d'))
+        missing_authority_dates = sorted(observed_dates - set(calendar_dates))
+        if missing_authority_dates:
+            return {
+                'snapshot_note': 'clean_daily_bar contains dates outside the authoritative exchange calendar.',
+                'snapshot_source': 'exchange_calendar_mismatch',
+                'input_mode': 'daily_only',
+                'step4_data_contract': step4_data_contract,
+                'exchange_calendar_mismatch_dates': missing_authority_dates[:20],
+            }
+        calendar_df = pd.DataFrame({'trade_date': calendar_dates})
+        calendar_path = local_dir / f'exchange_calendar__{report_id}.parquet'
+        calendar_df.to_parquet(calendar_path, index=False)
+        source_path = Path(LOCAL_TUSHARE.trade_cal_csv)
+        exchange_calendar_payload = {
+            'exchange_calendar_parquet': str(calendar_path.relative_to(WORKSPACE)),
+            'exchange_calendar_contract': {
+                'version': 'factorforge_exchange_calendar_input_v1',
+                'exchange': 'SSE',
+                'open_only': True,
+                'row_count': int(len(calendar_df)),
+                'start': calendar_dates[0],
+                'end': calendar_dates[-1],
+                'source_path': str(source_path),
+                'source_sha256': hashlib.sha256(source_path.read_bytes()).hexdigest(),
+                'materialized_sha256': hashlib.sha256(calendar_path.read_bytes()).hexdigest(),
+            },
+        }
     audit_payload = materialize_daily_audit_csv(
         daily_df,
         report_id=report_id,
@@ -1738,6 +1831,7 @@ def materialize_shared_daily_slice(
         'snapshot_source': 'data_api_clean_daily_bar',
         'input_mode': 'daily_only',
         'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
+        **exchange_calendar_payload,
         'preferred_daily_format': 'parquet',
         **audit_payload,
         'data_api_resolution': {
@@ -2204,6 +2298,7 @@ def build_local_daily_snapshot(
     required_fields: list[str] | None = None,
     formula_ir: dict | None = None,
     proof_control_fields: list[str] | None = None,
+    requires_exchange_calendar: bool = False,
 ):
     # Daily-only factors resolve the published clean_daily_bar Data API contract.
     return materialize_shared_daily_slice(
@@ -2213,6 +2308,7 @@ def build_local_daily_snapshot(
         required_fields=required_fields,
         formula_ir=formula_ir,
         proof_control_fields=proof_control_fields,
+        requires_exchange_calendar=requires_exchange_calendar,
     )
 
 
@@ -2474,6 +2570,10 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
     implementation_mode = declared_implementation_mode(
         fsm,
         price_volume_minute=price_volume_minute,
+    )
+    requires_exchange_calendar = (
+        implementation_mode == 'direct_code'
+        and direct_code_requires_exchange_calendar(fsm)
     )
     measurement_program = validated_measurement_program_for_step3(
         fsm,
@@ -2822,16 +2922,26 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
             required_fields=required_fields,
             formula_ir=formula_ir,
             proof_control_fields=proof_control_columns,
+            requires_exchange_calendar=requires_exchange_calendar,
         )
         snapshot_note = local_input_paths.get('snapshot_note')
         snapshot_source = local_input_paths.get('snapshot_source')
         if snapshot_note:
             notes.append(str(snapshot_note))
-        if snapshot_source in {'missing_clean_daily_layer', 'missing_data_api_clean_daily_bar'}:
+        if snapshot_source in {
+            'missing_clean_daily_layer',
+            'missing_data_api_clean_daily_bar',
+            'missing_exchange_calendar',
+            'exchange_calendar_mismatch',
+        }:
             blocked.append({
-                'code': 'DATA_API_CLEAN_DAILY_BAR_UNAVAILABLE'
-                if snapshot_source == 'missing_data_api_clean_daily_bar'
-                else 'SHARED_CLEAN_DAILY_LAYER_MISSING',
+                'code': (
+                    'DATA_API_CLEAN_DAILY_BAR_UNAVAILABLE'
+                    if snapshot_source == 'missing_data_api_clean_daily_bar'
+                    else 'EXCHANGE_CALENDAR_UNAVAILABLE_OR_MISMATCH'
+                    if snapshot_source in {'missing_exchange_calendar', 'exchange_calendar_mismatch'}
+                    else 'SHARED_CLEAN_DAILY_LAYER_MISSING'
+                ),
                 'detail': snapshot_note,
             })
 

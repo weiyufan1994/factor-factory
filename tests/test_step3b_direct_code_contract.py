@@ -133,6 +133,31 @@ def test_direct_code_smoke_accepts_keyword_interface_with_non_null_signal(tmp_pa
     validate_step3b.run_direct_code_fixture_smoke(impl, {"columns": ["ts_code", "trade_date", "factor_value"]})
 
 
+def test_direct_code_smoke_supplies_declared_exchange_calendar(tmp_path):
+    validate_step3b = _load_validate_step3b()
+    impl = tmp_path / 'valid_calendar.py'
+    impl.write_text(
+        "import pandas as pd\n"
+        "def compute_factor(*, daily_df, exchange_calendar, minute_df=None):\n"
+        "    assert list(exchange_calendar.columns) == ['trade_date']\n"
+        "    assert exchange_calendar['trade_date'].is_monotonic_increasing\n"
+        "    df = daily_df.head(2)\n"
+        "    return df[['ts_code', 'trade_date']].assign(factor_value=1.0)\n",
+        encoding='utf-8',
+    )
+    validate_step3b.run_direct_code_fixture_smoke(
+        impl,
+        {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        code_contract={
+            'required_fields': ['ts_code', 'trade_date'],
+            'input_schema': {
+                'daily_df': ['ts_code', 'trade_date'],
+                'exchange_calendar': ['trade_date'],
+            },
+        },
+    )
+
+
 def test_lcr_float_value_denominator_law_registry_entry_executes():
     import pandas as pd
 

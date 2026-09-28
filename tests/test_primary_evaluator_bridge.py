@@ -396,6 +396,30 @@ def test_step6_complete_signal_event_evidence_is_archivable_but_not_promotable()
         "group_top_decile_mean_return": .002,
         "group_bottom_decile_mean_return": .001,
     }
+    payload = {
+        "status": "success",
+        "tradable_net_alpha_evidence": False,
+        "ic_summary": {"rank_ic_mean": .02},
+        "group_backtest_summary": {"top_decile_mean_return": .002, "bottom_decile_mean_return": .001},
+        "long_side_performance": {
+            key: value for key, value in metrics.items()
+            if key not in {"rank_ic_mean", "group_top_decile_mean_return", "group_bottom_decile_mean_return", "tradable_net_alpha_evidence"}
+        },
+    }
+    extracted = module.extract_headline_metrics({"self_quant_analyzer": payload})
+    for key in (
+        "annualized_metrics_admissible",
+        "long_side_mean_return_per_signal_event",
+        "long_side_return_std_per_signal_event",
+        "long_side_signal_event_ir",
+        "long_side_turnover_mean_per_rebalance",
+        "trading_cogs_per_rebalance",
+        "cost_adjusted_return_per_signal_event",
+        "cost_adjusted_return_std_per_signal_event",
+        "cost_adjusted_long_side_signal_event_ir",
+        "tradable_net_alpha_evidence",
+    ):
+        assert extracted[key] == metrics[key]
     bundle = {
         "factor_run_master": {
             "evaluation_plan": None,
@@ -406,7 +430,7 @@ def test_step6_complete_signal_event_evidence_is_archivable_but_not_promotable()
         "factor_case_master": {"evidence_quality": {"identity_chain_verified": True, "long_side_metrics_present": True}},
         "factor_evaluation": {},
     }
-    audit = module.build_evidence_audit(bundle, {"self_quant_analyzer": {"status": "success"}}, metrics)
+    audit = module.build_evidence_audit(bundle, {"self_quant_analyzer": payload}, extracted)
     assert audit["evidence_verdict"] == "usable_with_warnings"
     assert audit["diagnostic_archive_eligible"] is True
     assert audit["long_side_evidence_quality"]["long_side_verdict"] == "diagnostic_only"

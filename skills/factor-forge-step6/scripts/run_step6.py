@@ -387,11 +387,17 @@ def extract_headline_metrics(
     for key in [
         'metric_period',
         'annualization_factor',
+        'annualized_metrics_admissible',
+        'observation_spacing_days_median',
+        'holding_period_interpretation',
         'long_side_mean_return_daily',
+        'long_side_mean_return_per_signal_event',
         'long_side_annual_return',
         'long_side_return_std_daily',
+        'long_side_return_std_per_signal_event',
         'long_side_annual_volatility',
         'long_side_sharpe',
+        'long_side_signal_event_ir',
         'long_side_max_drawdown',
         'long_side_recovery_days',
         'long_side_drawdown_area',
@@ -399,12 +405,17 @@ def extract_headline_metrics(
         'long_side_max_drawdown_episode_area',
         'long_side_recovery_pain_area',
         'long_side_turnover_mean_daily',
+        'long_side_turnover_mean_per_rebalance',
         'turnover_mean',
         'trading_cogs_daily',
+        'trading_cogs_per_rebalance',
         'trading_cogs_annual',
         'cost_adjusted_return_daily',
+        'cost_adjusted_return_per_signal_event',
         'cost_adjusted_annual_return',
+        'cost_adjusted_return_std_per_signal_event',
         'cost_adjusted_long_side_sharpe',
+        'cost_adjusted_long_side_signal_event_ir',
         'cost_adjusted_long_side_max_drawdown',
         'cost_adjusted_long_side_recovery_days',
         'cost_adjusted_long_side_drawdown_area',
@@ -414,6 +425,14 @@ def extract_headline_metrics(
     ]:
         if key in sq_long:
             metrics[key] = sq_long.get(key)
+    for key in (
+        'evaluation_scope',
+        'account_simulation',
+        'tradable_net_alpha_evidence',
+        'result_interpretation',
+    ):
+        if key in sq:
+            metrics[key] = sq.get(key)
 
     ql_native = ql.get('native_backtest_metrics') or {}
     ql_stub = ql.get('stub_backtest_metrics') or {}

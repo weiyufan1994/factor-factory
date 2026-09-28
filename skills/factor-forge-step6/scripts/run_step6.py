@@ -32,6 +32,7 @@ from factor_factory.provenance import (
     build_evidence_identity,
     build_knowledge_provenance,
     derive_identity as derive_provenance_identity,
+    classify_long_side_evidence,
 )
 from factor_factory.knowledge_context import graph_node_to_similar_case, retrieve_factor_knowledge_context
 from factor_factory.advisory_runtime import configured_advisory_root, read_visible_experience, carried_reference_is_current
@@ -106,6 +107,15 @@ CORE_LOOP_BRIEF_METRICS = [
     'cost_adjusted_annual_return',
     'cost_adjusted_long_side_sharpe',
     'cost_adjusted_long_side_max_drawdown',
+    'metric_period',
+    'annualization_factor',
+    'annualized_metrics_admissible',
+    'long_side_mean_return_per_signal_event',
+    'long_side_signal_event_ir',
+    'long_side_turnover_mean_per_rebalance',
+    'trading_cogs_per_rebalance',
+    'cost_adjusted_return_per_signal_event',
+    'cost_adjusted_long_side_signal_event_ir',
     'group_top_decile_mean_return',
     'group_bottom_decile_mean_return',
     'group_long_short_spread_mean',
@@ -1007,7 +1017,12 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
     ]
 
     rank_ic = _safe_float(headline_metrics.get('rank_ic_mean'))
-    long_return = _safe_float(headline_metrics.get('long_side_annual_return'))
+    evidence_class = classify_long_side_evidence(headline_metrics)
+    event_diagnostic = evidence_class['evidence_mode'] == 'signal_event_diagnostic'
+    long_return = _safe_float(
+        headline_metrics.get('long_side_mean_return_per_signal_event')
+        if event_diagnostic else headline_metrics.get('long_side_annual_return')
+    )
     top_daily = _safe_float(headline_metrics.get('group_top_decile_mean_return'))
     bottom_daily = _safe_float(headline_metrics.get('group_bottom_decile_mean_return'))
     spread = _safe_float(headline_metrics.get('group_long_short_spread_mean'))
@@ -1056,21 +1071,33 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
         'cost_adjusted_annual_return',
         'cost_adjusted_long_side_sharpe',
     ]
-    missing_long = [key for key in required_long_side if headline_metrics.get(key) is None]
-    if 'long_side_recovery_days' in missing_long and recovery_evidence_complete(headline_metrics):
+    missing_long = (
+        list(evidence_class['missing_metrics']) + list(evidence_class['boundary_errors'])
+        if event_diagnostic else [key for key in required_long_side if headline_metrics.get(key) is None]
+    )
+    if not event_diagnostic and 'long_side_recovery_days' in missing_long and recovery_evidence_complete(headline_metrics):
         missing_long.remove('long_side_recovery_days')
     sharpe = _safe_float(headline_metrics.get('long_side_sharpe'))
     max_drawdown = _safe_float(headline_metrics.get('long_side_max_drawdown'))
     recovery_days = _safe_float(headline_metrics.get('long_side_recovery_days'))
-    turnover = _safe_float(headline_metrics.get('long_side_turnover_mean_daily') or headline_metrics.get('turnover_mean'))
-    explicit_cogs_daily = _safe_float(headline_metrics.get('trading_cogs_daily'))
+    turnover = _safe_float(
+        headline_metrics.get('long_side_turnover_mean_per_rebalance')
+        if event_diagnostic else headline_metrics.get('long_side_turnover_mean_daily') or headline_metrics.get('turnover_mean')
+    )
+    explicit_cogs_daily = None if event_diagnostic else _safe_float(headline_metrics.get('trading_cogs_daily'))
     turnover_times_30bps_daily = abs(turnover) * DEFAULT_TURNOVER_COST_RATE if turnover is not None else None
     cogs_daily = explicit_cogs_daily if explicit_cogs_daily is not None else turnover_times_30bps_daily
-    cogs_annual = _safe_float(headline_metrics.get('trading_cogs_annual'))
+    cogs_annual = None if event_diagnostic else _safe_float(headline_metrics.get('trading_cogs_annual'))
     if cogs_annual is None and cogs_daily is not None:
         cogs_annual = cogs_daily * 252
-    cost_adjusted_return = _safe_float(headline_metrics.get('cost_adjusted_annual_return'))
-    cost_adjusted_sharpe = _safe_float(headline_metrics.get('cost_adjusted_long_side_sharpe'))
+    cost_adjusted_return = _safe_float(
+        headline_metrics.get('cost_adjusted_return_per_signal_event')
+        if event_diagnostic else headline_metrics.get('cost_adjusted_annual_return')
+    )
+    cost_adjusted_sharpe = _safe_float(
+        headline_metrics.get('cost_adjusted_long_side_signal_event_ir')
+        if event_diagnostic else headline_metrics.get('cost_adjusted_long_side_sharpe')
+    )
 
     if sharpe is None:
         sharpe_status = 'missing'
@@ -1104,7 +1131,9 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
         cost_adjusted_status = 'negative'
     else:
         cost_adjusted_status = 'positive'
-    if missing_long:
+    if event_diagnostic and not missing_long:
+        long_side_verdict = 'diagnostic_only'
+    elif missing_long:
         long_side_verdict = 'blocked'
     elif recovery_status == 'right_censored_not_recovered':
         long_side_verdict = 'inconclusive'
@@ -1169,6 +1198,8 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
 
     if all_skipped or not primary_present or missing_long or factor_value_verdict == 'blocked' or case_quality.get('identity_chain_verified') is False:
         evidence_verdict = 'blocked'
+    elif event_diagnostic:
+        evidence_verdict = 'usable_with_warnings'
     elif cogs_destroy_alpha or high_turnover or failed or skipped or metric_verdict in {'mixed', 'negative', 'inconclusive'}:
         evidence_verdict = 'usable_with_warnings'
     else:
@@ -1207,6 +1238,10 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
             'factor_value_verdict': factor_value_verdict,
         },
         'long_side_evidence_quality': {
+            'evidence_mode': evidence_class['evidence_mode'],
+            'tradable_net_alpha_evidence': evidence_class['tradable_net_alpha_evidence'],
+            'next_month_holding_estimand_executed': evidence_class['next_month_holding_estimand_executed'],
+            'promotion_eligible': evidence_class['promotion_eligible'],
             'long_side_return_positive': bool(long_return is not None and long_return > 0),
             'sharpe_status': sharpe_status,
             'drawdown_status': drawdown_status,
@@ -1236,6 +1271,7 @@ def build_evidence_audit(bundle: dict[str, Any], payloads: dict[str, dict[str, A
         },
         'data_or_implementation_suspicions': suspicions,
         'evidence_verdict': evidence_verdict,
+        'diagnostic_archive_eligible': bool(event_diagnostic and not missing_long),
     }
 
 
@@ -3940,10 +3976,14 @@ def build_evidence_status(
     metrics: dict[str, Any],
     decision: str,
 ) -> dict[str, Any]:
+    evidence_class = classify_long_side_evidence(metrics)
+    event_diagnostic = evidence_class['evidence_mode'] == 'signal_event_diagnostic'
     long_complete = all(_safe_float(metrics.get(key)) is not None for key in [
         'long_side_annual_return',
         'long_side_max_drawdown',
     ]) and recovery_evidence_complete(metrics)
+    if event_diagnostic:
+        long_complete = evidence_class['complete']
     cost_complete = _safe_float(metrics.get('cost_adjusted_annual_return')) is not None
     drawdown_complete = all(_safe_float(metrics.get(key)) is not None for key in [
         'long_side_max_drawdown',
@@ -3983,8 +4023,8 @@ def build_evidence_status(
             if primary_backend == 'self_quant_analyzer' else 'not_required'
         ),
         'qlib_native_status': _qlib_native_status(payloads, backend_statuses),
-        'long_side_evidence_status': 'complete' if long_complete else 'missing',
-        'cost_model_status': 'complete' if cost_complete else 'missing',
+        'long_side_evidence_status': 'diagnostic_only' if event_diagnostic and long_complete else 'complete' if long_complete else 'missing',
+        'cost_model_status': 'per_rebalance_diagnostic_only' if event_diagnostic and long_complete else 'complete' if cost_complete else 'missing',
         'drawdown_geometry_status': 'complete' if drawdown_complete else 'missing',
         'research_decision': research_decision,
         'promotion_gate_status': promotion_gate_status,

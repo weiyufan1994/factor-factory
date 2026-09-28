@@ -368,3 +368,46 @@ def test_step6_right_censor_is_inconclusive_not_a_missing_evidence_block() -> No
     assert audit["long_side_evidence_quality"]["recovery_status"] == "right_censored_not_recovered"
     assert audit["long_side_evidence_quality"]["long_side_verdict"] == "inconclusive"
     assert audit["evidence_verdict"] == "usable_with_warnings"
+
+
+def test_step6_complete_signal_event_evidence_is_archivable_but_not_promotable() -> None:
+    path = REPO_ROOT / "skills/factor-forge-step6/scripts/run_step6.py"
+    spec = importlib.util.spec_from_file_location("step6_event_diagnostic_test", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    metrics = {
+        "metric_period": "signal_event_t_plus_1",
+        "annualization_factor": None,
+        "annualized_metrics_admissible": False,
+        "tradable_net_alpha_evidence": False,
+        "long_side_mean_return_per_signal_event": .002,
+        "long_side_return_std_per_signal_event": .02,
+        "long_side_signal_event_ir": .1,
+        "long_side_max_drawdown": -.2,
+        "long_side_recovery_days": 60,
+        "long_side_turnover_mean_per_rebalance": .4,
+        "trading_cogs_per_rebalance": .0012,
+        "cost_adjusted_return_per_signal_event": .0008,
+        "cost_adjusted_return_std_per_signal_event": .02,
+        "cost_adjusted_long_side_signal_event_ir": .04,
+        "cost_adjusted_long_side_max_drawdown": -.22,
+        "rank_ic_mean": .02,
+        "group_top_decile_mean_return": .002,
+        "group_bottom_decile_mean_return": .001,
+    }
+    bundle = {
+        "factor_run_master": {
+            "evaluation_plan": None,
+            "evaluation_results": {"backend_runs": [{"backend": "self_quant_analyzer", "status": "success"}]},
+            "diagnostic_summary": {"row_count": 10, "date_count": 2, "ticker_count": 5},
+            "implementation_mode_decision": {"selected_mode": "direct_code"},
+        },
+        "factor_case_master": {"evidence_quality": {"identity_chain_verified": True, "long_side_metrics_present": True}},
+        "factor_evaluation": {},
+    }
+    audit = module.build_evidence_audit(bundle, {"self_quant_analyzer": {"status": "success"}}, metrics)
+    assert audit["evidence_verdict"] == "usable_with_warnings"
+    assert audit["diagnostic_archive_eligible"] is True
+    assert audit["long_side_evidence_quality"]["long_side_verdict"] == "diagnostic_only"
+    assert audit["long_side_evidence_quality"]["promotion_eligible"] is False

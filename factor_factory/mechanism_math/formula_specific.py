@@ -405,6 +405,20 @@ def _has_stochastic_process_prose(process: str) -> bool:
     )
 
 
+def _has_explicit_conditional_mean_regression(process: str) -> bool:
+    """Recognize a signed conditional-mean cross-sectional model."""
+    normalized = process.lower().translate(
+        str.maketrans({"β": "beta", "α": "alpha", "γ": "gamma"})
+    )
+    return bool(
+        re.search(r"e\s*\[[^\]]+\|[^\]]+\]\s*=", normalized)
+        and "alpha" in normalized
+        and re.search(r"beta(?:_[a-z0-9]+)?\s*\*", normalized)
+        and re.search(r"measured_object|x[0-9]+|factor|score|state", normalized)
+        and re.search(r"beta(?:_[a-z0-9]+)?\s*(?:>|<)\s*0", normalized)
+    )
+
+
 def _has_explicit_transient_impact_model(
     process: str,
     formula_tokens: set[str],
@@ -2039,7 +2053,9 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
             "=" in mechanism and has_value_term and has_discount_term
         )
     else:
-        missing_model_assumption = not model_hits
+        missing_model_assumption = not (
+            model_hits or _has_explicit_conditional_mean_regression(mechanism_text)
+        )
     if missing_model_assumption and (
         formula_hits
         or baseline in {

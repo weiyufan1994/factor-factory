@@ -119,6 +119,38 @@ def test_bare_generic_trader_label_and_formula_restatement_still_block() -> None
     assert "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING" in codes
 
 
+def test_signed_conditional_mean_regression_is_a_model_not_formula_restatement() -> None:
+    derivation = deepcopy(_overnight_reversal_derivation())
+    derivation["economic_to_math_model_selection"]["baseline_model_family"] = "other"
+    derivation["selected_model_family"] = "other"
+    derivation["process_or_distribution"] = (
+        "E[next_month_return_{i,m+1}|F_m]=alpha_m+beta_L*measured_object_{i,m}"
+        "+gamma'*controls_{i,m}, with beta_L>0 under liquidity compensation"
+    )
+
+    regression_spec = {
+        "canonical_spec": {
+            "formula_text": "X20=measured_object(amount)",
+            "required_inputs": ["amount"],
+        }
+    }
+    codes = {
+        failure["code"]
+        for failure in validate_formula_specific_derivation(derivation, regression_spec, {})
+    }
+    assert "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING" not in codes
+
+    unsigned = deepcopy(derivation)
+    unsigned["process_or_distribution"] = (
+        "E[next_month_return_{i,m+1}|F_m]=alpha_m+beta_L*measured_object_{i,m}"
+    )
+    unsigned_codes = {
+        failure["code"]
+        for failure in validate_formula_specific_derivation(unsigned, regression_spec, {})
+    }
+    assert "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING" in unsigned_codes
+
+
 def test_derivation_preserves_explicit_reject_evidence_instead_of_forcing_iteration() -> None:
     memo = {
         "mechanism_qa": {

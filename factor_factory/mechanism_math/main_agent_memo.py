@@ -16,6 +16,8 @@ from ..knowledge_reference import (
     validate_knowledge_reference_contract,
 )
 from ..measurement_program import (
+    MEASUREMENT_PROGRAM_VERSION_V1,
+    ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE,
     research_compatibility_profile_from_spec,
     validate_measurement_program,
 )
@@ -2931,15 +2933,21 @@ def _validated_v1_direct_code_measurement_program_projection_aliases(
         return set()
     math_object = str(math_payload.get("mathematical_object") or "").strip()
     memo_observation = str(math_payload.get("observation_mapping") or "").strip()
+    # Frozen monthly V1 objects commonly use ``m`` as their current signal
+    # index.  Normalize only an exact index component ``m`` to the validator's
+    # generic current-time symbol ``t``; offsets such as m+1 remain unchanged
+    # and therefore fail the current-object grammar.
+    current_aliases = _current_object_alias_names(
+        re.sub(r"(?<=\{|,)\s*m\s*(?=,|\})", "t", math_object)
+    )
     if (
         not math_object
         or normalized(math_object) != normalized(object_mapping.get("mathematical_object"))
         or normalized(memo_observation) != normalized(object_mapping.get("observation_mapping"))
         or normalized(memo_observation) != normalized(program_observation)
         or _contains_future_payoff_object(math_object)
-        or _has_future_temporal_reference(memo_observation)
-        or _current_object_alias_names(math_object) is None
-        or "measured_object" not in _current_object_alias_names(math_object)
+        or current_aliases is None
+        or "measured_object" not in current_aliases
     ):
         return set()
 
@@ -4252,11 +4260,25 @@ def _validated_measurement_program_from_factor_spec(
         return None, []
     if any(candidate != program for candidate in candidates[1:]):
         return None, ["measurement_program.copies_mismatch"]
+    compatibility_profile = research_compatibility_profile_from_spec(factor_spec)
+    # Legacy ordinary-local Step2 objects predate the duplicated top-level /
+    # research-contract profile binding.  Their V1 program may nevertheless
+    # carry the profile in both exact program copies.  Accept only that frozen,
+    # equality-checked local profile; never infer an arbitrary caller profile
+    # or use this route outside local IS.
+    if (
+        compatibility_profile is None
+        and len(candidates) == 2
+        and program.get("contract_version") == MEASUREMENT_PROGRAM_VERSION_V1
+        and program.get("compatibility_profile") == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        and os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+    ):
+        compatibility_profile = ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
     failures = validate_measurement_program(
         program,
         available_knowledge_node_ids=_factor_spec_knowledge_node_ids(factor_spec),
         require_web_executable=False,
-        compatibility_profile=research_compatibility_profile_from_spec(factor_spec),
+        compatibility_profile=compatibility_profile,
         scope='local_is_only' if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1' else 'hosted_formal',
     )
     return (program if not failures else None), failures

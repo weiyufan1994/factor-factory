@@ -5,6 +5,7 @@ from copy import deepcopy
 from factor_factory.formula.parser import parse_formula
 from factor_factory.measurement_program import (
     MEASUREMENT_PROGRAM_VERSION_V1,
+    ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE,
     measurement_program_template,
     validate_measurement_program,
 )
@@ -295,6 +296,23 @@ def test_v1_direct_code_accepts_distinct_frozen_timing_projection_when_component
     drifted = deepcopy(memo)
     drifted["formula_component_map"][0]["formula_subexpression"] = "PF_i,t=0"
     assert _validated_v1_direct_code_measurement_program_projection_aliases(drifted, spec) == set()
+
+
+def test_v1_direct_code_accepts_exact_dual_copy_legacy_local_profile(monkeypatch) -> None:
+    program = _program()
+    program["compatibility_profile"] = ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+    program["observation_and_estimation"]["executable_formula_projection"] = (
+        "score is frozen at signal close and effective from the next legal price"
+    )
+    spec = _spec(program)
+    memo = _memo(program)
+    monkeypatch.setenv("FACTORFORGE_LOCAL_IS_ONLY", "1")
+
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(memo, spec) == {"measured_object"}
+
+    hosted = deepcopy(spec)
+    monkeypatch.delenv("FACTORFORGE_LOCAL_IS_ONLY")
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(memo, hosted) == set()
 
 
 def test_v1_direct_code_rejects_formula_component_future_knowledge_and_copy_drift() -> None:

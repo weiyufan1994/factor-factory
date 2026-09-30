@@ -1699,6 +1699,18 @@ def council_auto_trigger(iteration: dict[str, Any]) -> tuple[bool, str]:
         return False, 'evidence_blocked'
     if case_comparison.get('case_comparison_verdict') == 'blocked':
         return False, 'case_comparison_blocked'
+    loop_action = iteration.get('loop_action') or {}
+    search_policy = research_memo.get('program_search_policy') or {}
+    authored = research_memo.get('researcher_agent_memo') or {}
+    if (
+        search_policy.get('decision') == 'stop_search_no_new_branch_authorized'
+        and (authored.get('revision_brief_to_step3b') or {}).get('should_modify') is False
+        and loop_action.get('should_modify_step3b') is False
+        and loop_action.get('next_runner') == 'stop'
+        and loop_action.get('loop_authorization') == 'advisory_only'
+        and loop_action.get('parallel_exploration_branches') == []
+    ):
+        return False, 'explicit_advisory_search_stop'
     if decision == 'promote_official' and not revision_needed:
         return False, 'no_revision_needed'
     if decision == 'reject' and not revision_needed:

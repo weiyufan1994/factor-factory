@@ -4252,6 +4252,24 @@ def project_authored_terminal_model_review(mechanism: dict[str, Any], memo: dict
     }
 
 
+def preserve_authored_partial_iterate(decision, bundle, memo, journal):
+    """Preserve concordant local diagnostic judgment; never authorize a branch."""
+    body = memo.get('research_memo') if isinstance(memo.get('research_memo'), dict) else memo
+    if (
+        os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
+        and decision == 'needs_human_review'
+        and bundle['factor_case_master'].get('final_status') == 'partial'
+        and bundle['factor_evaluation'].get('evaluation_status') == 'partial'
+        and bundle['factor_run_master'].get('run_status') != 'failed'
+        and body.get('researcher_decision') == 'iterate'
+        and (journal.get('reflection') or {}).get('current_decision') == 'iterate'
+        and (body.get('revision_brief_to_step3b') or {}).get('should_modify') is False
+        and (body.get('program_search_policy') or {}).get('decision') == 'stop_search_no_new_branch_authorized'
+    ):
+        return 'iterate'
+    return decision
+
+
 def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
     run_master = bundle['factor_run_master']
     case = bundle['factor_case_master']
@@ -4260,6 +4278,13 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
     report_id = run_master['report_id']
     factor_id = run_master.get('factor_id') or case.get('factor_id')
     decision = decide(bundle, payloads)
+    quantitative_decision = decision
+    current_researcher_journal = load_researcher_journal(str(report_id))
+    current_researcher_memo = load_researcher_agent_memo(str(report_id))
+    decision = preserve_authored_partial_iterate(
+        decision, bundle, current_researcher_memo or {}, current_researcher_journal or {}
+    )
+    authored_stop = quantitative_decision == 'needs_human_review' and decision == 'iterate'
     local_terminal_reject = local_reviewers_agree_to_reject(
         str(report_id), str(factor_id), run_master.get('artifact_identity') or {}
     )
@@ -4305,8 +4330,6 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         else 'Current evidence is insufficient or ambiguous and needs explicit human review.'
     )
     framework = infer_research_framework(bundle, payloads, decision)
-    current_researcher_journal = load_researcher_journal(str(report_id))
-    current_researcher_memo = load_researcher_agent_memo(str(report_id))
     current_researcher_memo_body = (
         current_researcher_memo.get('research_memo')
         if isinstance(current_researcher_memo, dict)
@@ -4501,6 +4524,19 @@ def build_iteration_payload(bundle: dict[str, Any], payloads: dict[str, dict[str
         program_search_policy['recommended_next_search']['requires_human_approval_before_code_change'] = search_policy_decision.get('human_approval_required') is True
         program_search_policy['recommended_next_search']['execution_allowed_by_default'] = False
         program_search_policy['recommended_next_search']['selection_rationale'] = search_policy_decision.get('selection_rationale') or []
+    if authored_stop and not local_terminal_reject:
+        # The research decision is not permission to execute a revision.
+        revision_strategy['loop_authorization'] = 'advisory_only'
+        revision_strategy['requires_human_approval_before_code_change'] = True
+        search_policy_decision['branch_templates'] = []
+        search_policy_decision['human_approval_required'] = True
+        program_search_policy['decision'] = 'stop_search_no_new_branch_authorized'
+        program_search_policy.setdefault('recommended_next_search', {}).update({
+            'branches': [],
+            'execution_allowed_by_default': False,
+            'requires_human_approval_before_code_change': True,
+        })
+        modification_targets = []
     should_modify_step3b = should_write_step3b_handoff(
         decision,
         revision_strategy,

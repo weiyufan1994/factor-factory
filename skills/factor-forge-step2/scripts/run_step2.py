@@ -58,6 +58,11 @@ LOCAL_AGENT_SPEC_CANONICAL_CORE_FIELDS = (
     'required_inputs',
     'rebalance_frequency',
 )
+LOCAL_HYPOTHESIS_CANONICAL_CORE_FIELDS = (
+    *LOCAL_AGENT_SPEC_CANONICAL_CORE_FIELDS,
+    'time_series_steps', 'cross_sectional_steps', 'preprocessing',
+    'normalization', 'neutralization',
+)
 SOURCE_STEP1_BINDING_PROFILE = 'factorforge_step2_source_step1_binding_v1'
 DUAL_ROUTE_SEMANTIC_ALIGNMENT_PROFILE = (
     'factorforge_step2_dual_route_semantic_alignment_v1'
@@ -180,6 +185,7 @@ RAW_SPEC_REQUIRED_FIELDS = frozenset({
 })
 RAW_SPEC_ALLOWED_FIELDS = frozenset({
     *RAW_SPEC_REQUIRED_FIELDS,
+    'source_type', 'producer',
     'candidate_only',
     'candidate_status',
     'artifact_status',
@@ -493,14 +499,15 @@ def _local_agent_canonical_core_differences(
     primary: Dict[str, Any],
     challenger: Dict[str, Any],
     canonical_core: Any,
+    core_fields: Tuple[str, ...] = LOCAL_AGENT_SPEC_CANONICAL_CORE_FIELDS,
 ) -> List[str]:
     """Return field-level disagreement; never select one local route by default."""
     if not isinstance(canonical_core, dict) or set(canonical_core) != set(
-        LOCAL_AGENT_SPEC_CANONICAL_CORE_FIELDS
+        core_fields
     ):
         return ['chief_canonical_core must contain exactly the canonical core fields']
     differences: List[str] = []
-    for field in LOCAL_AGENT_SPEC_CANONICAL_CORE_FIELDS:
+    for field in core_fields:
         expected = canonical_core.get(field)
         if primary.get(field) != expected:
             differences.append(f'primary.{field} != chief_canonical_core.{field}')
@@ -525,10 +532,15 @@ def load_local_agent_dual_route_specs(
         _block_local_agent_spec_inputs(
             f'{LOCAL_AGENT_SPEC_INPUTS_KEY} is available only with FACTORFORGE_LOCAL_IS_ONLY=1'
         )
-    if normalize_source_type(aim) != 'pdf_report':
+    source_type = normalize_source_type(aim)
+    authored_hypothesis = source_type == 'natural_language_hypothesis'
+    if source_type not in {'pdf_report', 'natural_language_hypothesis'}:
         _block_local_agent_spec_inputs(
-            f'{LOCAL_AGENT_SPEC_INPUTS_KEY} is only valid for pdf_report sources'
+            f'{LOCAL_AGENT_SPEC_INPUTS_KEY} is only valid for pdf_report or natural_language_hypothesis sources'
         )
+    expected_producer = SOURCE_TYPE_STEP2_PRODUCER[source_type]
+    if authored_hypothesis and aim.get('producer') != expected_producer:
+        _block_local_agent_spec_inputs('authored hypothesis AIM source/producer mismatch')
     factor_id = aim.get('factor_id')
     if not isinstance(factor_id, str) or not factor_id.strip():
         _block_local_agent_spec_inputs('alpha_idea_master.factor_id must be nonempty')
@@ -555,11 +567,14 @@ def load_local_agent_dual_route_specs(
                 f'{LOCAL_AGENT_SPEC_INPUTS_KEY}.{route}.role mismatch'
             )
         identity = binding.get('identity')
-        if identity != {
+        expected_identity = {
             'report_id': report_id,
             'factor_id': factor_id,
             'route': route,
-        }:
+        }
+        if authored_hypothesis:
+            expected_identity.update(source_type=source_type, producer=expected_producer)
+        if identity != expected_identity:
             _block_local_agent_spec_inputs(
                 f'{LOCAL_AGENT_SPEC_INPUTS_KEY}.{route}.identity mismatch'
             )
@@ -581,6 +596,15 @@ def load_local_agent_dual_route_specs(
                 f'{LOCAL_AGENT_SPEC_INPUTS_KEY}.{route}.sha256 mismatch'
             )
         payload = _strict_json_bytes(raw, f'{LOCAL_AGENT_SPEC_INPUTS_KEY}.{route}')
+        if (authored_hypothesis or (
+            isinstance(payload, dict)
+            and ('source_type' in payload or 'producer' in payload)
+        )) and (
+            not isinstance(payload, dict)
+            or payload.get('source_type') != source_type
+            or payload.get('producer') != expected_producer
+        ):
+            _block_local_agent_spec_inputs(f'{route} raw spec source/producer mismatch')
         loaded[route] = _validate_local_agent_raw_spec(
             payload=payload,
             report_id=report_id,
@@ -596,6 +620,10 @@ def load_local_agent_dual_route_specs(
         primary=loaded['primary'],
         challenger=loaded['challenger'],
         canonical_core=refs.get('chief_canonical_core'),
+        core_fields=(
+            LOCAL_HYPOTHESIS_CANONICAL_CORE_FIELDS
+            if authored_hypothesis else LOCAL_AGENT_SPEC_CANONICAL_CORE_FIELDS
+        ),
     )
     if core_differences:
         _block_local_agent_spec_inputs(

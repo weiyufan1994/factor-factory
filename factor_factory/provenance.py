@@ -100,7 +100,8 @@ def classify_long_side_evidence(metrics: dict[str, Any]) -> dict[str, Any]:
         'complete': not missing,
         'tradable_net_alpha_evidence': metrics.get('tradable_net_alpha_evidence'),
         'next_month_holding_estimand_executed': metrics.get('next_month_holding_estimand_executed'),
-        'promotion_eligible': not missing,
+        # Metric completeness supports review, not a tradability claim.
+        'promotion_eligible': not missing and metrics.get('tradable_net_alpha_evidence') is True,
     }
 
 
@@ -271,7 +272,14 @@ def build_evidence_quality(
         'long_side_evidence_mode': long_side['evidence_mode'],
         'tradable_net_alpha_evidence': long_side['tradable_net_alpha_evidence'],
         'next_month_holding_estimand_executed': long_side['next_month_holding_estimand_executed'],
-        'promotion_eligible': long_side['promotion_eligible'],
+        # This is a necessary evidence gate, not final Step6/OOS approval.
+        'promotion_eligible': (
+            long_side['promotion_eligible']
+            and identity_chain_verified is True
+            and bool(evidence_identity.get('implementation_mode_decision'))
+            and factor_evaluation.get('evaluation_status') == 'validated'
+            and _primary_evaluator_success(factor_run_master, factor_evaluation)
+        ),
         'identity_chain_verified': bool(identity_chain_verified),
         'mode_decision_present': bool(evidence_identity.get('implementation_mode_decision')),
     }

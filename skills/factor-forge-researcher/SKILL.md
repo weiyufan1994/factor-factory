@@ -97,6 +97,19 @@ with the precise reason.
 
 ## Research Journal
 
+Use the existing journal to keep the current question, competing explanations
+and next discriminating test clear. Choose the next action by expected research
+value and cost: completing a baseline, resolving a measurement ambiguity or
+stopping can be better than another formula. Do not invent branches to appear
+proactive. A changed mechanism or estimand returns to Step2 for fresh derivation
+before implementation; unchanged-spec repairs follow Step3 review.
+
+For historical knowledge actually consulted, record the source, applicable
+condition and concrete decision it changed, or why it was rejected. A retrieval
+hit alone is not reuse. Distinguish user/coordinator suggestions from independently
+originated ideas; assess supplied ideas critically and preserve prior exposure.
+An empty useful search is legitimate and must not be filled with invented cases.
+
 Maintain a durable research journal at:
 
 ```text

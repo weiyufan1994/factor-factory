@@ -101,6 +101,19 @@ Do not invent independent execution when a tool/model call fails.
 
 ## Feedback, continuation and stopping
 
+Keep the next useful research question moving within the authorized scope.
+Before escalating a data gap, inspect existing deliveries, API fields, calendar
+semantics and standard valuation conventions; request only the unresolved
+dependency. An approximation must be explicit and appropriate to the estimand,
+not silently treated as observed execution. Do not expand an isolated gap into
+a new data platform by default.
+
+When one output is blocked, retain independently valid diagnostics and let the
+researcher discuss their limits in the existing journal/memo. This does not
+override a failed validator, create a formal Step6 handoff, or certify a partial
+account as tradable performance. Continue unaffected reasoning and route the
+concrete repair to its owner; report which completion claims remain unavailable.
+
 A suspected Step4/5 defect returns promptly through the existing agent/task
 channel to Step2 and Step3. Pause affected work and retain unusable evidence.
 Step3 reproduces/fixes; Step2 distinguishes implementation mismatch, specification

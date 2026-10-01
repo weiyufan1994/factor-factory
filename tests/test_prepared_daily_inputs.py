@@ -98,6 +98,35 @@ def test_readiness_prepared_route_remains_local_only(tmp_path, monkeypatch):
         validator.validate_step3_readiness_contract(prep, {}, {}, {}, workspace=tmp_path)
 
 
+@pytest.mark.parametrize('contract,allowed', [
+    ({}, False),
+    ({'allow_slow_patterns': True}, False),
+    ({'allow_slow_patterns': True, 'performance_justification': '  '}, False),
+    ({'allow_slow_patterns': False, 'performance_justification': 'bounded block'}, False),
+    ({'allow_slow_patterns': True, 'performance_justification': 'one vectorized block'}, True),
+])
+def test_actual_sample_consumes_contract_performance_permission(tmp_path, monkeypatch, contract, allowed):
+    step3b = load('run_step3b')
+    monkeypatch.setattr(step3b, 'WORKSPACE', tmp_path)
+    monkeypatch.setattr(step3b, 'FF', tmp_path)
+    monkeypatch.setattr(step3b, 'RUNS', tmp_path / 'runs')
+    (tmp_path / 'runs' / 'PERF').mkdir(parents=True)
+    payload = validate_prepared_daily(scope_fixture(tmp_path))
+    implementation = tmp_path / 'block.py'
+    implementation.write_text("METADATA={'allow_slow_patterns':True, 'performance_justification':'module cannot override contract'}\ndef compute_factor(daily_df, minute_df=None):\n    blocks=[]\n    for block in [daily_df]:\n        blocks.append(block)\n    return blocks[0].assign(factor_value=1.0)\n")
+    def run():
+        return step3b.generate_first_run_factor_values('PERF', 'TEST', implementation, payload, {},
+            csv_output_policy='no_csv', code_contract=contract)
+    if allowed:
+        assert run()['status'] == 'ready'
+        validator = load('validate_step3b')
+        # The validator uses the same policy against the same source/contract.
+        validator.assert_high_speed_code_policy(implementation.read_text(), contract)
+    else:
+        with pytest.raises(SystemExit, match='BLOCK_DIRECT_CODE_PERFORMANCE_RISK'):
+            run()
+
+
 def scope_fixture(tmp_path):
     payload = inputs()
     payload['sample_window_actual'] = {'start': '20160104', 'end': '20160107'}

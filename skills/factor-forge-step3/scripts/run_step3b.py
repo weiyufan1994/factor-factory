@@ -1433,6 +1433,7 @@ def generate_first_run_factor_values(
     ts_rank_engine: str | None = None,
     formula_kernel_engine: str | None = None,
     trust_step3a_sort_contract: bool | None = None,
+    code_contract: dict | None = None,
 ) -> dict:
     """Run only the factor implementation and materialize factor_values.
 
@@ -1510,7 +1511,7 @@ def generate_first_run_factor_values(
     metadata = getattr(module, 'METADATA', {}) if module is not None else {}
     source_profile = assert_high_speed_code_policy(
         implementation_path.read_text(encoding='utf-8'),
-        metadata if isinstance(metadata, dict) else {},
+        code_contract if isinstance(code_contract, dict) else (metadata if isinstance(metadata, dict) else {}),
     )
     module_formula_ir = getattr(module, 'FORMULA_IR', None)
     selected_formula_engine, adaptive_selector_profile = select_adaptive_formula_engine(
@@ -2963,6 +2964,7 @@ def main():
             ts_rank_engine=args.ts_rank_engine,
             formula_kernel_engine=args.formula_kernel_engine,
             trust_step3a_sort_contract=args.trust_step3a_sort_contract if args.trust_step3a_sort_contract else None,
+            code_contract=(implementation_plan.get('code_contract') or {}) if implementation_plan.get('implementation_mode') == 'direct_code' else None,
         )
         implementation_plan['first_run_outputs'] = first_run_outputs
         implementation_plan['step4_contract']['runner_entry'] = executable_impl_rel

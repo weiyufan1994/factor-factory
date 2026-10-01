@@ -120,6 +120,18 @@ def test_full_scope_checks_real_dates_not_declarations(tmp_path):
         validate_full_scope(payload, tmp_path)
 
 
+@pytest.mark.parametrize('key', ['evaluation_daily_df_parquet', 'signal_daily_df_parquet'])
+def test_full_scope_rejects_unchecked_consumption_override(tmp_path, key):
+    payload = scope_fixture(tmp_path)
+    pd.DataFrame({'trade_date': ['20260101']}).to_parquet(tmp_path / 'override.parquet')
+    payload[key] = 'override.parquet'
+    with pytest.raises(ValueError, match=f'forbid {key}'):
+        validate_prepared_daily(payload)
+    # Step4 invokes this check even if the declaration bypassed Step3.
+    with pytest.raises(ValueError, match=f'forbid {key}'):
+        validate_full_scope(payload, tmp_path)
+
+
 def test_short_calendar_cannot_claim_long_window(tmp_path):
     payload = scope_fixture(tmp_path)
     payload['exchange_calendar_parquet'] = 'calendar.parquet'

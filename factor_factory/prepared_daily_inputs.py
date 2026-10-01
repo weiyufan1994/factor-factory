@@ -16,7 +16,8 @@ def validate_prepared_daily(inputs: dict) -> dict:
     if inputs.get('input_mode') != 'daily_only':
         raise ValueError('prepared daily inputs require daily_only')
     for key in ('minute_df_parquet', 'minute_df_csv', 'minute_streaming_query',
-                'derived_state_root', 'step3b_derived_state_root'):
+                'derived_state_root', 'step3b_derived_state_root',
+                'evaluation_daily_df_parquet', 'signal_daily_df_parquet'):
         if inputs.get(key):
             raise ValueError(f'prepared daily inputs forbid {key}')
     for key in ('daily_df_parquet', 'step3b_daily_df_parquet',

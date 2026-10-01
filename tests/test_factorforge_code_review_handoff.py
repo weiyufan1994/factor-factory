@@ -3,6 +3,7 @@ from copy import deepcopy
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -10,6 +11,7 @@ import sys
 import pytest
 
 from factor_factory.code_review_handoff import CodeReviewHandoff, HandoffError
+import factor_factory.code_review_handoff as handoff_module
 from factor_factory.code_review_checkpoint import validate_code_review
 
 
@@ -538,3 +540,177 @@ def test_cli_status_is_read_only_and_never_runs_embedded_commands(flow_case):
     # The unchanged formal checkpoint still requires the full post-review tests.
     assert validate_code_review(workspace_root=flow_case["workspace"], report_id=REPORT,
                                 handoff=flow_case["handoff"], spec=flow_case["spec"], repo_root=REPO)["status"] == "PASS"
+
+
+def _many_archive_files(case, count=592):
+    _stage_outputs(case, "5")
+    paths = []
+    for index in range(count):
+        path = case["workspace"] / "archive" / f"checkpoint-{index}.{'json' if index % 5 == 0 else 'parquet'}"
+        path.parent.mkdir(exist_ok=True)
+        # A leaf JSON is terminal even when it contains strings resembling
+        # further artifact references. No historical/recursive discovery.
+        path.write_text(json.dumps({"artifacts": {"unrelated": "missing-history.parquet"}})
+                        if path.suffix == ".json" else "synthetic bulk bytes, not real market data")
+        paths.append(str(path))
+    _write(Path(case["manifest"]["step_io"]["step5"]["outputs"]["factor_case_master"]),
+           {"evidence": {"archive_paths": paths + [paths[0]]}})
+    return paths
+
+
+@pytest.mark.parametrize("change", ["modify", "delete"])
+def test_large_finite_archive_binds_every_leaf_and_blocks_late_changes(flow_case, monkeypatch, change):
+    _complete_stage4(flow_case)
+    _flow(flow_case).before_command("run_step5", end_step="5", execution_context=_command_context(flow_case))
+    paths = _many_archive_files(flow_case)
+    real_read = Path.read_bytes
+
+    def no_bulk_reads(path):
+        assert path.suffix not in (".parquet", ".csv"), "Artifact capture must not read bulk data"
+        return real_read(path)
+
+    monkeypatch.setattr(Path, "read_bytes", no_bulk_reads)
+    _flow(flow_case).record_command(_command_result("run_step5"))
+    versions = _flow(flow_case).status()["request"]["execution"]["5"]["artifacts"]
+    assert set(paths) <= set(versions) and len(set(paths)) == 592
+    assert len(versions) < 620  # Duplicate refs deduplicate; leaf JSON does not expand.
+    _flow(flow_case).before_command("validate_step5", end_step="5", execution_context=_command_context(flow_case))
+    _flow(flow_case).record_command(_command_result("validate_step5"))
+    path = Path(paths[-1])
+    if change == "modify":
+        path.write_text("changed after validation")
+    else:
+        path.unlink()
+    assert any(str(path) in issue for issue in _flow(flow_case).status()["reasons"])
+    with pytest.raises(HandoffError, match="stage_artifacts_blocked"):
+        _flow(flow_case).before_command("run_step5", end_step="5", execution_context=_command_context(flow_case))
+
+
+def _reference_limit_failure(case, monkeypatch):
+    """An old-version failure with synthetic native-shaped process evidence."""
+    _complete_stage4(case)
+    flow = _flow(case)
+    request_id = flow.status()["request_id"]
+    flow.before_command("run_step5", end_step="5", execution_context=_command_context(case))
+    paths = _many_archive_files(case, count=270)
+    result = _command_result("run_step5")
+    with monkeypatch.context() as old:
+        old.setattr(handoff_module, "_MAX_ARTIFACT_REFS", 256)
+        with pytest.raises(HandoffError, match="ARTIFACT_REFERENCE_LIMIT"):
+            flow.record_command(result)
+    manifest_file = case["workspace"] / "runtime-manifest.json"
+    _write(manifest_file, case["manifest"])
+    proof = case["workspace"] / "original-wrapper-failure.json"
+    _write(proof, {"report_id": REPORT, "status": "FAIL", "manifest_path": str(manifest_file),
+                   "commands": [result], "failure": {
+                       "command": "save_code_review_continuation", "actual_command": "run_step5",
+                       "detail": "Actual command returned zero but its artifacts cannot establish completion: "
+                                 + handoff_module._ARTIFACT_REFERENCE_LIMIT}})
+    return request_id, proof, paths
+
+
+def test_explicit_capture_recovery_preserves_execution_and_requires_native_validation(flow_case, monkeypatch):
+    request_id, proof, _ = _reference_limit_failure(flow_case, monkeypatch)
+    old = deepcopy(_flow(flow_case)._active()["execution"])
+    recovered = _flow(flow_case).recover_artifacts(request_id, "5", proof_path=proof, reference="Synthetic tool result")
+    current = recovered["request"]["execution"]
+    assert current["4"] == old["4"]
+    for key in ("run_step5", "run_step5_binding", "pending_invocation", "pending_artifacts", "started_at"):
+        assert current["5"][key] == old["5"][key]
+    assert current["5"]["status"] == "computed" and recovered["remaining_steps"] == ["5"]
+    history = current["5"]["artifact_recovery_history"][-1]
+    assert history["artifact_issues"] == old["5"]["artifact_issues"]
+    assert history["computation_reexecuted"] is False and history["native_validation_required"] is True
+    assert history["recovery_tool"]["sha256"] == hashlib.sha256(Path(handoff_module.__file__).read_bytes()).hexdigest()
+    assert _flow(flow_case).before_command("run_step5", end_step="5", execution_context=_command_context(flow_case))["command_result"] == old["5"]["run_step5"]
+    with pytest.raises(HandoffError, match="reference-limit-only"):
+        _flow(flow_case).recover_artifacts(request_id, "5", proof_path=proof, reference="Never replay a recovered writer")
+    assert _flow(flow_case).before_command("validate_step5", end_step="5", execution_context=_command_context(flow_case))["status"] == "RUN"
+    _flow(flow_case).record_command(_command_result("validate_step5"))
+    assert _flow(flow_case).status()["remaining_steps"] == []
+
+
+@pytest.mark.parametrize("corruption", [
+    "wrong_request", "missing_result", "failed_result", "pending_unknown", "other_issue",
+    "argv", "cwd", "time", "proof", "manifest", "material", "checkpoint", "input",
+    "late_json", "late_bulk", "restored_bytes_backdated_mtime", "missing_leaf", "directory", "oversized_json",
+])
+def test_capture_recovery_refuses_unsafe_cases_without_journal_writes(flow_case, monkeypatch, corruption):
+    request_id, proof, paths = _reference_limit_failure(flow_case, monkeypatch)
+    flow = _flow(flow_case)
+    entry = flow._active()
+    execution = entry["execution"]["5"]
+    if corruption == "wrong_request":
+        request_id = "stale-id"
+    elif corruption == "missing_result":
+        del execution["run_step5"]
+    elif corruption == "failed_result":
+        execution["run_step5"].update(returncode=1, status="FAIL")
+    elif corruption == "pending_unknown":
+        execution["status"] = "running"
+    elif corruption == "other_issue":
+        execution["artifact_issues"].append("ARTIFACT_MISSING:other")
+    elif corruption == "argv":
+        execution["run_step5"]["command"] = ["different command"]
+    elif corruption == "cwd":
+        execution["run_step5"]["cwd"] = str(flow_case["workspace"])
+    elif corruption == "time":
+        execution["run_step5"]["finished_at_utc"] = "2000-01-01T00:00:00Z"
+    elif corruption == "proof":
+        obj = json.loads(proof.read_text())
+        obj["commands"][0]["stdout_tail"] = "invented result"
+        _write(proof, obj)
+    elif corruption == "manifest":
+        _write(flow_case["workspace"] / "runtime-manifest.json", {**flow_case["manifest"], "extra": "changed context"})
+    elif corruption == "material":
+        flow_case["helper"].write_text("changed helper")
+    elif corruption == "checkpoint":
+        record = json.loads(flow.review_path.read_text())
+        record["decision"] = "revise"
+        _write(flow.review_path, record)
+    elif corruption == "input":
+        (flow_case["workspace"] / "synthetic-metric.csv").write_text("changed input")
+    elif corruption == "late_json":
+        Path(paths[-5]).write_text('{"changed": true}')
+    elif corruption == "late_bulk":
+        Path(paths[-1]).write_text("changed bulk")
+    elif corruption == "restored_bytes_backdated_mtime":
+        path = Path(paths[-5])
+        stat, original = path.stat(), path.read_bytes()
+        path.write_bytes(original)
+        os.utime(path, ns=(stat.st_atime_ns, stat.st_mtime_ns))
+    elif corruption == "missing_leaf":
+        Path(paths[-1]).unlink()
+    elif corruption == "directory":
+        Path(paths[-1]).unlink()
+        Path(paths[-1]).mkdir()
+    elif corruption == "oversized_json":
+        Path(paths[-5]).write_bytes(b" " * (8 * 1024 * 1024 + 1))
+    flow._save()  # Test-only corrupt fixture; production recovery must not write.
+    original_journal = flow.path.read_bytes()
+    with pytest.raises(HandoffError):
+        _flow(flow_case).recover_artifacts(request_id, "5", proof_path=proof, reference="Synthetic result")
+    assert flow.path.read_bytes() == original_journal
+
+
+def test_capture_recovery_still_refuses_a_set_above_the_finite_cap(flow_case, monkeypatch):
+    request_id, proof, _ = _reference_limit_failure(flow_case, monkeypatch)
+    original = _flow(flow_case).path.read_bytes()
+    monkeypatch.setattr(handoff_module, "_MAX_ARTIFACT_REFS", 260)
+    with pytest.raises(HandoffError, match="ARTIFACT_REFERENCE_LIMIT"):
+        _flow(flow_case).recover_artifacts(request_id, "5", proof_path=proof, reference="Synthetic result")
+    assert _flow(flow_case).path.read_bytes() == original
+
+
+def test_cli_capture_recovery_uses_stored_result_and_requires_real_reference(flow_case, monkeypatch):
+    request_id, proof, _ = _reference_limit_failure(flow_case, monkeypatch)
+    cmd = [sys.executable, "-B", str(REPO / "scripts/manage_factorforge_code_review.py"),
+           "recover-artifacts", "--workspace-root", str(flow_case["workspace"]), "--report-id", REPORT,
+           "--request-id", request_id, "--step", "5", "--proof", str(proof)]
+    before = _flow(flow_case).path.read_bytes()
+    cp = subprocess.run(cmd, capture_output=True, text=True)
+    assert cp.returncode == 1 and "--reference" in cp.stdout
+    assert _flow(flow_case).path.read_bytes() == before
+    cp = subprocess.run(cmd + ["--reference", "Synthetic original process result"], capture_output=True, text=True)
+    assert cp.returncode == 0, cp.stdout + cp.stderr
+    assert json.loads(cp.stdout)["request"]["execution"]["5"]["status"] == "computed"

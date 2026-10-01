@@ -16,7 +16,7 @@ from factor_factory.code_review_handoff import CodeReviewHandoff
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "delivery", "receive", "tests", "command-result", "status"))
+    parser.add_argument("action", choices=("prepare", "delivery", "receive", "tests", "command-result", "recover-artifacts", "status"))
     parser.add_argument("--workspace-root", required=True)
     parser.add_argument("--report-id", required=True)
     parser.add_argument("--repo-root", default=str(REPO_ROOT))
@@ -26,6 +26,8 @@ def main() -> int:
     parser.add_argument("--outcome", choices=("begin", "sent", "failed", "unknown"))
     parser.add_argument("--reference", help="Actual tool call/result locator, or a concrete failure reason")
     parser.add_argument("--retry-reason", default="")
+    parser.add_argument("--step", choices=("4", "5"), help="Blocked writer stage for recover-artifacts")
+    parser.add_argument("--proof", help="Original failed Ultimate wrapper report; never a newly invented receipt")
     args = parser.parse_args()
     try:
         flow = CodeReviewHandoff(args.workspace_root, args.report_id, args.repo_root)
@@ -40,6 +42,11 @@ def main() -> int:
                 raise ValueError("--request-id is required; stale handoffs cannot change current work")
             if args.action == "delivery":
                 result = flow.delivery(args.request_id, args.outcome, args.reference, retry_reason=args.retry_reason)
+            elif args.action == "recover-artifacts":
+                if not args.step or not args.proof or not args.reference:
+                    raise ValueError("recover-artifacts needs --step, --proof and actual tool/result --reference")
+                result = flow.recover_artifacts(args.request_id, args.step,
+                                                proof_path=args.proof, reference=args.reference)
             else:
                 if not args.record:
                     raise ValueError("--record is required")

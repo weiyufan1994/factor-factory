@@ -120,7 +120,7 @@ establish completion.
 Artifact checks use the existing manifest and concrete files referenced by the
 run/case/backend records. JSON files are content-hashed with an 8 MiB per-file
 limit; other files use size, modification/change time and file identity, without
-reading bulk data. The check visits at most 256 explicit files, skips aggregate
+reading bulk data. The check visits at most 4096 explicit files, skips aggregate
 directory roots and the mutable journal, and never scans a directory tree.
 Oversized JSON or directory references block reuse for inspection. File metadata
 is ordinary change detection, not cryptographic proof of bulk data or a new data
@@ -155,6 +155,38 @@ known return code. A mismatch records the rejection and keeps the command
 pending. This executes nothing. Do not turn an unknown action into a guessed
 failure or PASS. A known completed run can resume at its validator; failed
 execution remains blocked for triage, with the original outcome retained.
+
+For a known successful writer blocked **only** by `ARTIFACT_REFERENCE_LIMIT`,
+use `recover-artifacts --request-id <id> --step 4|5 --proof <original-failed-wrapper-report.json>
+--reference <actual-tool/result-locator>`. This explicitly records a later
+artifact capture; it does not execute code or synthesize a command result.
+The saved zero-return writer must exactly match the original wrapper failure,
+pending invocation and manifest binding. All review/test checkpoints and prior
+input versions must remain current. Every declared concrete file is retained;
+the JSON-size, directory and finite-count restrictions still apply. A file with
+modification or change time after the original command finish blocks recovery,
+including an unchanged-byte restore with backdated modification time. Filesystem
+timestamps are ordinary change detection, not a substitute for a missing
+historical content hash. Output hashes are explicitly captured at recovery time.
+
+Recovery preserves the original command/runtime identity and old failure in
+`artifact_recovery_history`, records the recovery module's own path/hash, and
+returns the stage to `computed`. A fresh native validator is required before
+`complete`; a second recovery, unknown execution, failed writer, changed artifact
+or other blocker is refused without changing the journal. The original wrapper
+report must be preserved before another wrapper invocation can replace it.
+
+For a frozen runtime with the older 256-file recorder, use the reviewed
+maintenance checkout for this one journal repair and explicitly record its
+commit/hash separately. Do not replace a module in the frozen runtime while
+claiming its identity is unchanged. The single Ultimate journal owner can then
+call the maintenance library's existing `before_command("validate_step5", ...)`
+with the original runtime's actual native validator argv/cwd and unchanged
+manifest, execute that validator with the original local-IS environment through
+the normal tool, and record its actual result with `command-result` from the
+maintenance checkout. This avoids both producer replay and old recorder capacity.
+After validation succeeds, the original runtime may continue at native Step6.
+The recovery tool does not relax native validation, research or promotion gates.
 
 Successful CLI recording may still return `status=BLOCK` (for example, awaiting
 review). Exit code zero means the requested journal operation succeeded, not

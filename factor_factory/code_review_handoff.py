@@ -50,7 +50,10 @@ def _snapshot(path: Path, role: str) -> dict:
 # Reuse the existing stage IO and the files referenced by its native artifacts.
 # JSON envelopes are bounded; bulk files are only stat'ed, never loaded/scanned.
 _MAX_ARTIFACT_JSON = 8 * 1024 * 1024
-_MAX_ARTIFACT_REFS = 256
+# A decade of monthly checkpoints can legitimately declare over 500 leaves.
+# Keep a finite ceiling and the existing concrete-file/JSON-size restrictions.
+_MAX_ARTIFACT_REFS = 4096
+_ARTIFACT_REFERENCE_LIMIT = "ARTIFACT_REFERENCE_LIMIT: inspect the declared finite artifact set"
 # Step6 owns its Council pause/attachment/finalization lifecycle. This journal
 # only guards its reviewed prerequisites; it must not cache Step6 completion.
 _CACHED_STEPS = ("4", "5")
@@ -168,7 +171,7 @@ class CodeReviewHandoff:
                     raise HandoffError(f"ARTIFACT_MISSING:{raw}")
                 continue
             if len(versions) >= _MAX_ARTIFACT_REFS:
-                raise HandoffError("ARTIFACT_REFERENCE_LIMIT: inspect the declared finite artifact set")
+                raise HandoffError(_ARTIFACT_REFERENCE_LIMIT)
             path = Path(raw)
             version = _artifact_version(path)
             if item["required"] and not version["exists"]:
@@ -518,16 +521,7 @@ class CodeReviewHandoff:
         self._save()
         return {"status": "RUN"}
 
-    def record_command(self, result: dict) -> None:
-        entry = self._active()
-        name = result["name"]
-        if entry is None or name not in {f"{kind}_step{s}" for kind in ("run", "validate") for s in _CACHED_STEPS}:
-            raise HandoffError("Only active local Step4/5 commands can be reconciled here; Step6 uses its native lifecycle")
-        step = name[-1]
-        execution = entry["execution"].get(step, {})
-        expected = "validating" if name.startswith("validate") else "running"
-        if execution.get("status") != expected or execution.get("pending_command") != name:
-            raise HandoffError("Execution result requires a matching pending wrapper command")
+    def _command_result_issues(self, execution: dict, result: dict) -> list[str]:
         reasons: list[str] = []
         pending = execution.get("pending_invocation") or {}
         if result.get("command") != pending.get("command") or not pending.get("command"):
@@ -547,13 +541,26 @@ class CodeReviewHandoff:
         code = result.get("returncode")
         if type(code) is not int or result.get("status") != ("PASS" if code == 0 else "FAIL"):
             reasons.append("COMMAND_OUTCOME_INVALID")
+        return reasons
+
+    def record_command(self, result: dict) -> None:
+        entry = self._active()
+        name = result["name"]
+        if entry is None or name not in {f"{kind}_step{s}" for kind in ("run", "validate") for s in _CACHED_STEPS}:
+            raise HandoffError("Only active local Step4/5 commands can be reconciled here; Step6 uses its native lifecycle")
+        step = name[-1]
+        execution = entry["execution"].get(step, {})
+        expected = "validating" if name.startswith("validate") else "running"
+        if execution.get("status") != expected or execution.get("pending_command") != name:
+            raise HandoffError("Execution result requires a matching pending wrapper command")
+        reasons = self._command_result_issues(execution, result)
         if reasons:
             execution.setdefault("result_rejections", []).append({"at": utc_now(), "reasons": reasons,
                                                                   "command": result.get("command"), "cwd": result.get("cwd")})
             self._save()
             raise HandoffError("; ".join(reasons))
         execution[name] = deepcopy(result)
-        if code == 0:
+        if result["returncode"] == 0:
             try:
                 changes = self._changed_artifacts(execution["pending_artifacts"])
                 if changes:
@@ -567,3 +574,93 @@ class CodeReviewHandoff:
         execution["status"] = ("complete" if name.startswith("validate") else "computed") if result.get("returncode") == 0 else "failed"
         entry["execution"][step] = execution
         self._save()
+
+    def recover_artifacts(self, request_id: str, step: str, *,
+                          proof_path: str | Path, reference: str) -> dict:
+        """Bind a known successful writer after a reference-count-only failure.
+
+        No producer or validator is executed. Original argv/runtime/result stay
+        historical evidence; this tool's identity and later capture are separate.
+        A fresh native validator is still required after recovery to computed.
+        """
+        reference = _text(reference, "recovery reference")
+        entry = self._active(request_id)
+        if entry is None or step not in _CACHED_STEPS:
+            raise HandoffError("Artifact recovery requires an active Step4/5 request")
+        name = "run_step" + step
+        execution = entry["execution"].get(step, {})
+        if (execution.get("status") != "artifacts_blocked"
+                or execution.get("pending_command") != name
+                or execution.get("artifact_issues") != [_ARTIFACT_REFERENCE_LIMIT]):
+            raise HandoffError("Artifact recovery requires a reference-limit-only blocked writer")
+        view = self.status()
+        if entry["status"] != "ready" or view["reasons"] != [_ARTIFACT_REFERENCE_LIMIT]:
+            raise HandoffError(f"Artifact recovery has other blockers: {view['reasons']}")
+        result = execution.get(name)
+        if (not isinstance(result, dict) or result.get("name") != name
+                or type(result.get("returncode")) is not int or result["returncode"] != 0
+                or result.get("status") != "PASS"):
+            raise HandoffError("Artifact recovery requires the stored actual zero-return writer result")
+        issues = self._command_result_issues(execution, result)
+        if issues:
+            raise HandoffError("; ".join(issues))
+
+        proof_file = _resolve(proof_path, self.workspace)
+        if proof_file.suffix.lower() != ".json":
+            raise HandoffError("Recovery proof must be the original bounded JSON wrapper report")
+        proof_version = _artifact_version(proof_file)
+        proof = _read(proof_file)
+        failure = proof.get("failure") or {}
+        commands = proof.get("commands")
+        if (not isinstance(failure, dict) or not isinstance(commands, list)
+                or any(not isinstance(x, dict) for x in commands)
+                or proof.get("report_id") != self.report_id or proof.get("status") != "FAIL"
+                or failure.get("command") != "save_code_review_continuation"
+                or failure.get("actual_command") != name
+                or failure.get("detail") != "Actual command returned zero but its artifacts cannot establish completion: " + _ARTIFACT_REFERENCE_LIMIT
+                or [x for x in commands if x.get("name") == name] != [result]):
+            raise HandoffError("Original wrapper failure/result does not match the stored writer")
+        manifest_file = _resolve(proof.get("manifest_path"), self.workspace)
+        if manifest_file.suffix.lower() != ".json":
+            raise HandoffError("Recovery manifest must be bounded JSON")
+        manifest_version = _artifact_version(manifest_file)
+        manifest = _read(manifest_file)
+        context = {"command": result["command"], "cwd": result["cwd"],
+                   "manifest": {k: v for k, v in manifest.items() if k != "created_at_utc"}}
+        if (execution.get(name + "_binding") != _digest(context)
+                or execution.get("artifact_contract") != self._artifact_contract(manifest, step)):
+            raise HandoffError("Original command/runtime manifest binding changed")
+        issues = self._changed_artifacts(execution["pending_artifacts"])
+        if issues:
+            raise HandoffError("; ".join(issues))
+        versions = self._capture_artifacts(execution["artifact_contract"])
+        # Legacy failures did not persist an output snapshot. Conservatively
+        # reject any file changed/replaced since the actual writer finished,
+        # including restored bytes or backdated mtime (ctime still changes).
+        # This is ordinary filesystem change detection, not historical hashing.
+        finished = datetime.fromisoformat(result["finished_at_utc"].replace("Z", "+00:00"))
+        finished_ns = int(finished.timestamp() * 1_000_000_000)
+        for raw, version in versions.items():
+            if version["exists"]:
+                stat = Path(raw).stat()
+                if max(stat.st_mtime_ns, stat.st_ctime_ns) > finished_ns:
+                    raise HandoffError(f"ARTIFACT_CHANGED_AFTER_COMMAND:{raw}")
+        issues = self._changed_artifacts(versions)
+        issues.extend(self._changed_artifacts({str(proof_file): proof_version,
+                                              str(manifest_file): manifest_version}))
+        if issues:
+            raise HandoffError("; ".join(issues))
+        recovered = deepcopy(execution)
+        recovered.setdefault("artifact_recovery_history", []).append({
+            "recorded_at": utc_now(), "reference": reference,
+            "previous_status": execution["status"], "artifact_issues": deepcopy(execution["artifact_issues"]),
+            "original_command_sha256": _digest(result),
+            "original_wrapper_proof": {"path": str(proof_file), **proof_version},
+            "recovery_tool": _snapshot(Path(__file__), "artifact_capture_recovery"),
+            "artifact_count": len(versions), "max_artifact_refs": _MAX_ARTIFACT_REFS,
+            "computation_reexecuted": False, "native_validation_required": True,
+        })
+        recovered.update(status="computed", artifacts=versions, artifact_issues=[])
+        entry["execution"][step] = recovered
+        self._save()
+        return self.status()

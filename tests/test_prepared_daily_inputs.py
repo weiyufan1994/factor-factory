@@ -6,7 +6,7 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from factor_factory.prepared_daily_inputs import validate_prepared_daily, sample_inputs, validate_sample_frames
+from factor_factory.prepared_daily_inputs import validate_prepared_daily, sample_inputs, validate_sample_frames, validate_paths, validate_full_scope
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -96,3 +96,45 @@ def test_readiness_prepared_route_remains_local_only(tmp_path, monkeypatch):
     monkeypatch.delenv('FACTORFORGE_LOCAL_IS_ONLY', raising=False)
     with pytest.raises(AssertionError, match='LOCAL_IS_ONLY'):
         validator.validate_step3_readiness_contract(prep, {}, {}, {}, workspace=tmp_path)
+
+
+def scope_fixture(tmp_path):
+    payload = inputs()
+    payload['sample_window_actual'] = {'start': '20160104', 'end': '20160107'}
+    dates = ['20160104', '20160105', '20160106', '20160107']
+    pd.DataFrame({'trade_date': dates}).to_parquet(tmp_path / 'full_calendar.parquet')
+    pd.DataFrame({'trade_date': dates, 'ts_code': ['000001.SZ'] * 4}).to_parquet(tmp_path / 'full.parquet')
+    pd.DataFrame({'trade_date': dates[:3]}).to_parquet(tmp_path / 'calendar.parquet')
+    pd.DataFrame({'trade_date': dates[:3], 'ts_code': ['000001.SZ'] * 3}).to_parquet(tmp_path / 'sample.parquet')
+    return payload
+
+
+def test_full_scope_checks_real_dates_not_declarations(tmp_path):
+    payload = scope_fixture(tmp_path)
+    assert validate_full_scope(payload, tmp_path)['session_count'] == 4
+    pd.DataFrame({'trade_date': ['20160104', '20160106']}).to_parquet(tmp_path / 'full.parquet')
+    with pytest.raises(ValueError, match='coverage differs'):
+        validate_full_scope(payload, tmp_path)
+    pd.DataFrame({'trade_date': ['20160104', '20200101']}).to_parquet(tmp_path / 'full.parquet')
+    with pytest.raises(ValueError, match='exceeds'):
+        validate_full_scope(payload, tmp_path)
+
+
+def test_short_calendar_cannot_claim_long_window(tmp_path):
+    payload = scope_fixture(tmp_path)
+    payload['exchange_calendar_parquet'] = 'calendar.parquet'
+    # Separate files still cannot hide the short actual calendar.
+    payload['step3b_exchange_calendar_parquet'] = 'full_calendar.parquet'
+    with pytest.raises(ValueError, match='does not span'):
+        validate_full_scope(payload, tmp_path)
+
+
+def test_aliases_rejected_except_same_scope(tmp_path):
+    payload = scope_fixture(tmp_path)
+    (tmp_path / 'alias.parquet').symlink_to(tmp_path / 'sample.parquet')
+    payload['daily_df_parquet'] = 'alias.parquet'
+    with pytest.raises(ValueError, match='alias'):
+        validate_paths(payload, tmp_path)
+    payload['sample_window_actual'] = dict(payload['step3b_sample_window'])
+    payload['exchange_calendar_parquet'] = payload['step3b_exchange_calendar_parquet']
+    assert validate_full_scope(payload, tmp_path)['session_count'] == 3

@@ -78,6 +78,48 @@ def validate_paths(inputs: dict, workspace: Path) -> None:
                 'exchange_calendar_parquet', 'step3b_exchange_calendar_parquet'):
         if not (workspace / validated[key]).is_file():
             raise ValueError(f'prepared daily input missing file: {key}')
+    if validated['sample_window_actual'] != validated['step3b_sample_window']:
+        for full, sample in (('daily_df_parquet', 'step3b_daily_df_parquet'),
+                             ('exchange_calendar_parquet', 'step3b_exchange_calendar_parquet')):
+            if (workspace / validated[full]).samefile(workspace / validated[sample]):
+                raise ValueError('prepared daily full/sample alias with different declared windows')
+
+
+def validate_full_scope(inputs: dict, workspace: Path) -> dict:
+    """Read only date columns; prevent a sample being promoted to full IS input.
+
+    Prepared windows use inclusive open-session endpoints. Individual securities
+    may be sparse, but the full daily input must cover the independent calendar's
+    aggregate session set. This is consumer scope validation, not source QA.
+    """
+    import pandas as pd
+    import pyarrow.parquet as pq
+
+    validate_paths(inputs, workspace)
+    window = inputs['sample_window_actual']
+    start, end = str(window['start']), str(window['end'])
+
+    def normalize(values):
+        values = values.astype(str).str.replace('-', '', regex=False).str[:8]
+        pd.to_datetime(values, format='%Y%m%d', errors='raise')
+        if not values.between(start, end).all():
+            raise ValueError('prepared daily full input exceeds declared window')
+        return values
+
+    calendar = normalize(pd.read_parquet(workspace / inputs['exchange_calendar_parquet'], columns=['trade_date'])['trade_date'])
+    if calendar.empty or calendar.duplicated().any() or not calendar.is_monotonic_increasing:
+        raise ValueError('prepared daily full calendar must be nonempty, unique and ordered')
+    if calendar.iloc[0] != start or calendar.iloc[-1] != end:
+        raise ValueError('prepared daily full calendar does not span declared open-session endpoints')
+    expected = set(calendar)
+    observed = set()
+    daily = pq.ParquetFile(workspace / inputs['daily_df_parquet'])
+    for batch in daily.iter_batches(columns=['trade_date'], batch_size=65536):
+        observed.update(normalize(batch.to_pandas()['trade_date']))
+    if observed != expected:
+        raise ValueError('prepared daily full date coverage differs from independent calendar')
+    return {'start': start, 'end': end, 'session_count': len(expected),
+            'row_count': daily.metadata.num_rows, 'scope_check': 'actual_full_dates_vs_calendar'}
 
 
 def check_sample_size(inputs: dict, workspace: Path) -> None:

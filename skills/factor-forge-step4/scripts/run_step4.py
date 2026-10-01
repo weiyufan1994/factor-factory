@@ -4945,7 +4945,7 @@ def main() -> None:
         prepared_derived_state = (
             str(local_inputs.get('input_mode') or '') == 'derived_state_with_daily'
         )
-        from factor_factory.prepared_daily_inputs import is_prepared_daily, validate_paths
+        from factor_factory.prepared_daily_inputs import is_prepared_daily, validate_full_scope
         prepared_daily = is_prepared_daily(local_inputs)
         if (prepared_derived_state or prepared_daily) and (
             evo_pre_release or os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1'
@@ -4959,7 +4959,10 @@ def main() -> None:
         )
         try:
             if prepared_daily:
-                validate_paths(local_inputs, WORKSPACE)
+                try:
+                    validate_full_scope(local_inputs, WORKSPACE)
+                except (ValueError, OSError, KeyError) as exc:
+                    raise SystemExit(f'BLOCK_STEP4_PREPARED_DAILY_SCOPE: {exc}') from exc
             if not (prepared_derived_state or prepared_daily):
                 local_inputs, data_api_profile = (
                     materialize_step4_contract_inputs_if_required(

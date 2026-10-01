@@ -7,6 +7,38 @@ description: Resolve Factor Forge research data dependencies against approved Da
 
 ## Role
 
+Select the operating route first. Ordinary local research consuming an already
+published, supported API follows the consumer route below. The signed task,
+Host attestation, private envelope and isolated-session requirements in the
+remaining sections apply to the signed organization runtime; they are not new
+prerequisites for each local factor using an existing service.
+
+## Ordinary local API consumption
+
+The Data group owns published dataset quality, historical ST/delisting treatment,
+PIT construction, supported coverage and maintenance. Reuse its current versioned
+service contract and release acceptance; a new factor identity alone does not
+require re-auditing production, rebuilding data or obtaining a new delivery receipt.
+Research owns interface/field selection, units, information time, warmup and
+signal/return alignment. Inspect the relevant contract and actual response;
+do not reproduce supplier-wide QA or infer a release defect from unbound local code.
+
+Hold only affected consumption for an actual request/response error, a documented
+unsupported required semantic or interval, or a Data-group incident/withdrawal.
+Resolve an unclear field meaning with the owner; do not call uncertainty proven
+bad data. Send the interface/version, bounded parameters, affected keys/fields,
+expected versus observed behavior and a minimal example or error. Existing
+calendar or status deliveries may be reused when their semantics and scope match.
+Research must still detect lookahead, invalid joins and misuse of supplied fields.
+
+The Data group communicates version compatibility and affected fields/intervals.
+Research reruns only outputs affected by changed consumed data or semantics;
+metadata-only changes do not by themselves require a new full backtest. Use the
+existing workspace journal/handoff for resolution, without a new per-factor
+approval workflow. New datasets or producer repairs remain Data-group work.
+
+## Signed organization role
+
 Act as the contract boundary between a Factor Forge research workspace and the
 independent Data group. You may only:
 

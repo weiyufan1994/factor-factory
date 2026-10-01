@@ -13,6 +13,14 @@ Use the selected checkout's Ultimate wrapper and manifest-bound workspace.
 
 ## Step3A: measurement to available data
 
+For published supported APIs, reuse Data-group release acceptance and documented
+coverage/PIT/status semantics. Step3 checks consumer selection, units, timing,
+warmup and joins; it does not recertify historical ST/delisting or production QA
+for every factor. A new consumer identity is not a new dataset. Use the ordinary
+local route in data-liaison for a specific semantic question or observed anomaly;
+pause only affected inputs, retaining independent work. Unbound producer source
+is not evidence that a published dataset is defective.
+
 Consume `factor_spec_master`, `alpha_idea_master` and the Step3 handoff. Resolve
 the approved Data API catalog before paths; bind fields, units/semantics,
 availability times, coverage, sample scope, proxies and qlib-facing

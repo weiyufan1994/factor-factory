@@ -602,6 +602,19 @@ PREPARED_DERIVED_STATE_INPUT_MODE = 'derived_state_with_daily'
 
 def validate_prepared_local_inputs(payload: dict) -> dict:
     """Validate the narrow, local-only prepared-state declaration."""
+    if isinstance(payload, dict) and payload.get('input_mode') == 'daily_only':
+        from factor_factory.prepared_daily_inputs import validate_prepared_daily
+        try:
+            result = validate_prepared_daily(payload)
+        except ValueError as exc:
+            raise SystemExit(f'BLOCK_STEP3_PREPARED_LOCAL_INPUTS_INVALID: {exc}') from exc
+        if payload.get('evaluation_plan') is not None:
+            if not isinstance(payload['evaluation_plan'], dict):
+                raise SystemExit('BLOCK_STEP3_PREPARED_LOCAL_INPUTS_EVALUATION_PLAN_INVALID: expected object')
+            errors = validate_primary_evaluator_plan(payload['evaluation_plan'])
+            if errors:
+                raise SystemExit('BLOCK_STEP3_PREPARED_LOCAL_INPUTS_EVALUATION_PLAN_INVALID: ' + '; '.join(errors))
+        return result
     if not isinstance(payload, dict) or payload.get('input_mode') != PREPARED_DERIVED_STATE_INPUT_MODE:
         raise SystemExit('BLOCK_STEP3_PREPARED_LOCAL_INPUTS_INVALID: input_mode must be derived_state_with_daily')
     for key in ('daily_df_parquet', 'derived_state_root', 'step3b_daily_df_parquet', 'step3b_derived_state_root'):
@@ -792,6 +805,12 @@ def is_price_volume_minute_formula(canonical: dict) -> bool:
 def direct_code_requires_minute_inputs(fsm: dict) -> bool:
     contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
     code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
+    input_schema = code_contract.get('input_schema') or {}
+    if isinstance(input_schema, dict):
+        if 'minute_df' in input_schema or input_schema.get('minute_required'):
+            return True
+        if 'daily_df' in input_schema:
+            return False
     canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
     required_fields = (
         list(code_contract.get('required_fields') or [])
@@ -2697,6 +2716,8 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
     )
     if prepared_local_inputs is not None:
         prepared_local_inputs = validate_prepared_local_inputs(prepared_local_inputs)
+        if prepared_local_inputs['input_mode'] == 'daily_only' and os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1':
+            raise SystemExit('BLOCK_STEP3_PREPARED_DAILY_LOCAL_IS_ONLY')
         sample_window = dict(prepared_local_inputs['sample_window_actual'])
         sample_window.setdefault('calendar', 'A-share trading days')
         need_minute = need_daily = need_moneyflow = need_daily_basic = False
@@ -2891,10 +2912,16 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
         local_input_paths = prepared_local_inputs
         data_sources.extend([
             {'name': 'prepared_daily_control_input', 'kind': 'study_local_prepared_input', 'path': local_input_paths['daily_df_parquet'], 'fields': [], 'normalized_dataset': 'prepared_daily_raw_or_control'},
-            {'name': 'prepared_minute_derived_state', 'kind': 'study_local_prepared_state_partitions', 'path': local_input_paths['derived_state_root'], 'fields': [], 'normalized_dataset': 'minute_derived_state'},
         ])
-        coverage.append({'name': 'prepared_derived_state_inputs', 'status': 'pass', 'detail': 'Explicit study-local derived-state inputs; Step3B is bounded and Step4 owns formal factor_values.'})
-        notes.append('Prepared derived-state route: Step3/Step3B must not read full raw minute data; Step4 controller consumes only derived_state_root.')
+        if local_input_paths['input_mode'] == 'daily_only':
+            from factor_factory.prepared_daily_inputs import validate_paths
+            validate_paths(local_input_paths, WORKSPACE)
+            data_sources.append({'name': 'exchange_calendar', 'kind': 'study_local_prepared_input', 'path': local_input_paths['exchange_calendar_parquet'], 'fields': ['trade_date'], 'normalized_dataset': 'exchange_calendar'})
+            notes.append('Prepared daily route: use separately declared Step3B daily/calendar sample; preserve full inputs for Step4. Membership is a reviewed consumer column, not inferred here.')
+        else:
+            data_sources.append({'name': 'prepared_minute_derived_state', 'kind': 'study_local_prepared_state_partitions', 'path': local_input_paths['derived_state_root'], 'fields': [], 'normalized_dataset': 'minute_derived_state'})
+            notes.append('Prepared derived-state route: Step3/Step3B must not read full raw minute data; Step4 controller consumes only derived_state_root.')
+        coverage.append({'name': 'prepared_local_inputs', 'status': 'pass', 'detail': 'Explicit study-local prepared inputs; Step3B is bounded and Step4 owns formal factor_values.'})
     elif intraday_proxy_blocked_local_input_paths is not None:
         local_input_paths = intraday_proxy_blocked_local_input_paths
         notes.append(str(local_input_paths.get('snapshot_note') or ''))
@@ -3215,7 +3242,7 @@ def main():
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
     ap.add_argument('--csv-output-policy', help='Step3A daily CSV audit output policy. Defaults to full_csv.')
-    ap.add_argument('--prepared-local-inputs', help='Study-local JSON declaring prepared daily and derived-state inputs.')
+    ap.add_argument('--prepared-local-inputs', help='Study-local JSON declaring daily_only or derived_state_with_daily inputs, with separate Step3B sample selectors.')
     args = ap.parse_args()
     csv_policy = resolve_csv_policy(args.csv_output_policy)
     maybe_reexec_from_step3_template_copy(args.report_id, args.manifest)

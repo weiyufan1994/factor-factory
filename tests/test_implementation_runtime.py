@@ -48,6 +48,14 @@ def test_body_typeerror_is_not_retried_or_hidden(runner, frames):
     assert len(calls) == 1
 
 
+def test_absent_optional_minute_is_none_not_empty_frame(runner, frames):
+    def compute_factor(daily_df, minute_df=None):
+        assert minute_df is None
+        return daily_df.assign(factor_value=2.)
+    result = runner.compute_factor_with_contract(SimpleNamespace(compute_factor=compute_factor), frames[0], None)
+    assert result.factor_value.tolist() == [2.]
+
+
 def test_keyword_only_minute_argument_is_delivered(runner, frames):
     def compute_factor(daily_df, *, minute_df=None):
         assert minute_df is not None

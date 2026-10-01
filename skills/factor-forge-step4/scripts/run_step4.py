@@ -2525,7 +2525,7 @@ def compute_factor_with_contract(module, daily_df, minute_df, *, exchange_calend
 
     use_polars = direct_code_expects_polars(module)
     daily_input = maybe_polars_frame(add_direct_code_alias_columns(daily_df), use_polars)
-    minute_input = maybe_polars_frame(add_direct_code_alias_columns(minute_df), use_polars)
+    minute_input = maybe_polars_frame(add_direct_code_alias_columns(minute_df), use_polars) if minute_df is not None else None
     calendar_input = maybe_polars_frame(exchange_calendar, use_polars) if exchange_calendar is not None else None
     additional_inputs = (
         {'exchange_calendar': calendar_input}
@@ -4945,7 +4945,9 @@ def main() -> None:
         prepared_derived_state = (
             str(local_inputs.get('input_mode') or '') == 'derived_state_with_daily'
         )
-        if prepared_derived_state and (
+        from factor_factory.prepared_daily_inputs import is_prepared_daily, validate_paths
+        prepared_daily = is_prepared_daily(local_inputs)
+        if (prepared_derived_state or prepared_daily) and (
             evo_pre_release or os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1'
         ):
             raise SystemExit(
@@ -4956,7 +4958,9 @@ def main() -> None:
             manifest_path(manifest, 'runs', 'step3a_daily_input_csv') or ''
         )
         try:
-            if not prepared_derived_state:
+            if prepared_daily:
+                validate_paths(local_inputs, WORKSPACE)
+            if not (prepared_derived_state or prepared_daily):
                 local_inputs, data_api_profile = (
                     materialize_step4_contract_inputs_if_required(
                         report_id=report_id,
@@ -5100,7 +5104,7 @@ def main() -> None:
         minute_df = (
             read_df(minute_file)
             if minute_file is not None and not prepared_derived_state
-            else pd.DataFrame()
+            else (None if input_mode == 'daily_only' else pd.DataFrame())
         )
         exchange_calendar_df = (
             read_df(exchange_calendar_file)

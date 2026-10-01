@@ -1004,7 +1004,7 @@ def compute_factor_with_contract(module, daily_df, minute_df, *, exchange_calend
 
     use_polars = direct_code_expects_polars(module)
     daily_input = maybe_polars_frame(add_direct_code_alias_columns(daily_df), use_polars)
-    minute_input = maybe_polars_frame(add_direct_code_alias_columns(minute_df), use_polars)
+    minute_input = maybe_polars_frame(add_direct_code_alias_columns(minute_df), use_polars) if minute_df is not None else None
     calendar_input = maybe_polars_frame(exchange_calendar, use_polars) if exchange_calendar is not None else None
     additional_inputs = (
         {'exchange_calendar': calendar_input}
@@ -1440,6 +1440,11 @@ def generate_first_run_factor_values(
     executability of the factor implementation, not IC/NAV/backtest evidence.
     """
     input_mode = str(local_inputs.get('input_mode') or '')
+    from factor_factory.prepared_daily_inputs import is_prepared_daily, sample_inputs, validate_sample_frames, check_sample_size
+    prepared_daily = is_prepared_daily(local_inputs)
+    if prepared_daily:
+        check_sample_size(local_inputs, WORKSPACE)
+        local_inputs = sample_inputs(local_inputs)
     prepared_derived_state = input_mode == 'derived_state_with_daily'
     prepared_sample_config_path = None
     prepared_sample_calendar = None
@@ -1527,7 +1532,7 @@ def generate_first_run_factor_values(
     lazy_polars_formula_ir = None
 
     with timer.phase('read_inputs'):
-        minute_df = read_df(minute_path) if minute_path is not None and not has_partitioned_controller else pd.DataFrame()
+        minute_df = read_df(minute_path) if minute_path is not None and not has_partitioned_controller else (None if input_mode == 'daily_only' else pd.DataFrame())
         exchange_calendar_df = (
             read_df(exchange_calendar_path)
             if exchange_calendar_path is not None else None
@@ -1548,6 +1553,8 @@ def generate_first_run_factor_values(
                 raise
         else:
             daily_df = read_df(daily_path)
+        if prepared_daily:
+            validate_sample_frames(daily_df, exchange_calendar_df, local_inputs['step3b_sample_window'])
     with timer.phase('sample_limit'):
         daily_df, daily_limit_profile = limit_step3b_sample_frame(
             daily_df,

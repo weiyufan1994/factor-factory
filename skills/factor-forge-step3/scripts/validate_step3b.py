@@ -937,7 +937,7 @@ def a_share_raw_session_times() -> list[str]:
     return [stamp.strftime('%H:%M:%S') for stamp in (*morning, *afternoon)]
 
 
-def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract: dict | None = None) -> None:
+def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract: dict | None = None, *, prepared_daily_inputs: dict | None = None) -> None:
     import pandas as pd
 
     module = import_module_from_path(path)
@@ -1138,6 +1138,8 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
         if isinstance((code_contract or {}).get('input_schema'), dict)
         else {}
     )
+    if 'daily_df' in input_schema and 'minute_df' not in input_schema and not input_schema.get('minute_required'):
+        minute_input = None
     exchange_calendar = (
         pd.DataFrame({'trade_date': dates})
         if 'exchange_calendar' in input_schema else None
@@ -1146,6 +1148,16 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
         maybe_polars_frame(exchange_calendar, use_polars)
         if exchange_calendar is not None else None
     )
+    if prepared_daily_inputs is not None:
+        from factor_factory.prepared_daily_inputs import sample_inputs, validate_sample_frames, check_sample_size
+        check_sample_size(prepared_daily_inputs, FF.parent)
+        sample = sample_inputs(prepared_daily_inputs)
+        daily = pd.read_parquet(FF.parent / sample['daily_df_parquet'])
+        calendar = pd.read_parquet(FF.parent / sample['exchange_calendar_parquet'])
+        validate_sample_frames(daily, calendar, sample['step3b_sample_window'])
+        daily_input = maybe_polars_frame(daily, use_polars)
+        minute_input = None
+        calendar_input = maybe_polars_frame(calendar, use_polars) if 'exchange_calendar' in input_schema else None
     additional_inputs = (
         {'exchange_calendar': calendar_input}
         if calendar_input is not None else None
@@ -1286,7 +1298,9 @@ def validate_direct_code_mode(
     if str(local_inputs.get('input_mode') or '') == 'derived_state_with_daily':
         validate_prepared_partitioned_controller(implementation_path)
     else:
-        run_direct_code_fixture_smoke(implementation_path, output_schema, code_contract)
+        from factor_factory.prepared_daily_inputs import is_prepared_daily
+        run_direct_code_fixture_smoke(implementation_path, output_schema, code_contract,
+                                     prepared_daily_inputs=local_inputs if is_prepared_daily(local_inputs) else None)
 
 
 def custom_block_source(block: dict) -> str:

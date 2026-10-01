@@ -595,6 +595,13 @@ def validate_step3_readiness_contract(
     data_api = _data_api_resolution(prep, qcfg)
     local_inputs = prep.get('local_input_paths') if isinstance(prep.get('local_input_paths'), dict) else {}
     prepared_derived_state = _is_prepared_derived_state_route(local_inputs)
+    from factor_factory.prepared_daily_inputs import is_prepared_daily, validate_paths
+    prepared_daily = is_prepared_daily(local_inputs)
+    if prepared_daily:
+        assert os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1', 'BLOCK_STEP3_PREPARED_DAILY_LOCAL_IS_ONLY'
+        assert not isinstance(prep.get('research_windows'), dict), 'prepared daily cannot replace EVO data evidence'
+        validate_paths(local_inputs, workspace)
+    prepared_local = prepared_derived_state or prepared_daily
     snapshot_source = str(local_inputs.get('snapshot_source') or '')
     if isinstance(prep.get('research_windows'), dict) and not prepared_derived_state:
         report_id = str(prep.get('report_id') or '')
@@ -685,7 +692,7 @@ def validate_step3_readiness_contract(
         assert moneyflow.get('status') == 'ready', (
             'BLOCK_STEP3A_DATA_API_RESOLUTION_MISSING: moneyflow Step3A requires ready moneyflow Data API resolution'
         )
-    elif not prepared_derived_state:
+    elif not prepared_local:
         contract = _step4_data_contract(prep, qcfg, handoff)
         primary_daily_dataset_id = str(
             contract.get('primary_daily_dataset_id') or 'clean_daily_bar'
@@ -720,7 +727,7 @@ def validate_step3_readiness_contract(
             'BLOCK_STEP3A_PRIMARY_DAILY_DATASET_BINDING_MISMATCH: '
             f'catalog_bindings.{primary_daily_dataset_id}'
         )
-    if not prepared_derived_state:
+    if not prepared_local:
         contract = _step4_data_contract(prep, qcfg, handoff)
         assert contract.get('version') == 'factorforge_step4_data_contract_v1', (
             'BLOCK_STEP3A_STEP4_DATA_CONTRACT_MISSING: Step3A must emit Step4-readable Data API query contract'
@@ -739,7 +746,7 @@ def validate_step3_readiness_contract(
         )
 
     policy = _daily_filter_policy(prep, qcfg)
-    if snapshot_source != 'data_api_moneyflow' and not prepared_derived_state:
+    if snapshot_source != 'data_api_moneyflow' and not prepared_local:
         contract = _step4_data_contract(prep, qcfg, handoff)
         primary_daily_dataset_id = str(
             contract.get('primary_daily_dataset_id') or 'clean_daily_bar'
@@ -875,7 +882,11 @@ if __name__ == '__main__':
             f'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: missing fields in Step3A local snapshot {missing_snapshot_fields}'
         )
         if input_mode == 'daily_only':
-            validate_daily_io_contract(prep['local_input_paths'])
+            from factor_factory.prepared_daily_inputs import is_prepared_daily, validate_paths
+            if is_prepared_daily(prep['local_input_paths']):
+                validate_paths(prep['local_input_paths'], WORKSPACE)
+            else:
+                validate_daily_io_contract(prep['local_input_paths'])
             assert not minute_rel, 'daily_only Step 3A output must not claim minute snapshot'
         elif input_mode == 'derived_state_with_daily':
             derived_root = prep['local_input_paths'].get('derived_state_root')

@@ -5,6 +5,7 @@ from typing import Any, Dict, List
 
 from .rules import build_evaluation_summary
 from factor_factory.provenance import EVENT_STUDY_REQUIRED_METRICS, classify_long_side_evidence
+from factor_factory.information_set_review import classify_information_set
 
 
 PLACEHOLDER_NEXT_ACTIONS = {
@@ -415,19 +416,8 @@ def build_step5_math_discipline_review(bundle: Dict[str, Any], evaluation: Dict[
         (measurement_program.get("math_tool_selection") or {}).get("selected_tool_families")
         or []
     )
-    formula_text = str(canonical.get("formula_text") or "")
     operators = [str(item).lower() for item in _as_list(canonical.get("operators"))]
-    preprocessing = [str(item).lower() for item in _as_list(canonical.get("preprocessing"))]
-    ts_steps = [str(item).lower() for item in _as_list(canonical.get("time_series_steps"))]
-    cs_steps = [str(item).lower() for item in _as_list(canonical.get("cross_sectional_steps"))]
-    text_blob = " ".join([formula_text.lower(), *operators, *preprocessing, *ts_steps, *cs_steps])
-
-    if any(token in text_blob for token in ["future", "lead", "lookahead", "forward return", "未来收益"]):
-        information_set_legality = "illegal_potential_forward_reference"
-    elif any(token in text_blob for token in ["lag", "shift", "delay", "ts_delay"]):
-        information_set_legality = "explicit_lag_or_delay_documented"
-    else:
-        information_set_legality = "requires_researcher_confirmation_no_forward_leakage"
+    information_set_legality = classify_information_set(canonical)
 
     boundary_sensitive = sorted({
         op

@@ -78,6 +78,16 @@ Lessons should not be generic status lines. They should be useful retrieval hook
 4. Final status must match real outputs.
 5. Step 5 must emit `math_discipline_review` so Step6 can judge information-set legality, spec stability, signal/portfolio gaps, and overfit risk before promotion.
 6. `information_set_legality=illegal*` is a hard BLOCK. `requires_researcher_confirmation_no_forward_leakage` is a WARN that Step6 must resolve before official promotion.
+   The producer checks canonical formula/operator forward references and explicit
+   negative shifts separately from explanatory prose. A future-data mention in
+   prose, including a prohibition, requires independent confirmation; it proves
+   neither leakage nor safety. Classification is not a code/PIT audit. Existing
+   cases affected by the legacy substring rule may use the reviewed
+   `scripts/repair_step5_information_set.py` maintenance command: preserve original
+   bytes, bind all input hashes, change only the case/handoff information-set
+   metadata to unconfirmed, and run an actual native validator under a new
+   explicit Step5 continuation. Keep maintenance identity distinct from the
+   original writer; Step6 still consumes independent timing/mutation evidence.
 7. Step 5 must run a Step4 quality gate before archive/close. If required Step4 metrics/plots are missing, non-finite, internally inconsistent, or obviously implausible, Step5 must set `final_status=failed`, record the suspected defect, and return it through Ultimate to Step4 and Step2/3 for classification. An implementation repair needs Step2 re-review and new Step3 tests before an affected Step4 rerun; do not immediately rerun or pass invalid evidence to Step6.
 
 ## Execution chain

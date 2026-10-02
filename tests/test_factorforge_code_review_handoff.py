@@ -444,6 +444,76 @@ def test_resume_reuses_completed_commands_and_advances_only_after_validation(flo
         _flow(flow_case).before_command("run_step5", end_step="6")
 
 
+def test_real_metadata_maintenance_argv_uses_new_step5_request_then_fresh_validator(flow_case):
+    """Real maintenance subprocess; synthetic research/review and validator only."""
+    from factor_factory.information_set_review import ILLEGAL
+    case = flow_case
+    outputs = case['manifest']['step_io']['step5']['outputs']
+    case['manifest']['objects'] = {**outputs, 'factor_spec_master': str(case['spec'])}
+    _write(case['spec'], {'report_id': REPORT, 'canonical_spec': {
+        'formula_text': '-e*z', 'cross_sectional_steps': ['Independent of future labels.']}})
+    _complete_stage4(case)
+    _flow(case).before_command('run_step5', end_step='5', execution_context=_command_context(case))
+    _stage_outputs(case, '5')
+    case_path, handoff_path = (Path(outputs[k]) for k in ('factor_case_master', 'handoff_to_step6'))
+    obj = json.loads(case_path.read_text())
+    obj.update(report_id=REPORT, factor_id='SYNTHETIC', math_discipline_review={'information_set_legality': ILLEGAL})
+    _write(case_path, obj)
+    _write(handoff_path, obj)
+    _flow(case).record_command(_command_result('run_step5'))
+    _flow(case).before_command('validate_step5', end_step='5', execution_context=_command_context(case))
+    _flow(case).record_command(_command_result('validate_step5', 1))
+    prior = deepcopy(_flow(case)._active())
+    unchanged = {p: p.read_bytes() for p in [case['spec'], Path(outputs['factor_evaluation']),
+                    case['workspace'] / 'archived-evidence.json',
+                    Path(case['manifest']['step_io']['step4']['outputs']['factor_run_master'])]}
+    manifest = case['workspace'] / 'manifest.json'
+    _write(manifest, case['manifest'])
+    command = [sys.executable, '-B', str(REPO / 'scripts/repair_step5_information_set.py'),
+               '--manifest', str(manifest), '--evidence-dir', str(case['workspace'] / 'preserved'), '--apply']
+    for name, path in [('manifest', manifest), ('spec', case['spec']), ('case', case_path), ('handoff', handoff_path)]:
+        command += [f'--expected-{name}-sha256', hashlib.sha256(path.read_bytes()).hexdigest()]
+    case['request'].update(issue_id='narrative-classifier-maintenance', origin_step='5',
+        resume={'start_step': '5', 'end_step': '6', 'reason': 'Only metadata repair; original native Step6 remains required'})
+    case['request']['helpers'] += [{'path': str(REPO / 'scripts/repair_step5_information_set.py')},
+                                  {'path': str(REPO / 'factor_factory/information_set_review.py')}]
+    _ready(case)
+    assert _flow(case).status()['remaining_steps'] == ['5', '6']
+    with pytest.raises(HandoffError, match='scope'):
+        _flow(case).before_command('run_step4', end_step='6')
+    context = {**_command_context(case), 'command': command}
+    assert _flow(case).before_command('run_step5', end_step='6', execution_context=context)['status'] == 'RUN'
+    started = _now()
+    actual = subprocess.run(command, cwd=REPO, text=True, capture_output=True)
+    finished = _now()
+    assert actual.returncode == 0, actual.stdout + actual.stderr
+    _flow(case).record_command({'name': 'run_step5', 'command': command, 'cwd': str(REPO),
+        'started_at_utc': started, 'finished_at_utc': finished, 'returncode': actual.returncode,
+        'status': 'PASS', 'stdout_tail': actual.stdout, 'stderr_tail': actual.stderr})
+    assert _flow(case)._active()['execution']['5']['status'] == 'computed'
+    assert _flow(case).before_command('run_step5', end_step='6', execution_context=context)['status'] == 'REUSE'
+    with pytest.raises(HandoffError, match='unfinished'):
+        _flow(case).before_command('run_step6', end_step='6')
+    # This fixture validates only the repaired classification, not native Step5.
+    validator = [sys.executable, '-c',
+        "import json,sys; assert json.load(open(sys.argv[1]))['math_discipline_review']['information_set_legality']=='requires_researcher_confirmation_no_forward_leakage'", str(case_path)]
+    context = {**_command_context(case), 'command': validator}
+    assert _flow(case).before_command('validate_step5', end_step='6', execution_context=context)['status'] == 'RUN'
+    started = _now()
+    actual = subprocess.run(validator, cwd=REPO, text=True, capture_output=True)
+    finished = _now()
+    assert actual.returncode == 0, actual.stderr
+    _flow(case).record_command({'name': 'validate_step5', 'command': validator, 'cwd': str(REPO),
+        'started_at_utc': started, 'finished_at_utc': finished, 'returncode': actual.returncode,
+        'status': 'PASS', 'stdout_tail': actual.stdout, 'stderr_tail': actual.stderr})
+    assert _flow(case).before_command('run_step6', end_step='6')['status'] == 'NATIVE_STEP6'
+    assert _flow(case).state['requests'][0] == prior
+    assert {p: p.read_bytes() for p in unchanged} == unchanged
+    assert _flow(case)._active()['execution']['5']['run_step5']['command'] == command
+    case_path.write_bytes(case_path.read_bytes() + b' ')
+    assert _flow(case).status()['status'] == 'BLOCK'
+
+
 @pytest.mark.parametrize("old_step6_status", ["complete", "running", "failed", "artifacts_blocked"])
 def test_step6_handoff_preserves_but_never_reuses_legacy_step6_cache(flow_case, old_step6_status):
     flow_case["request"]["resume"]["end_step"] = "6"

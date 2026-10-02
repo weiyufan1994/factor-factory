@@ -381,6 +381,13 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
     daily_df['trade_date'] = daily_df['trade_date'].astype(str).str.replace('.0', '', regex=False).str.zfill(8)
 
     factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
+    calendar_path = os.environ.get('FACTORFORGE_EXCHANGE_CALENDAR_PATH')
+    calendar_dates = None
+    if calendar_path:
+        from factor_factory.research_api import _dates
+        calendar_dates = _dates(pd.read_parquet(calendar_path)['trade_date'], name='exchange_calendar').tolist()
+    if web_tradeable_timing and calendar_dates is None:
+        raise ValueError('executable web timing fallback requires an explicit exchange calendar')
     daily_df = build_forward_return_frame(
         daily_df,
         instrument_col='ts_code',
@@ -390,6 +397,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
         horizon=1,
         entry_offset=1 if web_tradeable_timing else 0,
         exit_offset=2 if web_tradeable_timing else None,
+        calendar_dates=calendar_dates,
     )
 
     merged = factor_df.merge(
@@ -421,6 +429,7 @@ def run_qlib_backtest_stub(report_id: str) -> dict[str, Any]:
 
     base_payload = {
         'backend': 'qlib_backtest',
+        'label_timing': daily_df.attrs.get('label_timing'),
         'report_id': report_id,
         'factor_id': factor_id,
         'signal_name': signal_col,

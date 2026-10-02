@@ -16,6 +16,8 @@ from typing import Any, Iterable
 import numpy as np
 import pandas as pd
 
+from factor_factory.accounting import buy_fill, sell_fill
+
 from mszq_evaluation_calendar_candidate_v1 import (
     IS_CUTOFF,
     IS_START,
@@ -493,9 +495,8 @@ def _simulate_day_events(
                 trades.append({"trade_date": trade_date, "formation_date": position["formation_date"], "ts_code": code, "side": "SELL", "status": "BLOCKED", "reason": reason, "raw_execution_price": np.nan if exec_row is None else float(exec_row["vwap_unadjusted"]), "adj_factor": np.nan if daily_row is None else float(daily_row["adj_factor"]), "gross_amount": np.nan, "cost": np.nan, "net_cash_flow": np.nan})
                 still_open.append(position)
                 continue
-            gross = float(position["units"]) * float(exec_row["vwap_unadjusted"]) * float(daily_row["adj_factor"])
-            cost = gross * cost_rate
-            cash += gross - cost
+            cash, gross, cost = sell_fill(cash, float(position["units"]), float(exec_row["vwap_unadjusted"]),
+                                         cost_rate, adj_factor=float(daily_row["adj_factor"]))
             trades.append({"trade_date": trade_date, "formation_date": position["formation_date"], "ts_code": code, "side": "SELL", "status": "FILLED", "reason": "SCHEDULED_EXIT", "raw_execution_price": float(exec_row["vwap_unadjusted"]), "adj_factor": float(daily_row["adj_factor"]), "gross_amount": gross, "cost": cost, "net_cash_flow": gross - cost})
         positions = still_open
         for window in entries.get(trade_date, []):
@@ -513,9 +514,8 @@ def _simulate_day_events(
                     trades.append({"trade_date": trade_date, "formation_date": window.formation_date.isoformat(), "ts_code": code, "side": "BUY", "status": "BLOCKED", "reason": reason, "raw_execution_price": np.nan if exec_row is None else float(exec_row["vwap_unadjusted"]), "adj_factor": np.nan if daily_row is None else float(daily_row["adj_factor"]), "gross_amount": 0.0, "cost": 0.0, "net_cash_flow": 0.0})
                     continue
                 price, adj = float(exec_row["vwap_unadjusted"]), float(daily_row["adj_factor"])
-                cost = budget * cost_rate
-                cash -= budget + cost
-                positions.append({"ts_code": code, "formation_date": window.formation_date.isoformat(), "scheduled_exit_date": window.exit_date.isoformat(), "units": budget / (price * adj), "last_value": budget, "stale_days": 0, "longest_stale_days": 0, "unvalued_delisted": False})
+                cash, units, cost = buy_fill(cash, budget, price, cost_rate, adj_factor=adj)
+                positions.append({"ts_code": code, "formation_date": window.formation_date.isoformat(), "scheduled_exit_date": window.exit_date.isoformat(), "units": units, "last_value": budget, "stale_days": 0, "longest_stale_days": 0, "unvalued_delisted": False})
                 trades.append({"trade_date": trade_date, "formation_date": window.formation_date.isoformat(), "ts_code": code, "side": "BUY", "status": "FILLED", "reason": "MONTH_END_TOP_QUINTILE", "raw_execution_price": price, "adj_factor": adj, "gross_amount": budget, "cost": cost, "net_cash_flow": -(budget + cost)})
         market_value, stale_mark_value, stale_positions, unknown_positions, unknown_listing_positions = 0.0, 0.0, 0, 0, 0
         for position in positions:

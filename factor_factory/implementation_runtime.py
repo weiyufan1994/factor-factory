@@ -14,6 +14,48 @@ from typing import Any, Callable
 RUNTIME_VERSION = "factorforge_implementation_runtime_v1"
 
 
+def source_declares_factor_instance(source: str) -> bool:
+    """Recognize only a module-level FACTOR binding, not comments/strings.
+
+    A declaration is not type acceptance: implementation_callable checks the
+    imported value is a BaseFactor instance before any factor executes.
+    """
+    tree = ast.parse(source)
+    for node in tree.body:
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target] if isinstance(node, ast.AnnAssign) else []
+        if any(isinstance(target, ast.Name) and target.id == 'FACTOR' for target in targets):
+            return True
+    return False
+
+
+def source_declares_legacy_callable(source: str) -> bool:
+    return any(isinstance(node, ast.FunctionDef) and node.name == 'compute_factor'
+               for node in ast.parse(source).body)
+
+
+def implementation_callable(implementation: Any) -> Callable:
+    """Expose the same named-frame callable for class and legacy interfaces."""
+    from factor_factory.factors import BaseFactor
+    factor = getattr(implementation, 'FACTOR', implementation)
+    if isinstance(factor, BaseFactor):
+        def compute_factor(daily_df, minute_df=None, **additional_inputs):
+            return factor.run({'daily_df': daily_df, 'minute_df': minute_df, **additional_inputs})
+        return compute_factor
+    if hasattr(implementation, 'FACTOR'):
+        raise TypeError('FACTOR must be a BaseFactor instance')
+    fn = getattr(implementation, 'compute_factor', None)
+    if not callable(fn):
+        raise TypeError('implementation requires a BaseFactor instance or compute_factor callable')
+    return fn
+
+
+def invoke_implementation(implementation: Any, daily_df: Any, minute_df: Any, *,
+                          additional_inputs: dict[str, Any] | None = None) -> Any:
+    """Run a BaseFactor instance/module FACTOR, or the legacy callable once."""
+    return invoke_factor(implementation_callable(implementation), daily_df, minute_df,
+                         additional_inputs=additional_inputs)
+
+
 def _nonempty(frame: Any) -> bool:
     if frame is None:
         return False

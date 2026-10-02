@@ -58,7 +58,7 @@ def _extract_key_metrics(payload: Dict[str, Any], run_item: Dict[str, Any]) -> D
 
     # Carry the producer's evidence boundary through the Step5 archive. These
     # descriptive fields do not change numeric metrics or authorize promotion.
-    for key in ('evaluation_scope', 'account_simulation', 'tradable_net_alpha_evidence', 'result_interpretation'):
+    for key in ('evaluation_scope', 'account_simulation', 'tradable_net_alpha_evidence', 'result_interpretation', 'research_metrics'):
         if key in payload:
             merged[key] = payload[key]
 
@@ -108,6 +108,7 @@ def _extract_key_metrics(payload: Dict[str, Any], run_item: Dict[str, Any]) -> D
         "evaluation_scope",
         "account_simulation",
         "tradable_net_alpha_evidence",
+        "research_metrics",
         "top_decile_mean_return",
         "bottom_decile_mean_return",
         "long_short_spread_mean",
@@ -209,7 +210,7 @@ def _payload_shape_errors(payload: Any) -> list[str]:
     for key in (
         "standard_metric_contract", "ic_summary", "group_backtest_summary",
         "long_side_performance", "native_backtest_metrics",
-        "stub_backtest_metrics", "summary", "metrics", "artifacts",
+        "stub_backtest_metrics", "summary", "metrics", "artifacts", "research_metrics",
     ):
         if payload.get(key) is not None and not isinstance(payload[key], dict):
             errors.append(f"{key} must be a JSON object")
@@ -222,6 +223,25 @@ def _payload_shape_errors(payload: Any) -> list[str]:
         if not isinstance(checks, list) or any(not isinstance(check, dict) for check in checks):
             errors.append("standard_metric_contract.checks must be a list of objects")
     artifacts = payload.get("artifacts")
+    research_metrics = payload.get('research_metrics')
+    if isinstance(research_metrics, dict):
+        try:
+            json.dumps(research_metrics, allow_nan=False)
+        except (ValueError, TypeError):
+            errors.append('research_metrics must be finite JSON; unavailable values must be null with a reason')
+        metrics = research_metrics.get('metrics')
+        if not isinstance(metrics, dict):
+            errors.append('research_metrics.metrics must be an object')
+        else:
+            for name, metric in metrics.items():
+                if not isinstance(metric, dict) or not {'value', 'unit', 'n', 'reason'}.issubset(metric):
+                    errors.append(f'research_metrics.metrics.{name} requires value/unit/n/reason')
+                elif not isinstance(metric['unit'], str) or isinstance(metric['n'], bool) or not isinstance(metric['n'], int) or metric['n'] < 0:
+                    errors.append(f'research_metrics.metrics.{name} invalid unit/sample count')
+                elif metric['value'] is None and not metric['reason']:
+                    errors.append(f'research_metrics.metrics.{name} unavailable value requires reason')
+                elif metric['value'] is not None and (isinstance(metric['value'], bool) or not isinstance(metric['value'], (int, float))):
+                    errors.append(f'research_metrics.metrics.{name} requires numeric value or null')
     if isinstance(artifacts, dict):
         for key, path in artifacts.items():
             if path is not None and not isinstance(path, str):

@@ -45,6 +45,14 @@ Step3B/4 must not independently guess derivations.
 
 ## Step3B: implement the selected object
 
+Use a factor class instance with explicit parameters and named DataFrame inputs
+for new code; operator, direct-code and hybrid routes share the same standard
+factor table. Data fetching, labels and backtests stay outside the factor class.
+Read [human reproducibility](../factor-forge-ultimate/references/human-reproducibility.md)
+when implementing or delivering code. Return annotated source, a runnable command,
+input/output slices and an independently hand-calculated bounded example; a
+validator status alone is not an inspectable implementation.
+
 Use the mechanism-selected `operator|direct_code|hybrid` route. An unsupported
 operator, invalid boundary, missing alias, unsafe code or failed parity returns
 for correction or BLOCK; it does not authorize a convenient alternate factor.

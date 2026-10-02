@@ -941,9 +941,8 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
     import pandas as pd
 
     module = import_module_from_path(path)
-    compute = getattr(module, 'compute_factor', None)
-    if compute is None or not callable(compute):
-        raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor missing')
+    from factor_factory.implementation_runtime import implementation_callable
+    compute = implementation_callable(module)
     complete_minute_session = direct_code_requires_complete_minute_session_fixture(code_contract)
     # Rolling daily factors commonly require twenty exchange sessions before
     # their first valid output.  The generic fixture must exercise that
@@ -1193,6 +1192,8 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
             f'BLOCK_DIRECT_CODE_FIXTURE_EXECUTION_FAILED: factor body raised TypeError: {exc}'
         ) from exc
     result = normalize_direct_code_result(result)
+    from factor_factory.research_api import validate_factor_output
+    result = validate_factor_output(result)
     if not isinstance(result, pd.DataFrame):
         raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: compute_factor must return DataFrame')
     if len(result) <= 0:
@@ -1201,13 +1202,8 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
     missing = required - set(result.columns)
     if missing:
         raise AssertionError(f'BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: output missing columns {sorted(missing)}')
-    declared = output_schema.get('columns') if isinstance(output_schema, dict) else None
-    signal_candidates = [col for col in (declared or []) if col not in {'ts_code', 'trade_date'}]
-    signal_candidates.extend(['factor_value', 'signal'])
-    signal_column = next((col for col in signal_candidates if col in result.columns), None)
-    if signal_column is None:
-        raise AssertionError('BLOCK_DIRECT_CODE_FIXTURE_SMOKE_FAILED: output missing factor_value or declared signal column')
-    if pd.to_numeric(result[signal_column], errors='coerce').notna().sum() == 0:
+    signal_column = 'factor_value'
+    if result[signal_column].notna().sum() == 0:
         raise AssertionError(
             f'BLOCK_STEP3B_DIRECT_CODE_ALL_NULL_OUTPUT: fixture signal column {signal_column} is entirely null in {path}'
         )

@@ -1398,7 +1398,8 @@ def build_formal_signal_coverage_profile(
         nonnull_start = None
         nonnull_end = None
     else:
-        mask = result_df[signal_col].notna()
+        from factor_factory.research_api import _numeric
+        mask = _numeric(result_df[signal_col], signal_col).notna()
         non_null = int(mask.sum())
         if coverage_mask is not None:
             coverage_non_null = int((mask & coverage_mask).sum())
@@ -1425,6 +1426,10 @@ def build_formal_signal_coverage_profile(
     verdict = 'PASS' if not reasons else 'BLOCK'
     return {
         'version': 'factorforge_formal_signal_coverage_v1',
+        'coverage_scope': 'observed_output',
+        'expected_key_count': None,
+        'universe_coverage': None,
+        'completeness_verified': False,
         'signal_column': signal_col,
         'row_count': row_count,
         'date_count': date_count,
@@ -1491,6 +1496,10 @@ def build_formal_signal_coverage_profile_from_stream_summary(
         reasons.append('factor_value_all_null')
     return {
         'version': 'factorforge_formal_signal_coverage_v1',
+        'coverage_scope': 'observed_output',
+        'expected_key_count': None,
+        'universe_coverage': None,
+        'completeness_verified': False,
         'signal_column': signal_col,
         'row_count': row_count,
         'date_count': int(summary.get('date_count') or 0),
@@ -1858,6 +1867,7 @@ def write_backend_payloads(
     manifest_path_arg: Path | None = None,
     shared_context: dict[str, Any] | None = None,
     factor_parquet_path: Path | None = None,
+    exchange_calendar_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     # Builtin adapters and custom adapters share one payload contract.
     updated: list[dict[str, Any]] = []
@@ -1878,6 +1888,10 @@ def write_backend_payloads(
         if shared_context_path:
             raw_env = dict(backend_cfg.get('env')) if isinstance(backend_cfg.get('env'), dict) else {}
             raw_env['FACTORFORGE_SHARED_EVALUATION_CONTEXT_PATH'] = str(shared_context_path)
+            backend_cfg['env'] = raw_env
+        if exchange_calendar_path is not None:
+            raw_env = dict(backend_cfg.get('env') or {})
+            raw_env['FACTORFORGE_EXCHANGE_CALENDAR_PATH'] = str(exchange_calendar_path)
             backend_cfg['env'] = raw_env
         if backend in {'self_quant_analyzer', 'qlib_backtest'}:
             script_name = 'self_quant_adapter.py' if backend == 'self_quant_analyzer' else 'qlib_backtest_adapter.py'
@@ -2058,6 +2072,7 @@ def build_shared_evaluation_context(
     signal_daily_df: Any | None = None,
     signal_daily_input_path: Path | None = None,
     pre_release_research_windows: dict[str, Any] | None = None,
+    exchange_calendar: Any | None = None,
 ) -> dict[str, Any]:
     started = time.perf_counter()
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -2201,7 +2216,7 @@ def build_shared_evaluation_context(
         calendar_dates=(
             validate_trusted_calendar_snapshot()['dates']
             if web_tradeable_timing
-            else None
+            else exchange_calendar['trade_date'].tolist() if exchange_calendar is not None else None
         ),
     )
     if pre_release_signal_dates is not None:
@@ -2280,6 +2295,7 @@ def build_shared_evaluation_context(
         'effective_target_window': effective_target_window,
     }
     context = {
+        'label_timing': daily_forward.attrs.get('label_timing'),
         'version': (
             'factorforge_shared_evaluation_context_v2'
             if web_tradeable_timing
@@ -2519,26 +2535,29 @@ def normalize_direct_code_result(result: Any) -> Any:
     return result
 
 
-def compute_factor_with_contract(module, daily_df, minute_df, *, exchange_calendar=None):
+def compute_factor_with_contract(module, daily_df, minute_df, *, exchange_calendar=None, additional_inputs=None):
     """Resolve the invocation before executing user code, without retries."""
-    from factor_factory.implementation_runtime import invoke_factor
+    from factor_factory.implementation_runtime import invoke_implementation
+    from factor_factory.research_api import validate_factor_output
 
     use_polars = direct_code_expects_polars(module)
     daily_input = maybe_polars_frame(add_direct_code_alias_columns(daily_df), use_polars)
     minute_input = maybe_polars_frame(add_direct_code_alias_columns(minute_df), use_polars) if minute_df is not None else None
     calendar_input = maybe_polars_frame(exchange_calendar, use_polars) if exchange_calendar is not None else None
-    additional_inputs = (
-        {'exchange_calendar': calendar_input}
-        if exchange_calendar is not None else None
-    )
-    return normalize_direct_code_result(
-        invoke_factor(
-            module.compute_factor,
+    roles = {name: maybe_polars_frame(value, use_polars) if value is not None else None
+             for name, value in (additional_inputs or {}).items()}
+    if exchange_calendar is not None:
+        if 'exchange_calendar' in roles:
+            raise TypeError('exchange_calendar was supplied twice')
+        roles['exchange_calendar'] = calendar_input
+    return validate_factor_output(normalize_direct_code_result(
+        invoke_implementation(
+            module,
             daily_input,
             minute_input,
-            additional_inputs=additional_inputs,
+            additional_inputs=roles,
         )
-    )
+    ))
 
 
 def _query_with_date(query: dict[str, Any], trade_date: str) -> dict[str, Any]:
@@ -5344,7 +5363,7 @@ def main() -> None:
             if evo_pre_release:
                 install_agent_execution_isolation()
             module = import_module_from_path(impl_path)
-            if not hasattr(module, 'compute_factor'):
+            if not (hasattr(module, 'compute_factor') or hasattr(module, 'FACTOR')):
                 issues.append({'severity': 'error', 'code': 'COMPUTE_FACTOR_MISSING', 'message': 'implementation module missing compute_factor', 'evidence': {'path': str(impl_path)}})
                 run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, str(impl_path), dpm.get('sample_window', {}), run_dir, input_paths, issues, warnings, 'COMPUTE_FACTOR_MISSING', 'implementation_import', start_utc)
                 write_json(OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json', run_master)
@@ -5500,6 +5519,9 @@ def main() -> None:
             write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
             return
 
+        if result_df is not None and not parent_diagnostics_projection:
+            from factor_factory.research_api import validate_factor_output
+            result_df = validate_factor_output(result_df)
         signal_col = (
             'factor_value'
             if parent_factor_summary is not None
@@ -5710,6 +5732,7 @@ def main() -> None:
                 evaluation_contract=web_evaluation_contract,
                 signal_daily_df=signal_daily_df,
                 signal_daily_input_path=signal_daily_file,
+                exchange_calendar=exchange_calendar_df,
                 pre_release_research_windows=(
                     dpm.get('research_windows')
                     if isinstance(dpm.get('research_windows'), dict)
@@ -5783,6 +5806,7 @@ def main() -> None:
             report_id,
             backend_runs,
             manifest_path_arg=manifest_path_arg,
+            exchange_calendar_path=exchange_calendar_file,
             shared_context=shared_context,
             factor_parquet_path=parquet_path,
         )

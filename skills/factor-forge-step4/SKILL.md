@@ -18,7 +18,16 @@ Concretely, Step 4 now does three things:
 Current intended backend structure:
 - `self_quant_analyzer` for lightweight / quick factor checks
 - `qlib_backtest` for more standard portfolio / backtest workflows
-- future custom evaluators without forcing a fixed metric schema
+- additional evaluators with a stable common metric envelope and explicit extensions
+
+For code/table delivery and manual replay, follow
+[human reproducibility](../factor-forge-ultimate/references/human-reproducibility.md).
+Use the shared factor-frame validator and analysis/account APIs, not per-factor
+wrappers. Return annotated executed code, full standard factor values, head/tail
+and specified-date slices, and results a human can independently recalculate.
+IC, event analysis and Fama–MacBeth are preliminary statistical analyses, not
+substitute account backtests. Each metric carries a stable name, value, unit,
+sample count and unavailable reason; backend extensions do not rename the core.
 
 Current practical backend maturity:
 - `self_quant_analyzer` quick mode produces signal diagnostics: IC, group-mean
@@ -366,7 +375,7 @@ fit revisions on OOS evidence.
 4. Diagnostics are mandatory even on failure.
 5. Evaluation backend selection must be explicit or defaulted in a visible way; it must not be silently hard-coded into a single metrics regime.
 6. Step 4 must allow multiple evaluation backends over time (`self_quant_analyzer`, `qlib_backtest`, future custom evaluators).
-7. Metric schemas must remain extensible: Step 4 standardizes the envelope, not a frozen universal metric list.
+7. Metric schemas remain extensible, but shared metric names, units and missing-value semantics are stable. Different analyses may add fields; they must not silently redefine a shared field or replace unavailable evidence with zero.
 8. No polished prose counts as completion.
 9. If execution depends on user-selectable run parameters not already frozen in handoff/artifacts — e.g. benchmark, account size, topk, n_drop, deal price, cost model, universe, sample vs wider window, or whether to run quick-only vs deeper/native backtest — the skill must ask and confirm before launching the run.
 10. qlib-native evaluators must treat signal formatting as a first-class contract item; if `instrument` / `datetime` naming or market-code normalization is unresolved, the run should be marked blocked rather than silently coercing inconsistent semantics.

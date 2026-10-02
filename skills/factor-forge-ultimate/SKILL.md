@@ -46,6 +46,7 @@ reference directory. Repository paths start at the selected checkout.
 | New source/hypothesis intake or eligible post-Step5 advisory | [Source-first advisory](references/epistemic-advisory-operating-delta-v1.md) |
 | Author/freeze state, conjecture or approach registry | [Research protocol](references/research-protocol.md) |
 | Prepare/recheck the Step4 code-review checkpoint | [Local code review](references/local-code-review.md) |
+| Implement, inspect or deliver Step3–5 code/values/results | [Human reproducibility](references/human-reproducibility.md) |
 | Active Step6 judgment | Step6 Skill; research-brain for evidence interpretation; researcher journal Skill when creating/updating its dossier |
 | Actual revision/Council checkpoint | [Council orchestration](references/council-orchestration.md) and Step6's Council reference |
 | Completion/interruption or maintenance repair | [Knowledge maintenance](references/knowledge-maintenance.md) |

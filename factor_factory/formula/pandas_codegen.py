@@ -4,7 +4,7 @@ import pprint
 from typing import Any
 
 
-CODEGEN_VERSION = 'factorforge_pandas_formula_codegen_v1'
+CODEGEN_VERSION = 'factorforge_pandas_formula_codegen_v2_class'
 
 
 def render_python_literal(value: Any) -> str:
@@ -12,13 +12,17 @@ def render_python_literal(value: Any) -> str:
     return pprint.pformat(value, sort_dicts=True, width=100)
 
 
-def generate_pandas_formula_code(*, report_id: str, factor_id: str, formula_ir: dict[str, Any]) -> str:
+def generate_pandas_formula_code(*, report_id: str, factor_id: str, formula_ir: dict[str, Any], domain: str = 'price_volume') -> str:
+    if domain not in {'price_volume', 'fundamental'}:
+        raise ValueError('factor domain must be price_volume or fundamental')
     formula_ir_literal = render_python_literal(formula_ir)
     return f'''from __future__ import annotations
 
 import pandas as pd
 
+from factor_factory.factors import BaseFactor
 from factor_factory.formula.evaluator import evaluate_formula_frame
+from factor_factory.research_api import validate_factor_output
 
 
 REPORT_ID = {report_id!r}
@@ -40,10 +44,24 @@ METADATA = {{
 }}
 
 
+class GeneratedFormulaFactor(BaseFactor):
+    """Evaluate the reviewed IR; do not reparse or replace its field semantics."""
+
+    name = FACTOR_ID
+    domain = {domain!r}
+    input_columns = {{"daily_df": ("ts_code", "trade_date")}}
+
+    def compute(self, inputs):
+        return evaluate_formula_frame(FORMULA_IR, inputs["daily_df"])
+
+
+FACTOR = GeneratedFormulaFactor()
+
+
 def compute_factor(daily_df: pd.DataFrame, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
-    if daily_df is None or daily_df.empty:
-        return pd.DataFrame(columns=["ts_code", "trade_date", "factor_value"])
-    return evaluate_formula_frame(FORMULA_IR, daily_df)
+    # Backward-compatible long-table boundary, not a second implementation.
+    result = FACTOR({{"daily_df": daily_df, "minute_df": minute_df}})
+    return validate_factor_output(result).sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
 '''
 
 

@@ -83,17 +83,14 @@ def get_factor_id(report_id: str, objects_root: Path | None = None) -> str | Non
 
 
 def infer_signal_column(frame: pd.DataFrame, factor_id: str | None = None) -> str:
-    reserved = {'ts_code', 'trade_date', 'datetime', 'code', 'instrument'}
-    candidates = [column for column in frame.columns if column not in reserved]
-    if not candidates:
-        raise KeyError('could not infer signal column: no non-key columns found')
-
+    # Standard output always wins; the only legacy alternative is an explicitly
+    # bound factor ID. Column order is never a signal-selection policy.
+    if 'factor_value' in frame.columns:
+        return 'factor_value'
     preferred = default_signal_column_name(factor_id) if factor_id else None
-    if preferred and preferred in candidates:
+    if preferred and preferred in frame.columns:
         return preferred
-    if len(candidates) == 1:
-        return candidates[0]
-    return candidates[-1]
+    raise KeyError('factor_value or an explicitly bound factor-ID signal column is required')
 
 
 def load_factor_values_with_signal(
@@ -104,6 +101,8 @@ def load_factor_values_with_signal(
     frame = load_factor_values(report_id, runs_root=runs_root)
     factor_id = get_factor_id(report_id, objects_root=objects_root)
     signal_col = infer_signal_column(frame, factor_id=factor_id)
+    from factor_factory.research_api import normalize_factor_frame
+    normalize_factor_frame(frame[['ts_code', 'trade_date', signal_col]].rename(columns={signal_col: 'factor_value'}))
     return frame, signal_col, factor_id
 
 
@@ -158,16 +157,35 @@ def build_forward_return_frame(
 
     enriched = add_datetime_column(daily_df, date_col=date_col)
     enriched = enriched.sort_values([instrument_col, 'datetime'])
+    calendar = None
+    if calendar_dates is not None:
+        from factor_factory.research_api import _dates
+        calendar = _dates(list(calendar_dates), name='calendar_dates')
+        if calendar.empty or calendar.has_duplicates or not calendar.is_monotonic_increasing:
+            raise ValueError('calendar_dates must be sorted and unique')
+        if enriched.duplicated([instrument_col, 'datetime']).any():
+            raise ValueError('calendar-aligned returns require unique instrument/date rows')
+        if enriched['datetime'].isna().any() or not enriched['datetime'].isin(calendar).all():
+            raise ValueError('daily dates must be valid and belong to calendar_dates')
     if (
-        calendar_dates is None
-        and entry_offset == 0
+        entry_offset == 0
         and resolved_exit_offset == horizon
         and return_col
         and return_col in enriched.columns
     ):
         next_ret = pd.to_numeric(enriched[return_col], errors='coerce').groupby(enriched[instrument_col], sort=False).shift(-1) / 100.0
         if horizon == 1:
+            if calendar is not None:
+                # pct_chg is a percentage-point field: preserve its return
+                # semantics, but look up the exact next calendar session.
+                expected_next = enriched['datetime'].map(dict(zip(calendar[:-1], calendar[1:])))
+                returns = pd.Series(pd.to_numeric(enriched[return_col], errors='coerce').to_numpy(),
+                                    index=pd.MultiIndex.from_arrays([enriched['datetime'], enriched[instrument_col]]))
+                keys = pd.MultiIndex.from_arrays([expected_next, enriched[instrument_col]])
+                next_ret = pd.Series(returns.reindex(keys).to_numpy() / 100., index=enriched.index)
             enriched[f'future_return_{horizon}d'] = next_ret
+            enriched.attrs['label_timing'] = {'expression': f'{return_col}(next_session)/100',
+                'calendar_alignment': 'independent_calendar' if calendar is not None else 'legacy_observed_rows_unverified'}
             return enriched
 
     grouped_price = enriched.groupby(instrument_col, sort=False)[price_col]
@@ -196,15 +214,12 @@ def build_forward_return_frame(
 
         expected_entry = expected_date(entry_offset)
         expected_exit = expected_date(resolved_exit_offset)
-        grouped_datetime = enriched.groupby(instrument_col, sort=False)['datetime']
-        observed_entry = (
-            grouped_datetime.shift(-entry_offset)
-            if entry_offset
-            else enriched['datetime']
-        )
-        observed_exit = grouped_datetime.shift(-resolved_exit_offset)
-        entry_price = entry_price.where(observed_entry == expected_entry)
-        exit_price = exit_price.where(observed_exit == expected_exit)
+        price_lookup = pd.Series(enriched[price_col].to_numpy(), index=pd.MultiIndex.from_arrays(
+            [enriched['datetime'], enriched[instrument_col]]))
+        entry_price = pd.Series(price_lookup.reindex(pd.MultiIndex.from_arrays(
+            [expected_entry, enriched[instrument_col]])).to_numpy(), index=enriched.index)
+        exit_price = pd.Series(price_lookup.reindex(pd.MultiIndex.from_arrays(
+            [expected_exit, enriched[instrument_col]])).to_numpy(), index=enriched.index)
         label_start_date = expected_entry.dt.strftime('%Y%m%d')
         label_end_date = expected_exit.dt.strftime('%Y%m%d')
     else:
@@ -217,6 +232,16 @@ def build_forward_return_frame(
         label_end_date = grouped_date.shift(-resolved_exit_offset)
 
     enriched[f'future_return_{horizon}d'] = exit_price / entry_price - 1
+    if calendar is not None:
+        from factor_factory.research_api import build_forward_returns
+        price_input = enriched[[instrument_col, date_col, price_col]].rename(columns={
+            instrument_col: 'ts_code', date_col: 'trade_date', price_col: 'close'})
+        labels = build_forward_returns(price_input, calendar=calendar,
+                                       entry_offset=entry_offset, horizon=resolved_exit_offset-entry_offset)
+        keys = pd.MultiIndex.from_arrays([enriched['datetime'], enriched[instrument_col]], names=['datetime', 'instrument'])
+        enriched[f'future_return_{horizon}d'] = labels['forward_return'].reindex(keys).to_numpy()
+    enriched.attrs['label_timing'] = {'expression': f'close(t+{resolved_exit_offset})/close(t+{entry_offset})-1',
+        'calendar_alignment': 'independent_calendar' if calendar is not None else 'legacy_observed_rows_unverified'}
     if include_label_path:
         enriched['label_start_date'] = label_start_date
         enriched['label_end_date'] = label_end_date

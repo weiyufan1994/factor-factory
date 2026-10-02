@@ -20,6 +20,13 @@ long-side evidence, provenance, or prewrite gates. Legacy
 
 ## Research Discipline
 
+Verify and deliver the [human-reproducible handoff](../factor-forge-ultimate/references/human-reproducibility.md):
+annotated executed factor class/helpers, a runnable command, full standard factor
+values plus head/tail/date slices, and the same standardized metrics produced by
+Step4. Preserve units, sample sizes, timing and unavailable reasons. Do not replace
+these with a PASS count, regenerate metrics in prose, or call a statistics-only
+result an account backtest. Missing handoff content is an incomplete delivery.
+
 Step 5 is not just file archiving. It must compress Step4 evidence into a reusable case:
 - which evidence is strong enough to reuse,
 - which evidence is weak or should not be over-interpreted,

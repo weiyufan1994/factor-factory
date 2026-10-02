@@ -37,6 +37,7 @@ from factor_factory.data_access import (
 )
 from factor_factory.performance import PhaseTimer
 from factor_factory.risk.drawdown_geometry import drawdown_geometry
+from factor_factory.research_api import evaluate_factor
 
 import matplotlib
 matplotlib.use('Agg')
@@ -198,6 +199,7 @@ def _try_load_shared_context(report_id: str, timer: PhaseTimer) -> tuple[pd.Data
             'daily_forward_returns_path': paths.get('daily_forward_returns_parquet'),
             'context_version': context.get('version'),
             'label_policy': context.get('label_policy'),
+            'label_timing': context.get('label_timing'),
         })
         return factor_df, merged, signal_col, profile
     except Exception as exc:
@@ -676,6 +678,12 @@ def _build_quality_warnings(
 def run_self_quant_quick(report_id: str) -> dict[str, Any]:
     timer = PhaseTimer()
     web_tradeable_timing = _uses_tradeable_web_timing(report_id)
+    calendar_path = os.environ.get('FACTORFORGE_EXCHANGE_CALENDAR_PATH')
+    calendar_dates = None
+    if calendar_path:
+        from factor_factory.research_api import _dates
+        calendar_frame = pd.read_parquet(calendar_path)
+        calendar_dates = _dates(calendar_frame['trade_date'], name='exchange_calendar').tolist()
     shared_factor_df, shared_merged, shared_signal_col, shared_context_profile = _try_load_shared_context(report_id, timer)
     if shared_context_profile.get('used') is True and shared_factor_df is not None and shared_merged is not None and shared_signal_col:
         factor_df = shared_factor_df
@@ -684,6 +692,7 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
         factor_values_selected_format = 'shared_context_factor_signal_parquet'
         daily_snapshot_path = Path(str(shared_context_profile.get('daily_forward_returns_path')))
         daily_snapshot_format = 'shared_context_daily_forward_returns_parquet'
+        label_timing = shared_context_profile.get('label_timing') or {'calendar_alignment': 'unknown_legacy_context'}
     else:
         with timer.phase('load_factor_values'):
             factor_df, signal_col, _factor_id = load_factor_values_with_signal(report_id)
@@ -693,6 +702,8 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
             factor_df = factor_df.rename(columns={'ts_code': 'code'}).copy()
             factor_df['datetime'] = normalize_trade_date_series(factor_df['trade_date'])
         with timer.phase('load_daily_snapshot'):
+            if web_tradeable_timing and calendar_dates is None:
+                raise ValueError('executable web timing fallback requires an explicit exchange calendar')
             daily_snapshot_path, daily_snapshot_format = resolve_daily_snapshot_path(report_id)
             daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
             daily_df = build_forward_return_frame(
@@ -704,7 +715,9 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
                 horizon=1,
                 entry_offset=1 if web_tradeable_timing else 0,
                 exit_offset=2 if web_tradeable_timing else None,
+                calendar_dates=calendar_dates,
             )
+            label_timing = daily_df.attrs.get('label_timing', {'calendar_alignment': 'unknown'})
 
         with timer.phase('merge_forward_returns'):
             merged = factor_df[['datetime', 'trade_date', 'code', signal_col]].merge(
@@ -715,12 +728,15 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
             merged = merged.dropna(subset=[signal_col, 'future_return_1d'])
 
     with timer.phase('ic_calculation'):
-        rank_ic = merged.groupby('datetime', sort=True).apply(
-            lambda df: df[signal_col].corr(df['future_return_1d'], method='spearman')
-        )
-        pearson_ic = merged.groupby('datetime', sort=True).apply(
-            lambda df: df[signal_col].corr(df['future_return_1d'], method='pearson')
-        )
+        public_factor = factor_df[['trade_date', 'code', signal_col]].rename(
+            columns={'code': 'ts_code', signal_col: 'factor_value'})
+        public_labels = merged[['trade_date', 'code', 'future_return_1d']].rename(
+            columns={'code': 'ts_code', 'future_return_1d': 'forward_return'})
+        public_labels.attrs['timing'] = label_timing
+        research_metrics = evaluate_factor(public_factor, public_labels, analysis='ic')
+        periods = research_metrics['periods']
+        rank_ic = pd.Series({pd.Timestamp(row['date']): row['rank_ic'] for row in periods}, dtype=float)
+        pearson_ic = pd.Series({pd.Timestamp(row['date']): row['pearson_ic'] for row in periods}, dtype=float)
 
     rank_stats = _series_stats(rank_ic)
     pearson_stats = _series_stats(pearson_ic)
@@ -814,6 +830,7 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
         'signal_name': signal_col,
         'engine': 'self_quant_adapter_quick_mode',
         'evaluation_scope': 'signal_diagnostic',
+        'research_metrics': research_metrics,
         'account_simulation': False,
         'tradable_net_alpha_evidence': False,
         'resource_profile': {

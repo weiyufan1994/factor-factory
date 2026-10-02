@@ -11,6 +11,8 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from factor_factory import research_statistics
+
 from factor_factory.research_evidence import (
     resolve_workspace_evidence_path,
     sha256_file,
@@ -68,7 +70,11 @@ def _stable_hash(payload: Any) -> str:
 
 
 def verifier_source_sha256() -> str:
-    return sha256_file(Path(__file__))
+    # The statistical kernel is shared with the manual SDK. Bind both sources
+    # so changing that kernel cannot retain an old verifier identity.
+    return hashlib.sha256(
+        Path(__file__).read_bytes() + b'\0' + Path(research_statistics.__file__).read_bytes()
+    ).hexdigest()
 
 
 def _load_trusted_calendar_registry() -> tuple[dict[str, Any], dict[str, str]]:
@@ -905,21 +911,7 @@ def _daily_rank_ic(
 
 def _newey_west_tstat(values: np.ndarray, lags: int) -> float | None:
     clean = values[np.isfinite(values)]
-    count = len(clean)
-    if count < 2:
-        return None
-    centered = clean - clean.mean()
-    long_run_variance = float(np.dot(centered, centered) / count)
-    for lag in range(1, min(lags, count - 1) + 1):
-        weight = 1.0 - lag / (lags + 1.0)
-        covariance = float(
-            np.dot(centered[lag:], centered[:-lag]) / count
-        )
-        long_run_variance += 2.0 * weight * covariance
-    variance_of_mean = max(long_run_variance, 0.0) / count
-    if variance_of_mean <= 0:
-        return None
-    return float(clean.mean() / math.sqrt(variance_of_mean))
+    return research_statistics.newey_west_mean(clean, lags)['tstat']
 
 
 def _fama_macbeth(
@@ -931,25 +923,26 @@ def _fama_macbeth(
     controls: list[str],
     lags: int,
 ) -> tuple[float, float, int]:
+    rows = research_statistics.fama_macbeth_periods(
+        frame, date_col=date_col, signal_col=signal_col, return_col=return_col,
+        controls=controls,
+    )
     lambdas: list[float] = []
-    regression_columns = [signal_col, *controls]
-    for date, group in frame.groupby(date_col, sort=True):
-        clean = group[[return_col, *regression_columns]].dropna()
-        if len(clean) <= len(regression_columns) + 1:
+    for row in rows:
+        date = row['date']
+        if row['reason'] == 'cross_section_insufficient':
             raise ValueError(
                 "BLOCK_FACTORFORGE_METRIC_VERIFIER_FAMA_MACBETH_CROSS_SECTION_INSUFFICIENT:"
                 f"{date}"
             )
-        x = clean[regression_columns].to_numpy(dtype=float)
-        x = np.column_stack([np.ones(len(x)), x])
-        y = clean[return_col].to_numpy(dtype=float)
-        beta, _, rank, _ = np.linalg.lstsq(x, y, rcond=None)
-        if rank != x.shape[1]:
+        if row['reason'] == 'rank_deficient':
             raise ValueError(
                 "BLOCK_FACTORFORGE_METRIC_VERIFIER_FAMA_MACBETH_RANK_DEFICIENT:"
                 f"{date}"
             )
-        lambdas.append(float(beta[1]))
+        if row['lambda'] is None:
+            raise ValueError('BLOCK_FACTORFORGE_METRIC_VERIFIER_FAMA_MACBETH_NUMERIC_INVALID:' + date)
+        lambdas.append(row['lambda'])
     if len(lambdas) < 2:
         raise ValueError(
             "BLOCK_FACTORFORGE_METRIC_VERIFIER_FAMA_MACBETH_PERIODS_INSUFFICIENT"

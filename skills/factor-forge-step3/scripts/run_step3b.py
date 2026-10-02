@@ -998,26 +998,29 @@ def normalize_direct_code_result(result) -> pd.DataFrame:
     return result
 
 
-def compute_factor_with_contract(module, daily_df, minute_df, *, exchange_calendar=None):
+def compute_factor_with_contract(module, daily_df, minute_df, *, exchange_calendar=None, additional_inputs=None):
     """Resolve the invocation before executing user code, without retries."""
-    from factor_factory.implementation_runtime import invoke_factor
+    from factor_factory.implementation_runtime import invoke_implementation
+    from factor_factory.research_api import validate_factor_output
 
     use_polars = direct_code_expects_polars(module)
     daily_input = maybe_polars_frame(add_direct_code_alias_columns(daily_df), use_polars)
     minute_input = maybe_polars_frame(add_direct_code_alias_columns(minute_df), use_polars) if minute_df is not None else None
     calendar_input = maybe_polars_frame(exchange_calendar, use_polars) if exchange_calendar is not None else None
-    additional_inputs = (
-        {'exchange_calendar': calendar_input}
-        if exchange_calendar is not None else None
-    )
-    return normalize_direct_code_result(
-        invoke_factor(
-            module.compute_factor,
+    roles = {name: maybe_polars_frame(value, use_polars) if value is not None else None
+             for name, value in (additional_inputs or {}).items()}
+    if exchange_calendar is not None:
+        if 'exchange_calendar' in roles:
+            raise TypeError('exchange_calendar was supplied twice')
+        roles['exchange_calendar'] = calendar_input
+    return validate_factor_output(normalize_direct_code_result(
+        invoke_implementation(
+            module,
             daily_input,
             minute_input,
-            additional_inputs=additional_inputs,
+            additional_inputs=roles,
         )
-    )
+    ))
 
 
 def resolve_local_input_path(raw: str | None) -> Path | None:
@@ -1506,7 +1509,7 @@ def generate_first_run_factor_values(
 
     module = import_module_from_path(implementation_path)
     has_partitioned_controller = prepared_derived_state and callable(getattr(module, 'compute_factor_partitioned', None))
-    if not has_partitioned_controller and not hasattr(module, 'compute_factor'):
+    if not has_partitioned_controller and not (hasattr(module, 'compute_factor') or hasattr(module, 'FACTOR')):
         raise SystemExit(f'Step3B implementation missing compute_factor(): {implementation_path}')
     metadata = getattr(module, 'METADATA', {}) if module is not None else {}
     source_profile = assert_high_speed_code_policy(
@@ -1634,6 +1637,8 @@ def generate_first_run_factor_values(
     formula_engine_profile['adaptive_selector'] = adaptive_selector_profile
     if result_df is None or len(result_df) == 0:
         raise SystemExit('Step3B first-run implementation returned empty factor values')
+    from factor_factory.research_api import validate_factor_output
+    result_df = validate_factor_output(result_df)
     if not {'ts_code', 'trade_date'}.issubset(result_df.columns):
         raise SystemExit('Step3B first-run output must include ts_code and trade_date')
     if prepared_sample_calendar is not None:
@@ -2445,6 +2450,9 @@ def resolve_direct_code_law_contract(contract: dict) -> dict:
 
 def ensure_direct_code_keyword_adapter(source_code: str, input_schema: dict | None = None) -> str:
     # Keep the selected body and expose the shared single-invocation keyword API.
+    from factor_factory.implementation_runtime import source_declares_factor_instance
+    if source_declares_factor_instance(source_code):
+        return source_code
     marker = '_factorforge_user_compute_factor'
     if marker in source_code:
         return source_code
@@ -2505,8 +2513,9 @@ def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity
             'BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: direct_code Step3B requires explicit code_contract.source_code; '
             'no fallback implementation is allowed.'
         )
-    if 'def compute_factor' not in source_code:
-        raise SystemExit('BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: direct_code source_code must define compute_factor().')
+    from factor_factory.implementation_runtime import source_declares_factor_instance, source_declares_legacy_callable
+    if not (source_declares_factor_instance(source_code) or source_declares_legacy_callable(source_code)):
+        raise SystemExit('BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: source must declare a module-level FACTOR or compute_factor().')
     source_code = ensure_direct_code_keyword_adapter(
         source_code,
         input_schema=(

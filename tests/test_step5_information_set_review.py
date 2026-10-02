@@ -28,6 +28,10 @@ def test_narrative_is_unconfirmed_not_adjudicated_by_words(text):
     'ts_lead(close, 2)', 'lookahead(close, 1)', 'close.shift(-1)',
     'close.shift(periods=-1)', 'shift(close, -2)', 'ts_delay(close, -1)',
     'lag(close, n=-1)', 'delay(close, -0.5)',
+    'shift(mean(close, 5), -1)', 'lag(rank(close), -1)',
+    'shift(mean(close, 5), periods=-1)', 'lag(rank(close), n=-1)',
+    'Ref(mean($close, 5), -1)', 'close.groupby(sector).shift(-1)',
+    'lag(rank(close), -(1))', 'lag(rank(close), −1)',
 ])
 def test_future_expression_cannot_be_cleared_by_safe_sounding_prose(expression):
     assert classify_information_set({'formula_text': expression,
@@ -41,6 +45,12 @@ def test_future_operator_and_lag_word_substrings():
     assert classify_information_set({'formula_text': 'close / amount'}) == UNCONFIRMED
 
 
+@pytest.mark.parametrize('formula', ['lag(rank(close), n)', 'shift(mean(close, 5), -(n))',
+                                    'shift(mean(close, 5),', 'lag(x, 1) + lag(x, unknown)'])
+def test_ambiguous_lag_never_falls_back_to_documented_lag(formula):
+    assert classify_information_set({'formula_text': formula}) == UNCONFIRMED
+
+
 @pytest.mark.parametrize('package', ['factor-forge-step5', 'factor_forge_step5'])
 def test_both_actual_case_producers_use_same_three_state_classification(package):
     builder = importlib.import_module(f'skills.{package}.modules.case_builder')
@@ -52,8 +62,9 @@ def test_both_actual_case_producers_use_same_three_state_classification(package)
     result = builder.build_step5_math_discipline_review(bundle, {'backend_summary': []})
     assert result['information_set_legality'] == UNCONFIRMED
     assert bundle == before
-    canonical['formula_text'] = 'close.shift(-1)'
-    assert builder.build_step5_math_discipline_review(bundle, {})['information_set_legality'] == ILLEGAL
+    for expression in ['close.shift(-1)', 'shift(mean(close, 5), -1)', 'lag(rank(close), n=-1)']:
+        canonical['formula_text'] = expression
+        assert builder.build_step5_math_discipline_review(bundle, {})['information_set_legality'] == ILLEGAL
 
 
 @pytest.fixture
@@ -115,10 +126,13 @@ def test_changed_bound_input_refused_before_any_write(metadata_case, tmp_path, k
     assert not (tmp_path / 'refused').exists()
 
 
-def test_real_forward_expression_refuses_metadata_repair(metadata_case, tmp_path):
+@pytest.mark.parametrize('expression', ['close.shift(-1)', 'shift(mean(close, 5), -1)',
+                                       'lag(rank(close), -1)', 'shift(mean(close, 5), periods=-1)',
+                                       'lag(rank(close), n=-1)'])
+def test_real_forward_expression_refuses_metadata_repair(metadata_case, tmp_path, expression):
     paths, expected = metadata_case
     spec = json.loads(paths['spec'].read_text())
-    spec['canonical_spec']['formula_text'] = 'close.shift(-1)'
+    spec['canonical_spec']['formula_text'] = expression
     paths['spec'].write_text(json.dumps(spec))
     expected['spec'] = digest(paths['spec'].read_bytes())
     with pytest.raises(ValueError, match='Only legacy narrative BLOCK'):

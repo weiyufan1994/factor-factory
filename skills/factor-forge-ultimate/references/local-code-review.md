@@ -120,7 +120,7 @@ establish completion.
 Artifact checks use the existing manifest and concrete files referenced by the
 run/case/backend records. JSON files are content-hashed with an 8 MiB per-file
 limit; other files use size, modification/change time and file identity, without
-reading bulk data. The check visits at most 4096 explicit files, skips aggregate
+reading bulk data. The check visits at most 8192 explicit files, skips aggregate
 directory roots and the mutable journal, and never scans a directory tree.
 Oversized JSON or directory references block reuse for inspection. File metadata
 is ordinary change detection, not cryptographic proof of bulk data or a new data

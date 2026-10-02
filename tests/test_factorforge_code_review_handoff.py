@@ -559,10 +559,11 @@ def _many_archive_files(case, count=592):
 
 
 @pytest.mark.parametrize("change", ["modify", "delete"])
-def test_large_finite_archive_binds_every_leaf_and_blocks_late_changes(flow_case, monkeypatch, change):
+@pytest.mark.parametrize("archive_count", [592, 5600])
+def test_large_finite_archive_binds_every_leaf_and_blocks_late_changes(flow_case, monkeypatch, change, archive_count):
     _complete_stage4(flow_case)
     _flow(flow_case).before_command("run_step5", end_step="5", execution_context=_command_context(flow_case))
-    paths = _many_archive_files(flow_case)
+    paths = _many_archive_files(flow_case, count=archive_count)
     real_read = Path.read_bytes
 
     def no_bulk_reads(path):
@@ -572,8 +573,8 @@ def test_large_finite_archive_binds_every_leaf_and_blocks_late_changes(flow_case
     monkeypatch.setattr(Path, "read_bytes", no_bulk_reads)
     _flow(flow_case).record_command(_command_result("run_step5"))
     versions = _flow(flow_case).status()["request"]["execution"]["5"]["artifacts"]
-    assert set(paths) <= set(versions) and len(set(paths)) == 592
-    assert len(versions) < 620  # Duplicate refs deduplicate; leaf JSON does not expand.
+    assert set(paths) <= set(versions) and len(set(paths)) == archive_count
+    assert len(versions) < archive_count + 28  # Duplicate refs deduplicate; leaf JSON does not expand.
     _flow(flow_case).before_command("validate_step5", end_step="5", execution_context=_command_context(flow_case))
     _flow(flow_case).record_command(_command_result("validate_step5"))
     path = Path(paths[-1])
@@ -586,16 +587,16 @@ def test_large_finite_archive_binds_every_leaf_and_blocks_late_changes(flow_case
         _flow(flow_case).before_command("run_step5", end_step="5", execution_context=_command_context(flow_case))
 
 
-def _reference_limit_failure(case, monkeypatch):
+def _reference_limit_failure(case, monkeypatch, *, archive_count=270, reference_limit=256):
     """An old-version failure with synthetic native-shaped process evidence."""
     _complete_stage4(case)
     flow = _flow(case)
     request_id = flow.status()["request_id"]
     flow.before_command("run_step5", end_step="5", execution_context=_command_context(case))
-    paths = _many_archive_files(case, count=270)
+    paths = _many_archive_files(case, count=archive_count)
     result = _command_result("run_step5")
     with monkeypatch.context() as old:
-        old.setattr(handoff_module, "_MAX_ARTIFACT_REFS", 256)
+        old.setattr(handoff_module, "_MAX_ARTIFACT_REFS", reference_limit)
         with pytest.raises(HandoffError, match="ARTIFACT_REFERENCE_LIMIT"):
             flow.record_command(result)
     manifest_file = case["workspace"] / "runtime-manifest.json"
@@ -609,8 +610,10 @@ def _reference_limit_failure(case, monkeypatch):
     return request_id, proof, paths
 
 
-def test_explicit_capture_recovery_preserves_execution_and_requires_native_validation(flow_case, monkeypatch):
-    request_id, proof, _ = _reference_limit_failure(flow_case, monkeypatch)
+@pytest.mark.parametrize("reference_limit,archive_count", [(256, 270), (4096, 5600)])
+def test_explicit_capture_recovery_preserves_execution_and_requires_native_validation(flow_case, monkeypatch, reference_limit, archive_count):
+    request_id, proof, paths = _reference_limit_failure(
+        flow_case, monkeypatch, archive_count=archive_count, reference_limit=reference_limit)
     old = deepcopy(_flow(flow_case)._active()["execution"])
     recovered = _flow(flow_case).recover_artifacts(request_id, "5", proof_path=proof, reference="Synthetic tool result")
     current = recovered["request"]["execution"]
@@ -618,6 +621,7 @@ def test_explicit_capture_recovery_preserves_execution_and_requires_native_valid
     for key in ("run_step5", "run_step5_binding", "pending_invocation", "pending_artifacts", "started_at"):
         assert current["5"][key] == old["5"][key]
     assert current["5"]["status"] == "computed" and recovered["remaining_steps"] == ["5"]
+    assert set(paths) <= set(current["5"]["artifacts"])
     history = current["5"]["artifact_recovery_history"][-1]
     assert history["artifact_issues"] == old["5"]["artifact_issues"]
     assert history["computation_reexecuted"] is False and history["native_validation_required"] is True
@@ -628,6 +632,41 @@ def test_explicit_capture_recovery_preserves_execution_and_requires_native_valid
     assert _flow(flow_case).before_command("validate_step5", end_step="5", execution_context=_command_context(flow_case))["status"] == "RUN"
     _flow(flow_case).record_command(_command_result("validate_step5"))
     assert _flow(flow_case).status()["remaining_steps"] == []
+
+
+def test_real_8192_file_limit_includes_case_and_rejects_next_unique_leaf(flow_case):
+    # Actual files and the production cap: no small-cap monkeypatch. The case
+    # itself counts, and a duplicate leaf must not consume another slot.
+    assert handoff_module._MAX_ARTIFACT_REFS == 8192
+    flow = _flow(flow_case)
+    case_path = Path(flow_case["manifest"]["step_io"]["step5"]["outputs"]["factor_case_master"])
+    paths = _many_archive_files(flow_case, count=8191)
+    contract = {"step": "5", "paths": [{"path": str(case_path), "direction": "outputs",
+                                          "key": "factor_case_master", "required": True}]}
+    versions = flow._capture_artifacts(contract)
+    assert len(versions) == 8192 and set(paths) <= set(versions)
+    # The first 8192 bindings still exist when the next explicit leaf exceeds
+    # capacity. Capture must fail, never silently truncate the returned set.
+    extra = case_path.parent / "one-more-declared-leaf.parquet"
+    extra.write_text("synthetic bulk bytes")
+    _write(case_path, {"evidence": {"archive_paths": paths + [paths[0], str(extra)]}})
+    with pytest.raises(HandoffError, match="ARTIFACT_REFERENCE_LIMIT"):
+        flow._capture_artifacts(contract)
+
+
+@pytest.mark.parametrize("change", ["modify", "delete"])
+def test_5600_leaf_recovery_rejects_late_evidence_without_writing_journal(flow_case, monkeypatch, change):
+    request_id, proof, paths = _reference_limit_failure(
+        flow_case, monkeypatch, archive_count=5600, reference_limit=4096)
+    original_journal = _flow(flow_case).path.read_bytes()
+    last = Path(paths[-1])
+    if change == "delete":
+        last.unlink()
+    else:
+        last.write_text("changed after the successful writer")
+    with pytest.raises(HandoffError, match="ARTIFACT_(MISSING|CHANGED_AFTER_COMMAND)"):
+        _flow(flow_case).recover_artifacts(request_id, "5", proof_path=proof, reference="Synthetic actual result")
+    assert _flow(flow_case).path.read_bytes() == original_journal
 
 
 @pytest.mark.parametrize("corruption", [

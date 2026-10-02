@@ -50,9 +50,9 @@ def _snapshot(path: Path, role: str) -> dict:
 # Reuse the existing stage IO and the files referenced by its native artifacts.
 # JSON envelopes are bounded; bulk files are only stat'ed, never loaded/scanned.
 _MAX_ARTIFACT_JSON = 8 * 1024 * 1024
-# A decade of monthly checkpoints can legitimately declare over 500 leaves.
+# Multiple diagnostic accounts can declare thousands of checkpoint leaves.
 # Keep a finite ceiling and the existing concrete-file/JSON-size restrictions.
-_MAX_ARTIFACT_REFS = 4096
+_MAX_ARTIFACT_REFS = 8192
 _ARTIFACT_REFERENCE_LIMIT = "ARTIFACT_REFERENCE_LIMIT: inspect the declared finite artifact set"
 # Step6 owns its Council pause/attachment/finalization lifecycle. This journal
 # only guards its reviewed prerequisites; it must not cache Step6 completion.

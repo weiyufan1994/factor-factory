@@ -207,6 +207,19 @@ def test_main_completed_step6_exports_once_without_episode(runtime):
     assert not (runtime.workspace / 'knowledge/research_episodes').exists()
 
 
+def test_hybrid_failure_after_executed_step_preserves_maintenance(runtime, monkeypatch):
+    def failed(**kwargs):
+        raise ultimate.HybridResearchError('synthetic development input error')
+    monkeypatch.setattr(ultimate, 'run_hybrid_research_opt_in_non_authoritative', failed)
+    proof, episode = _recorded(runtime, 'FAIL', 1, runtime.run(
+        '--start-step', '4', '--end-step', '4',
+        '--hybrid-research-request', str(runtime.workspace / 'request.json')))
+    assert proof['failure']['command'] == 'hybrid_research_opt_in'
+    assert proof['failure']['token'] == 'BLOCK_FACTORFORGE_HYBRID_RESEARCH_REQUEST'
+    assert any(row['command'] == 'run_step4' for row in episode['observations'])
+    assert proof['formal_proof_eligible'] is False
+
+
 def _hosted(runtime, monkeypatch):
     monkeypatch.setenv(ultimate.OOS_HOST_TRUST_ROOT_ENV, str(runtime.repo))
     monkeypatch.setenv(ultimate.OOS_HOST_INSTALLATION_ID_ENV, 'synthetic-installation')

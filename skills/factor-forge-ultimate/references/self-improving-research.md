@@ -1,0 +1,119 @@
+# Self-improving research loop
+
+Read this reference when a research episode introduces a new response structure,
+uses a hybrid-research proposal, or turns Step4/5 evidence into the next research
+action. It is a research discipline, not an execution or release permission.
+
+## Required induction for a new response structure
+
+Before a new structure enters formal efficacy evaluation, the responsible
+researcher records a concise, public-facing induction in the existing Step2
+record and Step6 journal/handoff:
+
+1. State the economic assumption and exactly what changed from the parent.
+2. Define the mathematical object, information time, domain and symbols.
+3. Derive forward implications under those assumptions. Let the derivation reveal
+   useful states, predictions, counterexamples or identification limits; do not
+   begin with a desired alpha and reverse-engineer a story.
+4. Map the object to observations, estimators and code, naming proxies, retained
+   and lost information, numerical conventions and legal timing.
+5. Fix a discriminating test or falsifier, then state what follows, remains
+   unknown, or is inconsistent.
+
+An SDE is useful when the question is stochastic-process based, but is not a
+universal template. A derived property, contradiction, non-identification or
+inability to infer a return direction is a valid outcome. Completing an
+induction and establishing that the candidate is consistent are separate facts.
+
+## Candidate changes and action advice
+
+Classify each candidate before code or evaluation:
+
+- **Implementation equivalent:** preserve object, domain, initial state, clock,
+  missing-value semantics and numerical behavior; establish parity with an
+  independent oracle.
+- **Measurement or estimation variant:** state changed information, bias/error,
+  applicability and the revised observation map; return it to Step2 review.
+- **New mechanism or response structure:** perform the induction above and
+  return to Step2 before formal evaluation.
+
+`factor_factory.hybrid_research.decision` may summarize comparable development
+evidence and recommend a registered action. This recommendation does not execute
+actions, create a mechanism, validate semantics, write canonical knowledge, or
+replace Step2 code review. Its normalized delta is local to the stated metric and protocol, not an
+information-gain, causal, trading-utility or alpha score. Final/confirmation
+evidence never updates the current policy.
+
+Record Step6's evidence-based decision as retain, revise, reject, unresolved or
+stop with the next discriminating question where applicable. A failure,
+unaffordable action, missing evidence or STOP is legitimate; preserve cost and
+the evidence boundary. Suspected implementation defects still return to Step2
+and Step3 for a distinct code review and regression test.
+
+## Optional derivation audit
+
+Use the [repository candidate Math Derivation Tutor](../../math-derivation-tutor/SKILL.md)
+when a derivation,
+observation bridge, numerical approximation or failed prediction needs a focused
+audit. The responsible researcher still owns the induction. The Tutor is neither
+a formal proof system nor an independent reviewer and is not a required extra
+model call for ordinary work. This is a local audit adaptation for D0.4, not a
+claim to have migrated or reproduced a separate Tutor system.
+
+## Shipped interfaces and limits
+
+Ordinary Ultimate execution leaves hybrid research off. Use an explicitly
+accepted release's launcher and the study's existing pin. For a separately
+authorized, bounded development fit against existing Step2/Step6 artifacts:
+
+```sh
+<release>/run-ultimate --report-id <report_id> --factor-workspace <workspace> \
+  --hybrid-research-adapter-only --hybrid-research-request <request.json>
+```
+
+`--factorforge-root <workspace>` is also supported for an existing object root;
+if both root and workspace are specified they must identify the same directory.
+An old study pin is rejected. Adapter-only does not run Step3–6 or emit a formal
+Ultimate proof. Normal Step3–6 retains the existing review and execution route.
+
+The request contract is `hybrid_research_request_v1`, parsed by
+`factor_factory.hybrid_research.journal_adapter.run_hybrid_episode_from_request`.
+Required fields are `report_id`, `run_id`, `handoff_stage` (`step2` or `step6`),
+`fit_data` (`signed_impulses`, `observed_response`, `step`), `derivation_scope`
+(the fields of `DerivationScope`), and `schedule_state` (`episode_index`,
+`explore_allocations`, `exploit_allocations`). Use `split: development`; final
+and confirmation inputs are rejected. `search_config` accepts `allowed_rates`,
+`allowed_scales`, `seed`, `generations`, `population_size`, `max_evaluations`
+and `max_attempts`. `response_semantics` optionally supplies `ResponseSemantics`
+including explicit training/scoring indexes and initial-state conventions.
+`implementation_evidence` optionally binds actual review/test evidence; missing
+evidence stays missing and does not become an approval.
+
+This GP fits supplied development observations. It is **not proposal-only** or
+a general factor-expression grammar. `ResponseProgram` holds zero, one or two
+`KernelTerm(scale, decay_rate)` terms; scope/response semantics constrain the
+admissible family. It does not support arbitrary daily panel ASTs, relative-peer
+returns, exact-calendar lags, or an activity-conditioned factor merely because
+that factor uses multiplication. Use ordinary reviewed direct code or hybrid
+implementation for unsupported mathematical objects; never reshape the object
+or fabricate signed flow to fit this API.
+
+The fit returns a selected candidate and an attempted/evaluated/rejected trace.
+The journal binds input and artifact hashes and writes researcher material with
+`computed_awaiting_researcher`, not approval. Reusing the same run/input resumes
+saved material without fitting again; changed input under the same run is
+rejected. An interrupted fit with unknown completion remains unknown instead of
+automatically retrying. Nonfinite fit inputs are rejected, never filled with zero.
+The adapter does not load a catalog, prove target maturity, produce a monthly
+score panel, reserve cross-workspace market trials, or enforce a process memory/
+disk quota. Callers must keep development inputs legally available, explicitly
+bound fit sizes/budgets, and use the existing research trial accounting before
+any return-scored search. A development fixture consumes no market-study slot.
+
+`run_action_mcts(enabled=True, evaluator=...)` is a library interface; its real
+`ActionEvaluator(ResearchState, Action, seed) -> ActionResult` callback performs
+the authorized action and returns an evidence-bound `Observation`. It has no
+shipped monthly-market callback or Ultimate CLI dispatch. Missing callbacks
+raise an error. In-memory cost/expansion limits do not replace durable market
+trial reservations. The demo is synthetic engineering evidence only. RL is not
+implemented. None of these interfaces establishes alpha or changes IS/OOS scope.

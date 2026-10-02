@@ -1,0 +1,34 @@
+{
+  "contract_version": "w11_common_problem_v1",
+  "status": "awaiting_real_step2",
+  "task_id": "w11-response-proposal-task-01",
+  "question": "In a bounded synthetic mechanism and algorithm benchmark under one event clock and one common development sample, compare a non-adaptive simple proposer with the existing response GP for zero/one/two-timescale causal response candidates.",
+  "economic_boundary": "Signed impulses are externally supplied synthetic events. No market, return, alpha, payer, trading-cost, OOS, or production claim is present.",
+  "claim_boundary": "This is not open economic research and does not assume or establish self-improving behavior.",
+  "step2_required_outputs": [
+    "mathematical_object",
+    "observation_timing",
+    "rate_parameterization",
+    "pre_sample_input",
+    "initial_state_and_anchor",
+    "intercept",
+    "gain_mode_and_constraint",
+    "training_and_score_indexes",
+    "allowed_response_families",
+    "allowed_parameter_domain",
+    "distinguishing_predictions",
+    "out_of_domain_or_missing_semantics"
+  ],
+  "common_visible_input": {
+    "clock": "event",
+    "step": 1.0,
+    "signed_impulses": [1.0, 0.0, -1.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0, 1.0, 0.0, -1.0, 0.0, 1.0, 0.0, -1.0],
+    "observed_response_status": "not_generated_or_revealed_before_real_step2"
+  },
+  "forbidden_in_researcher_material": [
+    "confirmation_observed_response",
+    "expected_winner",
+    "hidden_truth",
+    "oracle_parameters"
+  ]
+}

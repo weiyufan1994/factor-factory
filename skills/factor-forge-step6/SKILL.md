@@ -87,3 +87,12 @@ missing evidence or budget exhaustion remain explicit blockers, not fake results
 Report economic judgment, local execution, native protocol/validator status,
 Council evidence and formal authority separately. Step6 cannot self-certify
 independent acceptance or promote its own memory candidate.
+
+## Evidence-guided next action
+
+When Step6 turns experiment evidence into a next action or handles a new
+response structure, read [self-improving research](../factor-forge-ultimate/references/self-improving-research.md).
+Preserve the induction, candidate class, raw failure/cost boundary and the
+reason for retain, revise, reject, unresolved or STOP in the existing
+journal/handoff. Hybrid-policy output is evidence input only; it cannot turn a
+high score into an economic explanation, a Step2 approval, or independent review.

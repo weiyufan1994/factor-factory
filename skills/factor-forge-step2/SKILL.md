@@ -103,6 +103,16 @@ empirical results. Review repairs promptly; a changed estimand/hypothesis or
 post-result parameter choice is a research revision. Preserve observed outcomes
 and the old baseline. Weak returns alone do not justify a repair.
 
+## New response structures
+
+For every new response structure, including one proposed by a hybrid search
+tool, read [self-improving research](../factor-forge-ultimate/references/self-improving-research.md).
+Complete and record the mechanism-first math induction before formal efficacy
+evaluation. Classify the candidate as implementation-equivalent, a
+measurement/estimation variant, or a new mechanism; the latter two require the
+corresponding Step2 review. An algorithmic score or improved development metric
+does not replace the induction, source fidelity, or a discriminating test.
+
 ## Handoff and completion
 
 The source-contract validator checks the exact identity, route and required

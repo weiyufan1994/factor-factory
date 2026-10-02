@@ -57,6 +57,11 @@ from factor_factory.local_is_execution import (
     local_is_request_errors,
     local_is_workspace_errors,
 )
+from factor_factory.hybrid_research.journal_adapter import (
+    HybridResearchError,
+    record_hybrid_researcher_response,
+    run_hybrid_episode_from_request,
+)
 from factor_factory.oos_exposure_incident import (
     oos_exposure_private_registry_guard,
 )
@@ -2073,6 +2078,39 @@ def parse_args() -> argparse.Namespace:
             'after a non-EVO Step5-only run. Default off and non-authoritative.'
         ),
     )
+    ap.add_argument(
+        '--hybrid-research-request',
+        default=None,
+        help=(
+            'Optional local-IS development request for the bounded hybrid-research adapter. '
+            'Default off; produces researcher evidence but never formal Step2/Step6 approval.'
+        ),
+    )
+    ap.add_argument(
+        '--hybrid-research-adapter-only',
+        action='store_true',
+        help=(
+            'Run only the explicitly requested local hybrid-research bridge against an '
+            'existing Ultimate object root; never emits formal proof or approval.'
+        ),
+    )
+    ap.add_argument(
+        '--hybrid-research-response',
+        default=None,
+        help='Optional real external researcher B response JSON to bind to an existing hybrid run.',
+    )
+    ap.add_argument('--hybrid-research-response-run-id', default=None)
+    ap.add_argument('--hybrid-research-response-input-identity', default=None)
+    ap.add_argument('--hybrid-research-response-material-sha256', default=None)
+    ap.add_argument('--hybrid-research-response-erratum', default=None)
+    ap.add_argument(
+        '--hybrid-research-response-only',
+        action='store_true',
+        help=(
+            'Record one explicitly bound local researcher response; never reruns search, '
+            'updates policy, dispatches work, or grants formal approval.'
+        ),
+    )
     ap.add_argument('--allow-legacy-research-protocol-smoke', action='store_true', help=argparse.SUPPRESS)
     ap.add_argument('--proof-output', default=None)
     ap.add_argument('--state-dependency-contract', default=None)
@@ -2083,6 +2121,93 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument('--require-state-reuse-contract', action='store_true')
     ap.add_argument('--explicit-data-production-context', action='store_true')
     return ap.parse_args()
+
+
+def _hybrid_only_root(args: argparse.Namespace) -> Path:
+    workspace = Path(args.factor_workspace).expanduser().resolve() if args.factor_workspace else None
+    root = Path(args.factorforge_root).expanduser().resolve() if args.factorforge_root else None
+    if workspace is not None and root is not None and workspace != root:
+        raise HybridResearchError('hybrid adapter requires one target; workspace and root differ')
+    target = workspace or root
+    if target is None:
+        raise HybridResearchError('hybrid adapter requires an explicit workspace or root')
+    return target
+
+
+def _validate_hybrid_workspace_pin(active_root: Path) -> None:
+    """Adapter-only calls must respect the same existing study pin as research."""
+    manifest = active_root / 'manifest.json'
+    if manifest.is_file():
+        payload = json.loads(manifest.read_text(encoding='utf-8'))
+        if not isinstance(payload, dict):
+            raise HybridResearchError('workspace manifest must be an object')
+        pin = payload.get('repo_root')
+        if pin and Path(pin).expanduser().resolve() != REPO_ROOT:
+            raise HybridResearchError(
+                f'BLOCK_LOCAL_WORKSPACE_PIN_MISMATCH: use the pinned checkout {pin}'
+            )
+
+
+def run_hybrid_research_opt_in_non_authoritative(
+    *, active_root: Path, report_id: str, request_path: str | Path
+) -> dict[str, Any]:
+    """Run the explicit local development bridge from the Ultimate entrypoint."""
+    _validate_hybrid_workspace_pin(active_root)
+    resolved_request = Path(request_path).expanduser().resolve()
+    outcome = run_hybrid_episode_from_request(
+        workspace_root=active_root,
+        report_id=report_id,
+        request_path=resolved_request,
+    )
+    return {
+        'status': outcome.status,
+        'run_id': outcome.run_id,
+        'input_identity': outcome.input_identity,
+        'resumed': outcome.resumed,
+        'journal_path': outcome.journal_path,
+        'researcher_material_path': outcome.researcher_material_path,
+        'request_path': str(resolved_request),
+        'request_sha256': hashlib.sha256(resolved_request.read_bytes()).hexdigest(),
+        'formal_approval': False,
+        'formal_proof_effect': 'none',
+    }
+
+
+def record_hybrid_researcher_response_non_authoritative(
+    *,
+    active_root: Path,
+    report_id: str,
+    run_id: str,
+    input_identity: str,
+    material_sha256: str,
+    response_path: str | Path,
+    erratum_path: str | Path | None = None,
+) -> dict[str, Any]:
+    """Record a real B response without changing formal Ultimate authority."""
+    _validate_hybrid_workspace_pin(active_root)
+    outcome = record_hybrid_researcher_response(
+        workspace_root=active_root,
+        report_id=report_id,
+        run_id=run_id,
+        input_identity=input_identity,
+        material_sha256=material_sha256,
+        response_path=response_path,
+        erratum_path=erratum_path,
+        enabled=True,
+    )
+    return {
+        'status': outcome.status,
+        'run_id': outcome.run_id,
+        'input_identity': outcome.input_identity,
+        'journal_path': outcome.journal_path,
+        'response_sha256': outcome.response_sha256,
+        'resumed': outcome.resumed,
+        'formal_approval': False,
+        'formal_proof_effect': 'none',
+        'policy_update_eligible': False,
+        'knowledge_write_allowed': False,
+        'next_experiment_dispatched': False,
+    }
 
 
 def resolve_research_organization_runtime_gate(
@@ -2341,6 +2466,87 @@ def _run_formal_ultimate(args: argparse.Namespace) -> int:
     if local_is_only and (errors := local_is_request_errors(args)):
         print('BLOCK_FACTORFORGE_LOCAL_IS_HOST_OR_OOS_ARGUMENT: ' + ','.join(errors))
         return 1
+    adapter_only = getattr(args, 'hybrid_research_adapter_only', False)
+    response_only = getattr(args, 'hybrid_research_response_only', False)
+    if adapter_only and response_only:
+        print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_MODES_CONFLICT')
+        return 1
+    if (adapter_only or response_only) and args.manifest:
+        print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_USE_EXPLICIT_WORKSPACE')
+        return 1
+    if adapter_only or response_only:
+        try:
+            hybrid_root = _hybrid_only_root(args)
+        except HybridResearchError as exc:
+            print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_WORKSPACE: ' + str(exc))
+            return 1
+    if getattr(args, 'hybrid_research_request', None) and (
+        not local_is_only or bool(args.dry_run)
+    ):
+        print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_LOCAL_DEVELOPMENT_ONLY')
+        return 1
+    if getattr(args, 'hybrid_research_response', None) and (
+        not local_is_only or bool(args.dry_run)
+    ):
+        print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_LOCAL_DEVELOPMENT_ONLY')
+        return 1
+    if getattr(args, 'hybrid_research_response', None) and not getattr(
+        args, 'hybrid_research_response_only', False
+    ):
+        print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_RESPONSE_MODE_REQUIRED')
+        return 1
+    if getattr(args, 'hybrid_research_response_only', False):
+        if getattr(args, 'hybrid_research_request', None):
+            print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_MODES_CONFLICT')
+            return 1
+        required = (
+            args.hybrid_research_response,
+            args.hybrid_research_response_run_id,
+            args.hybrid_research_response_input_identity,
+            args.hybrid_research_response_material_sha256,
+            args.factor_workspace or args.factorforge_root,
+        )
+        if any(not value for value in required):
+            print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_RESPONSE_BINDING_REQUIRED')
+            return 1
+        active_root = hybrid_root
+        if errors := local_is_workspace_errors(active_root, args.report_id):
+            print('BLOCK_FACTORFORGE_LOCAL_IS_HOSTED_WORKSPACE: ' + ','.join(errors))
+            return 1
+        try:
+            result = record_hybrid_researcher_response_non_authoritative(
+                active_root=active_root,
+                report_id=args.report_id,
+                run_id=args.hybrid_research_response_run_id,
+                input_identity=args.hybrid_research_response_input_identity,
+                material_sha256=args.hybrid_research_response_material_sha256,
+                response_path=args.hybrid_research_response,
+                erratum_path=args.hybrid_research_response_erratum,
+            )
+        except (HybridResearchError, OSError, ValueError, json.JSONDecodeError) as exc:
+            print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_RESPONSE: ' + str(exc))
+            return 1
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
+    if getattr(args, 'hybrid_research_adapter_only', False):
+        if not args.hybrid_research_request or not (args.factor_workspace or args.factorforge_root):
+            print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_REQUEST_REQUIRED')
+            return 1
+        active_root = hybrid_root
+        if errors := local_is_workspace_errors(active_root, args.report_id):
+            print('BLOCK_FACTORFORGE_LOCAL_IS_HOSTED_WORKSPACE: ' + ','.join(errors))
+            return 1
+        try:
+            result = run_hybrid_research_opt_in_non_authoritative(
+                active_root=active_root,
+                report_id=args.report_id,
+                request_path=args.hybrid_research_request,
+            )
+        except (HybridResearchError, OSError, ValueError, json.JSONDecodeError) as exc:
+            print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_REQUEST: ' + str(exc))
+            return 1
+        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True))
+        return 0
 
     formal_workspace_steps = bool(set(steps) & {'3', '3b', '4', '5', '6'})
     factor_workspace = Path(args.factor_workspace).expanduser().resolve() if args.factor_workspace else None
@@ -4766,6 +4972,34 @@ def _run_formal_ultimate(args: argparse.Namespace) -> int:
     )
     command_contract['executed_command_names'] = executed_names
     command_contract['satisfied'] = bool(commands_passed)
+    if getattr(args, 'hybrid_research_request', None):
+        if not commands_passed:
+            proof['hybrid_research'] = {
+                'status': 'not_run_prior_ultimate_command_failure',
+                'formal_approval': False,
+                'formal_proof_effect': 'none',
+            }
+        else:
+            try:
+                proof['hybrid_research'] = run_hybrid_research_opt_in_non_authoritative(
+                    active_root=ctx.active_root,
+                    report_id=args.report_id,
+                    request_path=args.hybrid_research_request,
+                )
+            except (HybridResearchError, OSError, ValueError, json.JSONDecodeError) as exc:
+                proof['status'] = 'FAIL'
+                proof['formal_proof_eligible'] = False
+                proof['failure'] = {
+                    'command': 'hybrid_research_opt_in',
+                    'returncode': 1,
+                    'token': 'BLOCK_FACTORFORGE_HYBRID_RESEARCH_REQUEST',
+                    'detail': str(exc),
+                }
+                proof['finished_at_utc'] = utc_now()
+                write_json_atomic(proof_path, proof)
+                print('BLOCK_FACTORFORGE_HYBRID_RESEARCH_REQUEST')
+                print(f'[PROOF] {proof_path}')
+                return finish_local_maintenance(1)
     if args.dry_run:
         proof['status'] = 'DRY_RUN'
         proof['formal_proof_eligible'] = False

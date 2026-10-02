@@ -75,6 +75,10 @@ def test_iteration_builder_passes_empty_window_to_actual_summary_boundary(step6,
     touched = _forbid_window_access(step6, monkeypatch)
     monkeypatch.setattr(step6, 'decide', lambda *args: 'needs_human_review')
     monkeypatch.setattr(step6, 'local_reviewers_agree_to_reject', lambda *args: False)
+    # Journal reflection is a separate local input, not OOS/window evidence.
+    # Keep the strict OBJ guard for the window-loading behavior under test.
+    monkeypatch.setattr(step6, 'load_researcher_journal', lambda *args: {})
+    monkeypatch.setattr(step6, 'load_researcher_agent_memo', lambda *args: {})
     monkeypatch.setattr(step6, 'derive_strengths_weaknesses', lambda *args: ([], [], [], []))
     monkeypatch.setattr(step6, 'extract_headline_metrics', lambda *args: {})
     observed = []

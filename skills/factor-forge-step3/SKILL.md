@@ -94,6 +94,15 @@ outputs/state and a safe restart point; recursive errors may require clean histo
 replay. Retain failed evidence. Do not change hypothesis, sign, window, universe,
 thresholds or trading policy to rescue metrics, or repeat live actions beyond scope.
 
+## Hybrid candidate boundary
+
+When implementing a candidate from hybrid research, read the Step2 record and
+[self-improving research](../factor-forge-ultimate/references/self-improving-research.md).
+Implement only the reviewed mathematical object and observation map. A new
+mechanism, changed measurement/estimator, timing change, or altered valid domain
+returns to Step2; a policy suggestion and a numerical score cannot authorize it.
+Keep the existing Step2-independent review of actual code and tests.
+
 ## Conditional references
 
 | Task | Read |

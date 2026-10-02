@@ -1,0 +1,27 @@
+{
+  "status": "fixed_before_generation_not_executed",
+  "math_ref": "../17_w11_math_adjudication.zh-CN.md",
+  "development_input_ref": "common_problem.json#common_visible_input.signed_impulses",
+  "confirmation_inputs": [-1.0, 1.0, 0.0, 0.0, 1.0, 0.0, -1.0, 0.0],
+  "noise": {
+    "distribution": "independent_uniform_closed_interval",
+    "low": -0.02,
+    "high": 0.02,
+    "applied_to": "all 24 observations after noiseless response construction"
+  },
+  "proposal_seeds": [101, 211, 307],
+  "budgets": {
+    "max_attempts": 32,
+    "max_evaluations": 32,
+    "gp_generations": 8,
+    "gp_population_size": 6
+  },
+  "tasks": [
+    {"task_id": "w11-k0", "generation_seed": 5101, "b": 0.15, "d": 0.8, "memory": []},
+    {"task_id": "w11-k1", "generation_seed": 5102, "b": -0.1, "d": 0.35, "memory": [{"r": 0.4, "g": 0.7}]},
+    {"task_id": "w11-k2", "generation_seed": 5103, "b": 0.05, "d": -0.25, "memory": [{"r": 0.2, "g": 0.8}, {"r": 0.7, "g": -0.45}]}
+  ],
+  "failure_policy": "Record any generation, package, proposer, fit, or scoring failure in place. Do not replace a task, change a seed, expand a budget, or rerun selectively.",
+  "visibility": "This file is evaluation-side provenance and must not be included in proposer or researcher materials.",
+  "result_status": "not_generated_not_executed"
+}

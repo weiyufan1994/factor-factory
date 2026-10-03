@@ -34,6 +34,9 @@ build_provider = _builder_module.build_provider
 load_daily_source = _builder_module.load_daily_source
 normalize_source = _builder_module.normalize_source
 raw_format_smoke = _builder_module.raw_format_smoke
+add_semantic_arguments = _builder_module.add_semantic_arguments
+semantic_options = _builder_module.semantic_options
+native_contract_declared = _builder_module.native_contract_declared
 
 
 DEFAULT_PROVIDER_DIR = Path.home() / '.qlib' / 'qlib_data' / 'cn_data'
@@ -60,7 +63,10 @@ def load_from_data_api(args: argparse.Namespace) -> tuple[pd.DataFrame, dict[str
     end = normalize_yyyymmdd(args.end_date)
     if not start or not end:
         raise SystemExit('--start-date and --end-date are required when using --data-api')
-    fields = args.fields or DEFAULT_FIELDS
+    fields = list(args.fields or DEFAULT_FIELDS)
+    factor_column = getattr(args, 'adjustment_factor_column', None)
+    if factor_column and factor_column not in fields:
+        fields.append(factor_column)
     result = fetch_data_api_dataset(
         args.dataset_id,
         start=start,
@@ -186,12 +192,17 @@ def main() -> None:
     ap.add_argument('--raw-smoke', action='store_true', default=True)
     ap.add_argument('--qlib-smoke', action='store_true')
     ap.add_argument('--allow-missing-microsoft-qlib', action='store_true')
+    add_semantic_arguments(ap)
     args = ap.parse_args()
 
     provider_dir = Path(args.provider_dir).expanduser().resolve()
     source_frame, source_meta = load_source(args)
-    normalized = normalize_source(source_frame, instrument_style=args.instrument_style)
-    stats = build_provider(normalized, provider_dir, instrument_style=args.instrument_style)
+    normalizer_options, provider_options = semantic_options(args)
+    normalized = normalize_source(source_frame, instrument_style=args.instrument_style, **normalizer_options)
+    if args.qlib_smoke and not native_contract_declared(
+            normalized.attrs['qlib_semantics'], 'calendar' in provider_options, 'instruments' in provider_options):
+        raise SystemExit('Qlib smoke requires explicit calendar, instrument intervals, units and price basis')
+    stats = build_provider(normalized, provider_dir, instrument_style=args.instrument_style, **provider_options)
     publish_report: dict[str, Any] = {
         'version': 'factorforge_qlib_daily_provider_publish_v1',
         'created_at_utc': utc_now(),

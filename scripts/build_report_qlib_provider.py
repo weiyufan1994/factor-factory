@@ -357,7 +357,7 @@ def main() -> None:
     source = args.source or args.source_parquet or args.source_csv
     source_path = resolve_source_path(factorforge_root, args.report_id, source)
     provider_dir = (
-        Path(args.provider_dir).expanduser().resolve()
+        Path(args.provider_dir).expanduser().absolute()
         if args.provider_dir
         else factorforge_root / 'runs' / args.report_id / 'qlib_provider'
     )

@@ -195,7 +195,9 @@ def main() -> None:
     add_semantic_arguments(ap)
     args = ap.parse_args()
 
-    provider_dir = Path(args.provider_dir).expanduser().resolve()
+    # Keep the user's leaf path: resolving a dangling symlink would hide an
+    # existing output and create its target instead of rejecting the link.
+    provider_dir = Path(args.provider_dir).expanduser().absolute()
     source_frame, source_meta = load_source(args)
     normalizer_options, provider_options = semantic_options(args)
     normalized = normalize_source(source_frame, instrument_style=args.instrument_style, **normalizer_options)

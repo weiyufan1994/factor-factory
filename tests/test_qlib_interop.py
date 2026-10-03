@@ -6,6 +6,7 @@ import importlib.util
 import json
 from pathlib import Path
 import socket
+import subprocess
 import sys
 
 import numpy as np
@@ -299,3 +300,19 @@ def test_native_smoke_requires_declared_contract_before_output_or_engine(tmp_pat
     with pytest.raises(SystemExit, match='explicit calendar'):
         publisher.main()
     assert not (tmp_path / 'p').exists()
+
+
+@pytest.mark.parametrize('script', ['publish_qlib_daily_provider', 'build_report_qlib_provider'])
+def test_real_cli_rejects_dangling_output_symlink_without_creating_target(tmp_path, script):
+    source = tmp_path / 'bars.parquet'
+    bars().to_parquet(source, index=False)
+    target, output = tmp_path / 'absent-target', tmp_path / 'provider-link'
+    output.symlink_to(target, target_is_directory=True)
+    args = (['--input', str(source)] if script == 'publish_qlib_daily_provider'
+            else ['--report-id', 'OFFLINE_HAND_ORACLE', '--source', str(source)])
+    result = subprocess.run([sys.executable, str(ROOT / 'scripts' / (script + '.py')),
+                             *args, '--provider-dir', str(output)],
+                            cwd=tmp_path, capture_output=True, text=True, timeout=30)
+    assert result.returncode != 0 and 'FileExistsError' in result.stderr
+    assert output.is_symlink() and output.readlink() == target
+    assert not target.exists()

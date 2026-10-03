@@ -21,6 +21,13 @@ from .mcts import (
     run_action_mcts,
     run_simple_scheduler,
 )
+from .registered_gp import (
+    ProgramEvaluation,
+    ProgramTrace,
+    RegisteredGPSearchResult,
+    RegisteredProgram,
+    run_registered_program_gp,
+)
 
 __all__ = [
     "Action",
@@ -40,4 +47,9 @@ __all__ = [
     "ResearchState",
     "run_action_mcts",
     "run_simple_scheduler",
+    "ProgramEvaluation",
+    "ProgramTrace",
+    "RegisteredGPSearchResult",
+    "RegisteredProgram",
+    "run_registered_program_gp",
 ]

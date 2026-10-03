@@ -1,0 +1,270 @@
+{
+  "schema": "amihud_r34_proposed_neighborhood_dry_trial_v1",
+  "seed": 20261003,
+  "base_commit": "e6d4e647b82abe275ab49a6e84a8fc8c0c3c8b50",
+  "proposal_ref": "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md",
+  "proposal_sha256": "a1e250ccec910e2fa1cb8c90ccf6211e89eb570ad986070ab3b5de0ccd61a461",
+  "registry": [
+    {
+      "program_id": "amihud_linear_D_c",
+      "program_hash": "d80489526acc0f1a0583395703f65d982c5ac39279474cec84d553fc19dd11bf",
+      "expression": "D*c",
+      "mathematical_object": "h(c)=c; alias G_h=D*a",
+      "generation": 0,
+      "parents": []
+    },
+    {
+      "program_id": "amihud_early_saturation",
+      "program_hash": "3eb11c96bc5e62579f598f5d9ca6c0b71ea268e879d86581e6645237e782e7c3",
+      "expression": "D*(2*c-c*c)",
+      "mathematical_object": "h(c)=2*c-c*c; alias G_h=D*(2*a-a*a)",
+      "generation": 1,
+      "parents": [
+        "amihud_linear_D_c"
+      ]
+    },
+    {
+      "program_id": "amihud_late_response",
+      "program_hash": "e865686294fdfe513f41569aea375494d920e5ba6bee8ef37e364c557dc6fc14",
+      "expression": "D*c*c",
+      "mathematical_object": "h(c)=c*c; alias G_h=D*a*a",
+      "generation": 1,
+      "parents": [
+        "amihud_linear_D_c"
+      ]
+    }
+  ],
+  "gp": {
+    "elapsed_seconds": 8.216698188334703e-05,
+    "callback_calls": [
+      {
+        "program_id": "amihud_linear_D_c",
+        "program_hash": "d80489526acc0f1a0583395703f65d982c5ac39279474cec84d553fc19dd11bf",
+        "seed": 6250465867235281891
+      },
+      {
+        "program_id": "amihud_late_response",
+        "program_hash": "e865686294fdfe513f41569aea375494d920e5ba6bee8ef37e364c557dc6fc14",
+        "seed": 2645364743439446082
+      },
+      {
+        "program_id": "amihud_early_saturation",
+        "program_hash": "3eb11c96bc5e62579f598f5d9ca6c0b71ea268e879d86581e6645237e782e7c3",
+        "seed": 9182573914196937908
+      }
+    ],
+    "result": {
+      "seed": 20261003,
+      "metric": "joint_gate_development_score",
+      "direction": 1,
+      "trace": [
+        {
+          "program_id": "amihud_linear_D_c",
+          "program_hash": "d80489526acc0f1a0583395703f65d982c5ac39279474cec84d553fc19dd11bf",
+          "generation": 0,
+          "parents": [],
+          "operation": "step2_registered_baseline",
+          "evaluator_seed": 6250465867235281891,
+          "status": "unknown",
+          "reason": "no_eligible_reward",
+          "score": null,
+          "actual_cost": 0.0,
+          "evidence_ref": null
+        },
+        {
+          "program_id": "amihud_late_response",
+          "program_hash": "e865686294fdfe513f41569aea375494d920e5ba6bee8ef37e364c557dc6fc14",
+          "generation": 1,
+          "parents": [
+            "amihud_linear_D_c"
+          ],
+          "operation": "registered_shape_mutation",
+          "evaluator_seed": 2645364743439446082,
+          "status": "unknown",
+          "reason": "no_eligible_reward",
+          "score": null,
+          "actual_cost": 0.0,
+          "evidence_ref": null
+        },
+        {
+          "program_id": "amihud_early_saturation",
+          "program_hash": "3eb11c96bc5e62579f598f5d9ca6c0b71ea268e879d86581e6645237e782e7c3",
+          "generation": 1,
+          "parents": [
+            "amihud_linear_D_c"
+          ],
+          "operation": "registered_shape_mutation",
+          "evaluator_seed": 9182573914196937908,
+          "status": "unknown",
+          "reason": "no_eligible_reward",
+          "score": null,
+          "actual_cost": 0.0,
+          "evidence_ref": null
+        }
+      ],
+      "selected_id": null,
+      "attempted_count": 3,
+      "evaluator_calls": 3,
+      "spent_cost": 0.0,
+      "stop_reason": "no_eligible_development_evidence"
+    }
+  },
+  "mcts": {
+    "elapsed_seconds": 0.00013533397577703,
+    "callback_calls": [
+      {
+        "action_id": "evaluate__amihud_linear_D_c",
+        "program_hash": "d80489526acc0f1a0583395703f65d982c5ac39279474cec84d553fc19dd11bf",
+        "seed": 6250465867235281891
+      },
+      {
+        "action_id": "evaluate__amihud_early_saturation",
+        "program_hash": "3eb11c96bc5e62579f598f5d9ca6c0b71ea268e879d86581e6645237e782e7c3",
+        "seed": 9182573914196937908
+      },
+      {
+        "action_id": "evaluate__amihud_late_response",
+        "program_hash": "e865686294fdfe513f41569aea375494d920e5ba6bee8ef37e364c557dc6fc14",
+        "seed": 1971036820251287885
+      }
+    ],
+    "result": {
+      "algorithm": "mcts",
+      "enabled": true,
+      "seed": 20261003,
+      "total_budget": 0,
+      "spent_cost": 0.0,
+      "prior_incurred_cost": 0.0,
+      "cumulative_known_cost": 0.0,
+      "expansion_count": 3,
+      "selected_action_id": null,
+      "first_executed_action_id": "evaluate__amihud_linear_D_c",
+      "stop_reason": "expansion_budget_exhausted",
+      "trace": [
+        {
+          "iteration": 0,
+          "parent_node_id": "n000",
+          "node_id": "n001",
+          "action_id": "evaluate__amihud_linear_D_c",
+          "action_mode": "exploit",
+          "depth": 1,
+          "evaluator_seed": 6250465867235281891,
+          "status": "unknown",
+          "split": "development",
+          "actual_cost": 0.0,
+          "learning_increment": null,
+          "evidence_ref": "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md",
+          "path_action_ids": [
+            "evaluate__amihud_linear_D_c"
+          ]
+        },
+        {
+          "iteration": 1,
+          "parent_node_id": "n000",
+          "node_id": "n002",
+          "action_id": "evaluate__amihud_early_saturation",
+          "action_mode": "explore",
+          "depth": 1,
+          "evaluator_seed": 9182573914196937908,
+          "status": "unknown",
+          "split": "development",
+          "actual_cost": 0.0,
+          "learning_increment": null,
+          "evidence_ref": "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md",
+          "path_action_ids": [
+            "evaluate__amihud_early_saturation"
+          ]
+        },
+        {
+          "iteration": 2,
+          "parent_node_id": "n000",
+          "node_id": "n003",
+          "action_id": "evaluate__amihud_late_response",
+          "action_mode": "explore",
+          "depth": 1,
+          "evaluator_seed": 1971036820251287885,
+          "status": "unknown",
+          "split": "development",
+          "actual_cost": 0.0,
+          "learning_increment": null,
+          "evidence_ref": "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md",
+          "path_action_ids": [
+            "evaluate__amihud_late_response"
+          ]
+        }
+      ],
+      "nodes": [
+        {
+          "node_id": "n000",
+          "parent_node_id": null,
+          "action_id": null,
+          "depth": 0,
+          "visits": 3,
+          "value_sum": 0.0,
+          "cost_sum": 0.0,
+          "mean_value": 0.0,
+          "evidence_efficiency": null,
+          "terminal": false,
+          "development_evidence": null,
+          "completed_action_ids": []
+        },
+        {
+          "node_id": "n001",
+          "parent_node_id": "n000",
+          "action_id": "evaluate__amihud_linear_D_c",
+          "depth": 1,
+          "visits": 1,
+          "value_sum": 0.0,
+          "cost_sum": 0.0,
+          "mean_value": 0.0,
+          "evidence_efficiency": null,
+          "terminal": false,
+          "development_evidence": false,
+          "completed_action_ids": [
+            "evaluate__amihud_linear_D_c"
+          ]
+        },
+        {
+          "node_id": "n002",
+          "parent_node_id": "n000",
+          "action_id": "evaluate__amihud_early_saturation",
+          "depth": 1,
+          "visits": 1,
+          "value_sum": 0.0,
+          "cost_sum": 0.0,
+          "mean_value": 0.0,
+          "evidence_efficiency": null,
+          "terminal": false,
+          "development_evidence": false,
+          "completed_action_ids": [
+            "evaluate__amihud_early_saturation"
+          ]
+        },
+        {
+          "node_id": "n003",
+          "parent_node_id": "n000",
+          "action_id": "evaluate__amihud_late_response",
+          "depth": 1,
+          "visits": 1,
+          "value_sum": 0.0,
+          "cost_sum": 0.0,
+          "mean_value": 0.0,
+          "evidence_efficiency": null,
+          "terminal": false,
+          "development_evidence": false,
+          "completed_action_ids": [
+            "evaluate__amihud_late_response"
+          ]
+        }
+      ],
+      "virtual_rollout_count": 0,
+      "failure": null
+    }
+  },
+  "market_callback_status": "WITHHELD_PENDING_NEW_STEP2_AND_DURABLE_RESERVATION",
+  "market_rows_read": 0,
+  "market_evaluations": 0,
+  "campaign_trials_before": 2,
+  "campaign_trials_after": 2,
+  "interpretation": "All three prospectively derived programs were accepted as distinct hash-bound lineage and reached both algorithm callback boundaries. Every callback returned Unknown because market execution is not yet authorized. GP and MCTS both returned no selected program; no economic or algorithm-superiority conclusion is available. The MCTS fail-closed result incorporates the no-recommendation-on-Unknown defect fix discovered by the first dry run."
+}

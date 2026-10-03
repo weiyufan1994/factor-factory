@@ -1,0 +1,130 @@
+{
+  "schema": "amihud_r34_algorithm_adapter_trial_v1",
+  "seed": 20261003,
+  "base_commit": "e6d4e647b82abe275ab49a6e84a8fc8c0c3c8b50",
+  "candidate": {
+    "program_id": "amihud_D_times_c_v1",
+    "program_hash": "d234ccef1c64343babd33db0907b6543c1dad41c7442add3e70c86abff18ab90",
+    "expression": "max(-e_(s|t),0)*max(1-V_t/V_s,0)",
+    "mathematical_object": "joint intensity of preceding-session relative decline D and completed formation-session contraction c"
+  },
+  "bindings": {
+    "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/native_step2_r34_v1.json": "4f34d2838eceba4528cf1061c84a0fa77d78b3901c6d84b268912dc2c37bd00c",
+    "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/candidate_adaptation_inputs/evaluation_design_v1.json": "eb3ad12b26dc1a4dc0e6e68581c73ea17772cfcd4f1214863097d25c67b5a4e0"
+  },
+  "gp": {
+    "elapsed_seconds": 5.416607018560171e-05,
+    "callback_calls": [
+      {
+        "program_hash": "d234ccef1c64343babd33db0907b6543c1dad41c7442add3e70c86abff18ab90",
+        "seed": 90999859766132438
+      }
+    ],
+    "result": {
+      "seed": 20261003,
+      "metric": "registered_candidate_readiness",
+      "direction": 1,
+      "trace": [
+        {
+          "program_id": "amihud_D_times_c_v1",
+          "program_hash": "d234ccef1c64343babd33db0907b6543c1dad41c7442add3e70c86abff18ab90",
+          "generation": 0,
+          "parents": [],
+          "operation": "step2_registered_baseline",
+          "evaluator_seed": 90999859766132438,
+          "status": "unknown",
+          "reason": "no_eligible_reward",
+          "score": null,
+          "actual_cost": 0.0,
+          "evidence_ref": null
+        }
+      ],
+      "selected_id": null,
+      "attempted_count": 1,
+      "evaluator_calls": 1,
+      "spent_cost": 0.0,
+      "stop_reason": "no_eligible_development_evidence:single_registered_program"
+    }
+  },
+  "mcts": {
+    "elapsed_seconds": 5.970802158117294e-05,
+    "callback_calls": [
+      {
+        "action_id": "inspect_registered_D_times_c",
+        "candidate_hash": "d234ccef1c64343babd33db0907b6543c1dad41c7442add3e70c86abff18ab90",
+        "seed": 6250465867235281891
+      }
+    ],
+    "result": {
+      "algorithm": "mcts",
+      "enabled": true,
+      "seed": 20261003,
+      "total_budget": 0.0,
+      "spent_cost": 0.0,
+      "prior_incurred_cost": 0.0,
+      "cumulative_known_cost": 0.0,
+      "expansion_count": 1,
+      "selected_action_id": "inspect_registered_D_times_c",
+      "first_executed_action_id": "inspect_registered_D_times_c",
+      "stop_reason": "expansion_budget_exhausted",
+      "trace": [
+        {
+          "iteration": 0,
+          "parent_node_id": "n000",
+          "node_id": "n001",
+          "action_id": "inspect_registered_D_times_c",
+          "action_mode": "exploit",
+          "depth": 1,
+          "evaluator_seed": 6250465867235281891,
+          "status": "unknown",
+          "split": "development",
+          "actual_cost": 0.0,
+          "learning_increment": null,
+          "evidence_ref": "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/native_step2_r34_v1.json",
+          "path_action_ids": [
+            "inspect_registered_D_times_c"
+          ]
+        }
+      ],
+      "nodes": [
+        {
+          "node_id": "n000",
+          "parent_node_id": null,
+          "action_id": null,
+          "depth": 0,
+          "visits": 1,
+          "value_sum": 0.0,
+          "cost_sum": 0.0,
+          "mean_value": 0.0,
+          "evidence_efficiency": null,
+          "terminal": false,
+          "development_evidence": null,
+          "completed_action_ids": []
+        },
+        {
+          "node_id": "n001",
+          "parent_node_id": "n000",
+          "action_id": "inspect_registered_D_times_c",
+          "depth": 1,
+          "visits": 1,
+          "value_sum": 0.0,
+          "cost_sum": 0.0,
+          "mean_value": 0.0,
+          "evidence_efficiency": null,
+          "terminal": false,
+          "development_evidence": true,
+          "completed_action_ids": [
+            "inspect_registered_D_times_c"
+          ]
+        }
+      ],
+      "virtual_rollout_count": 0,
+      "failure": null
+    }
+  },
+  "market_rows_read": 0,
+  "market_evaluations": 0,
+  "campaign_trials_before": 2,
+  "campaign_trials_after": 2,
+  "interpretation": "Real enabled adapter calls completed against the reviewed D*c identity. The callback intentionally returned Unknown because no development market metric or additional candidate was authorized. This proves interface binding only; it is not a fitted GP result, market evidence, or successful search."
+}

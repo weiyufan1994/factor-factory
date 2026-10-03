@@ -377,7 +377,7 @@ def run_action_mcts(
         )
         child = _Node(
             node_id, child_state, selected, action,
-            development_evidence=is_new_observation and not nondevelopment,
+            development_evidence=increment is not None,
         )
         selected.children.append(child)
         nodes.append(child)
@@ -1007,7 +1007,7 @@ def _recommend_root_action(root: _Node, stop_action_ids: set[str]) -> str | None
         child for child in root.children
         if child.action is not None
         and child.action.action_id not in stop_action_ids
-        and child.development_evidence is not False
+        and child.development_evidence is True
     ]
     if not candidates:
         return None

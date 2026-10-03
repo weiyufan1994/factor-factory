@@ -493,6 +493,28 @@ def test_explicit_stop_is_a_zero_cost_terminal_branch_without_evaluation() -> No
     assert result.selected_action_id is None
 
 
+def test_unknown_development_observation_cannot_become_a_recommendation() -> None:
+    evaluate, _ = evaluator_for({"a": None}, statuses={"a": "unknown"})
+
+    result = run_action_mcts(
+        enabled=True,
+        initial_state=state(),
+        actions=(action("a"),),
+        evaluator=evaluate,
+        metric="recovery_error",
+        direction=-1,
+        seed=9,
+        total_budget=1.0,
+        max_expansions=1,
+    )
+
+    child = next(node for node in result.nodes if node.parent_node_id == "n000")
+    assert result.trace[0].status == "unknown"
+    assert result.trace[0].learning_increment is None
+    assert child.development_evidence is False
+    assert result.selected_action_id is None
+
+
 @pytest.mark.parametrize(
     ("result_value", "status"),
     [(2.0, "completed"), (None, "failed")],

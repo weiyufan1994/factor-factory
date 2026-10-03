@@ -60,3 +60,41 @@ export PYTHONDONTWRITEBYTECODE=1
 所有独立 agent 必须真实执行并产生可验证身份与结果，随后按既有 collect/finalize、
 Council 附加和 Step6 验证流程收口。任务书通过、离线回放通过、真实 Council 完成、
 因子有效和生产晋升是不同结果，应分别报告。
+
+## 已有真实结果明确不修订时的消费接续
+
+普通非 EVO Council 可以有充分推导、反例与证据，但没有可辩护的新公式。
+这类结果必须明确提供 `candidate_revision_laws: []`、无候选公式、
+`no_revision` 或 `no_derived_revision` 建议及理由，范围限于
+`revision_branch_only`，权限限于 `advisory_only` 或 `branch_falsification_only`。
+其他身份、绑定、推导和证据要求仍完整适用；不能填写占位公式绕过旧校验。
+EVO 的正式无新定律流程保持独立。
+
+若旧 result validator 仅因空 law 列表阻断，保留原失败记录和已经成功的 dispatch，
+由研究 owner 使用已 review 的固定维护源码消费原结果。不要重新生成任务书、覆盖
+agent 结果或重派盲审。维护代码统一精确匹配冻结对象的 `name`、`object` 和
+`mathematical_object` 字段；公开推导仍要求对象记录列表。
+
+```sh
+# 接续上文的 ff_maintenance、ff_study、ff_python、ff_report。
+ff_original_repo=/absolute/path/to/original-pinned-runtime/factor-factory
+ff_sdk=/absolute/path/to/original-pinned-runtime/factorforge-data-api
+export PYTHONPATH="$ff_maintenance:$ff_sdk"
+
+"$ff_python" "$ff_maintenance/skills/factor-forge-step6/scripts/validate_agentic_council_result.py" \
+  --report-id "$ff_report"
+"$ff_python" "$ff_maintenance/skills/factor-forge-step6/scripts/collect_agentic_council_results.py" \
+  --report-id "$ff_report"
+"$ff_python" "$ff_maintenance/skills/factor-forge-step6/scripts/finalize_agentic_council_dispatch.py" \
+  --report-id "$ff_report"
+PYTHONPATH="$ff_original_repo:$ff_sdk" \
+  "$ff_python" "$ff_original_repo/skills/factor-forge-step6/scripts/validate_step6.py" \
+  --report-id "$ff_report"
+```
+
+任一步失败即停止，保留输出后定位，不以新签名或新终止证明消除工程报错。
+验收应确认所有真实结果有效、law 与 branch 均为空、原 agent 结果和受保护产物哈希
+未变、没有 Step3B handoff。若研究原本已有经作者及独立评议一致的本地拒绝，
+消费者仅在既有严格识别规则通过且无修订动作时保留其状态，记录
+`advisory_no_revision` 与 `not_needed`。一般无效或缺失结果仍为 blocked。
+这不会授予终止整个因子或机制家族的权限，不改变研究 pin、trial 计数或正式晋升状态。

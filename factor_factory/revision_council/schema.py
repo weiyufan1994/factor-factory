@@ -1,5 +1,14 @@
 from __future__ import annotations
 
+ADVISORY_NO_REVISION_GUIDANCE = (
+    "For ordinary non-EVO no_revision/no_derived_revision, use explicit "
+    "candidate_revision_laws=[], candidate_formula=null, disposition=research_hold "
+    "or no_derived_revision_with_proof, terminal_scope=revision_branch_only and "
+    "stop_authority=advisory_only or branch_falsification_only. Give the reason and "
+    "all required substantive derivation, counterexamples and evidence. Do not "
+    "invent a placeholder law. This does not authorize factor-level termination."
+)
+
 COUNCIL_PROPOSAL_VERSION = "factorforge_revision_council_proposal_v1"
 COUNCIL_SUMMARY_VERSION = "factorforge_revision_council_summary_v1"
 

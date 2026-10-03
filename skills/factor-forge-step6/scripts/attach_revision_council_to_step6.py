@@ -17,7 +17,7 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from factor_factory.measurement_program import measurement_program_binding_failures
+from factor_factory.measurement_program import mathematical_object_present, measurement_program_binding_failures
 
 OBJ = FF / "objects"
 TOKEN_SUMMARY_MISSING = "BLOCK_REVISION_COUNCIL_SUMMARY_MISSING"
@@ -151,15 +151,10 @@ def agent_result_integrity_failures(
         derivation = result.get("math_mechanism_derivation") or {}
         if derivation.get("baseline_model") != frozen_model:
             failures.append(f"{prefix}:frozen_baseline_model_mismatch")
-        if frozen_object not in (derivation.get("mathematical_objects") or []):
+        if not mathematical_object_present(derivation.get("mathematical_objects"), frozen_object):
             failures.append(f"{prefix}:frozen_mathematical_object_missing")
         public = result.get("public_derivation_record") or {}
-        public_objects = {
-            entry.get("name")
-            for entry in public.get("mathematical_objects") or []
-            if isinstance(entry, dict)
-        }
-        if frozen_object not in public_objects:
+        if not mathematical_object_present(public.get("mathematical_objects"), frozen_object):
             failures.append(f"{prefix}:public_frozen_object_missing")
     return list(dict.fromkeys(failures))
 
@@ -205,13 +200,13 @@ def proposal_from_agent_result(result: dict[str, Any], path: Path) -> dict[str, 
         "report_id": result.get("report_id"),
         "agent_role": result.get("agent_role"),
         "proposal_id": result.get("task_id"),
-        "proposal_status": "proposed",
+        "proposal_status": "proposed" if laws else "no_revision",
         "producer": result.get("producer"),
         "research_depth": result.get("research_depth"),
         "proposal_generation_mode": result.get("proposal_generation_mode"),
-        "revision_type": law.get("revision_type") or "mechanism_challenge",
-        "revision_model_layer": law.get("revision_model_layer") or "observable_estimator",
-        "target_failure_signature": "cost_too_high" if result.get("agent_role") == "microstructure_cost_analyst" else "mechanism_unclear",
+        "revision_type": (law.get("revision_type") or "mechanism_challenge") if laws else None,
+        "revision_model_layer": (law.get("revision_model_layer") or "observable_estimator") if laws else None,
+        "target_failure_signature": ("cost_too_high" if result.get("agent_role") == "microstructure_cost_analyst" else "mechanism_unclear") if laws else None,
         "selected_math_tools": [item.get("tool") for item in public.get("selected_tools") or [] if isinstance(item, dict) and item.get("tool")],
         "market_phenomenon": public.get("research_question") or "Agentic Council research result.",
         "symbolic_model": dict(
@@ -228,8 +223,11 @@ def proposal_from_agent_result(result: dict[str, Any], path: Path) -> dict[str, 
             }
             for item in laws
         ],
-        "expression_change": law.get("expression_change_direction") or "See agentic result.",
-        "why_not_portfolio_fix": law.get("why_not_portfolio_fix") or "Expression-level research only.",
+        "expression_change": (law.get("expression_change_direction") or "See agentic result.") if laws else None,
+        "why_not_portfolio_fix": (law.get("why_not_portfolio_fix") or "Expression-level research only.") if laws else None,
+        "revision_or_kill_recommendation": result.get("revision_or_kill_recommendation"),
+        "terminal_control": result.get("terminal_control"),
+        "no_candidate_revision_law_reason": result.get("no_candidate_revision_law_reason"),
         "confidence": "medium" if result.get("research_depth") == "medium" else "low",
         "risk_notes": public.get("overclaim_guard") or "Agentic result is advisory-only.",
         "derivation_record": {
@@ -404,7 +402,10 @@ def hypothesis_from_proposal(proposal: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def build_council_revision_strategy(iteration: dict[str, Any], council_summary: dict[str, Any], proposals: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def build_council_revision_strategy(
+    iteration: dict[str, Any], council_summary: dict[str, Any], proposals: dict[str, dict[str, Any]],
+    *, step3b_handoff_path: Path | None = None,
+) -> dict[str, Any]:
     research_memo = ((iteration.get("research_judgment") or {}).get("research_memo") or {})
     deterministic = research_memo.get("revision_strategy") or {}
     selected_ids = selected_proposal_ids(council_summary)
@@ -412,22 +413,42 @@ def build_council_revision_strategy(iteration: dict[str, Any], council_summary: 
     first_signature = next((item.get("target_failure_signature") for item in selected_proposals if item.get("target_failure_signature")), None)
     hypotheses = [hypothesis_from_proposal(item) for item in selected_proposals]
     if not selected_proposals:
+        advisory_stop = False
+        if (step3b_handoff_path is not None and proposals
+                and not council_summary.get("candidate_law_index")
+                and not council_summary.get("recommended_branch_templates")
+                and all(p.get("producer") == "real_agent" and p.get("proposal_status") == "no_revision"
+                        and p.get("candidate_revision_laws") == [] for p in proposals.values())):
+            # Preserve an existing authored local stop only under the same
+            # strict recognizer used by Step6. No new terminal authority.
+            from validate_step6 import local_terminal_reject_without_actions
+
+            advisory_stop = local_terminal_reject_without_actions(
+                iteration, step3b_handoff_path, deterministic,
+                research_memo.get("search_policy_decision") or {},
+            )
         return {
             "revision_needed": deterministic.get("revision_needed") is True,
             "primary_failure_signature": deterministic.get("primary_failure_signature") or "none",
             "revision_hypotheses": [],
-            "revision_quality": "blocked",
+            "revision_quality": "not_needed" if advisory_stop else "blocked",
             "loop_authorization": "advisory_only",
-            "requires_human_approval_before_code_change": True,
+            "requires_human_approval_before_code_change": not advisory_stop,
             "source": "none",
             "selected_council_proposal_ids": [],
             "derivation_records": [],
             "approval_required_before_step3b": True,
             "fallback_used": False,
-            "no_valid_council_proposal": True,
-            "council_disposition": "blocked_proposals_retained_as_negative_evidence",
-            "why_selected": "No Council strategy was selected because no valid derivation-backed proposal exists.",
-            "why_deterministic_fallback_not_used": "A blocked Council scaffold cannot authorize or replace the existing researcher-authored advisory strategy.",
+            "no_valid_council_proposal": not advisory_stop,
+            "council_disposition": "advisory_no_revision" if advisory_stop else "blocked_proposals_retained_as_negative_evidence",
+            "why_selected": (
+                "Validated Council reviews derive no new law; the existing authored local stop has no executable revision."
+                if advisory_stop else "No Council strategy was selected because no valid derivation-backed proposal exists."
+            ),
+            "why_deterministic_fallback_not_used": (
+                "The existing authored local rejection remains unchanged; advisory evidence does not open a new branch."
+                if advisory_stop else "A blocked Council scaffold cannot authorize or replace the existing researcher-authored advisory strategy."
+            ),
         }
     return {
         "revision_needed": bool(hypotheses) or deterministic.get("revision_needed") is True,
@@ -577,7 +598,10 @@ def main() -> None:
     research_judgment = updated.setdefault("research_judgment", {})
     research_memo = research_judgment.setdefault("research_memo", {})
     deterministic_revision = copy.deepcopy(research_memo.get("revision_strategy") or {})
-    council_revision = build_council_revision_strategy(updated, summary, proposals)
+    council_revision = build_council_revision_strategy(
+        updated, summary, proposals,
+        step3b_handoff_path=OBJ / "handoff" / f"handoff_to_step3b__{report_id}.json",
+    )
     final_revision = copy.deepcopy(council_revision)
     if council_revision.get("selected_council_proposal_ids"):
         final_revision.update(

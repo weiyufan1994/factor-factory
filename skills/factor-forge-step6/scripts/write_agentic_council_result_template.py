@@ -14,6 +14,8 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from factor_factory.revision_council.schema import ADVISORY_NO_REVISION_GUIDANCE
+
 OBJ = FF / "objects"
 
 
@@ -177,6 +179,8 @@ def main() -> int:
         "recommended_branch_templates": [],
         "blocked_reason": None,
     }
+    if packet.get("evo_v2_required") is not True:
+        template["authoring_guidance"] = ADVISORY_NO_REVISION_GUIDANCE
     write_json(out, template)
     print(json.dumps({"status": "draft_template_written", "report_id": rid, "task_id": args.task_id, "path": str(out)}, ensure_ascii=False, indent=2))
     return 0

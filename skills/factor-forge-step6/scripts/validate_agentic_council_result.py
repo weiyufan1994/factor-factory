@@ -24,6 +24,7 @@ from factor_factory.revision_council.production import (
     load_formal_evo_packet_context,
     validate_result_evo_identity,
 )
+from factor_factory.measurement_program import mathematical_object_present as _mathematical_object_present
 
 OBJ = FF / "objects"
 RESULT_VERSION = "factorforge_agentic_revision_council_result_v1"
@@ -37,6 +38,7 @@ TERMINAL_RECOMMENDATION_VALUES = {
     "no_revision",
     "no_derived_revision",
 }
+NO_REVISION_RECOMMENDATION_VALUES = {"no_revision", "no_derived_revision"}
 
 FORBIDDEN_PATTERNS = [
     "portfolio",
@@ -135,6 +137,44 @@ def terminal_proof_present(control: dict[str, Any]) -> bool:
     return isinstance(proof, str) and bool(proof.strip()) or isinstance(proof, dict) and bool(proof)
 
 
+def advisory_no_revision_reasons(result: dict[str, Any]) -> list[str]:
+    """Validate a branch-only hold; this does not confer terminal authority.
+
+    Identity, frozen-model binding, substantive derivation, counterexamples and
+    public evidence are still checked by the ordinary result validator.
+    """
+    reasons: list[str] = []
+    prefix = "BLOCK_COUNCIL_ADVISORY_NO_REVISION_INVALID:"
+    rec = result.get("revision_or_kill_recommendation") or {}
+    control = terminal_control_fields(result)
+    if result.get("producer") != "real_agent":
+        reasons.append(prefix + "producer")
+    if result.get("candidate_revision_laws") != []:
+        reasons.append(prefix + "explicit_empty_laws_required")
+    if result.get("recommended_branch_templates"):
+        reasons.append(prefix + "candidate_branches_present")
+    if control.get("terminal_scope") != "revision_branch_only":
+        reasons.append(prefix + "terminal_scope")
+    if control.get("stop_authority") not in {"advisory_only", "branch_falsification_only"}:
+        reasons.append(prefix + "stop_authority")
+    for key in ("terminal_scope", "stop_authority"):
+        if key in rec and rec[key] != control.get(key):
+            reasons.append(prefix + "conflicting_" + key)
+    translation = result.get("model_to_formula_translation") or {}
+    if not isinstance(translation, dict):
+        translation = {}
+    disposition = translation.get("disposition") or translation.get("terminal_disposition")
+    if disposition not in {"research_hold", "no_derived_revision_with_proof"}:
+        reasons.append(prefix + "disposition")
+    candidate = translation.get("candidate_formula")
+    if candidate is not None and (not isinstance(candidate, str) or candidate.strip()):
+        reasons.append(prefix + "candidate_formula_present")
+    reason = result.get("no_candidate_revision_law_reason") or rec.get("rationale") or control.get("reason")
+    if not nonempty_str(reason):
+        reasons.append(prefix + "reason_missing")
+    return reasons
+
+
 def protocol_task(report_id: str, task_id: Any) -> dict[str, Any]:
     if not isinstance(task_id, str) or not task_id:
         return {}
@@ -227,21 +267,6 @@ def validate_dispatch_identity(
         if expected_value is not None and binding.get(field) != expected_value:
             reasons.append(f"BLOCK_COUNCIL_RESULT_DISPATCH_BINDING_MISMATCH:{field}")
     return reasons
-
-
-def _mathematical_object_present(items: Any, expected: Any) -> bool:
-    if not nonempty_str(expected) or not isinstance(items, list):
-        return False
-    for item in items:
-        if item == expected:
-            return True
-        if isinstance(item, dict) and expected in {
-            item.get("name"),
-            item.get("mathematical_object"),
-            item.get("object"),
-        }:
-            return True
-    return False
 
 
 def validate_measurement_program_result_binding(
@@ -632,6 +657,15 @@ def validate_agentic_result(
             reasons.append(
                 "BLOCK_COUNCIL_EVO_V2_NO_DERIVED_LAW_CANDIDATE_LAWS_NOT_EMPTY"
             )
+    elif (
+        not evo_required
+        and formal_context is None
+        and result.get("evo_v2") is None
+        and isinstance(result.get("revision_or_kill_recommendation"), dict)
+        and str(result["revision_or_kill_recommendation"].get("recommendation") or "").strip().lower()
+        in NO_REVISION_RECOMMENDATION_VALUES
+    ):
+        reasons.extend(advisory_no_revision_reasons(result))
     elif not nonempty_object_list(laws):
         reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_REVISION_LAWS_MISSING")
     else:

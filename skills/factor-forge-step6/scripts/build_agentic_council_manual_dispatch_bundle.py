@@ -15,6 +15,8 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from factor_factory.revision_council.schema import ADVISORY_NO_REVISION_GUIDANCE
+
 OBJ = FF / "objects"
 DISPATCH_VERSION = "factorforge_agentic_council_dispatch_manifest_v1"
 MANUAL_VERSION = "factorforge_agentic_manual_dispatch_manifest_v1"
@@ -105,6 +107,8 @@ def assignment_markdown(report_id: str, task: dict[str, Any], packet: dict[str, 
     forbidden_changes = "\n".join(f"- {item}" for item in packet.get("forbidden_changes") or [])
     forbidden_writes = "\n".join(f"- {item}" for item in packet.get("forbidden_write_targets") or [])
     runtime_policy = runtime_policy_markdown(packet.get("runtime_dispatch_policy") or {})
+    no_revision_guidance = (ADVISORY_NO_REVISION_GUIDANCE
+        if packet.get("evo_v2_required") is not True and ADVISORY_NO_REVISION_GUIDANCE not in str(packet.get("research_question") or "") else "")
     return f"""# Factor Forge Agentic Council Assignment
 
 Report ID: {report_id}
@@ -130,6 +134,7 @@ Forbidden Revision Shortcuts:
 {forbidden_changes}
 
 Result Contract:
+{no_revision_guidance}
 - result_version: factorforge_agentic_revision_council_result_v1
 - status: final
 - producer: real_agent

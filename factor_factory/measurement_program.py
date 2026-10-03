@@ -550,6 +550,15 @@ def build_measurement_program_binding(program: Any) -> dict[str, Any]:
     }
 
 
+def mathematical_object_present(items: Any, expected: Any) -> bool:
+    """Match exact frozen object labels consistently across Council consumers."""
+    if not isinstance(expected, str) or not expected.strip() or not isinstance(items, list):
+        return False
+    return any(item == expected or (isinstance(item, dict) and expected in (
+        item.get("name"), item.get("mathematical_object"), item.get("object")
+    )) for item in items)
+
+
 def measurement_program_binding_failures(
     binding: Any,
     program: Any,

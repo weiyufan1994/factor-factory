@@ -322,6 +322,10 @@ def proposal_like_from_agent_result(result: dict[str, Any]) -> dict[str, Any]:
 
 
 def branch_from_agent_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    # A validated advisory hold contributes evidence and route findings, not
+    # a fabricated executable hypothesis from the default branch template.
+    if not result.get("candidate_revision_laws"):
+        return None
     proposal = proposal_like_from_agent_result(result)
     role = result.get("agent_role")
     if role == "microstructure_cost_analyst":
@@ -456,6 +460,9 @@ def main() -> None:
                     or [],
                     "counterexamples": result.get("counterexamples") or [],
                     "reopen_criteria": result.get("reopen_criteria") or [],
+                    "revision_or_kill_recommendation": result.get("revision_or_kill_recommendation"),
+                    "terminal_control": result.get("terminal_control"),
+                    "no_candidate_revision_law_reason": result.get("no_candidate_revision_law_reason"),
                     "source_path": str(path),
                 }
             )

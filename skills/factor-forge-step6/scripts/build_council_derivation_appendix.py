@@ -84,7 +84,8 @@ def build_agent_section(path: Path) -> dict[str, Any]:
     public = payload.get('public_derivation_record') or payload.get('derivation_record') or {}
     if not isinstance(public, dict):
         public = {}
-    laws = payload.get('candidate_revision_laws') or payload.get('revision_hypotheses') or []
+    laws = (payload['candidate_revision_laws'] if 'candidate_revision_laws' in payload
+            else payload.get('revision_hypotheses') or [])
     if not isinstance(laws, list):
         laws = []
     derivation_steps = nonempty_list(public.get('derivation_steps'))
@@ -146,6 +147,9 @@ def build_agent_section(path: Path) -> dict[str, Any]:
         'falsification_tests': falsification_tests,
         'kill_criteria': kill_criteria,
         'candidate_revision_laws': laws,
+        'revision_or_kill_recommendation': payload.get('revision_or_kill_recommendation'),
+        'terminal_control': payload.get('terminal_control'),
+        'no_candidate_revision_law_reason': payload.get('no_candidate_revision_law_reason'),
         'overclaim_guard': public.get('overclaim_guard') or payload.get('overclaim_guard'),
     }
 
@@ -232,7 +236,12 @@ def render_markdown(appendix: dict[str, Any]) -> str:
             *bullet_lines(section.get('limiting_cases') or [], key='case', limit=10),
             '',
             '### Candidate Revision Laws',
-            *bullet_lines(section.get('candidate_revision_laws') or [], limit=10),
+            *(bullet_lines(section['candidate_revision_laws'], limit=10)
+              if section.get('candidate_revision_laws') else [
+                  '- No candidate revision law supplied; see the disposition and original derivation.',
+                  f"- Disposition: `{json.dumps(section.get('revision_or_kill_recommendation'), ensure_ascii=False)}`",
+                  f"- Scope and authority: `{json.dumps(section.get('terminal_control'), ensure_ascii=False)}`",
+              ]),
             '',
             '### Falsification Tests',
             *bullet_lines(section.get('falsification_tests') or [], limit=10),

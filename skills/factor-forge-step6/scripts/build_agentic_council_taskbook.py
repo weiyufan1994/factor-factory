@@ -38,6 +38,7 @@ from factor_factory.revision_council.visibility import (
     blind_visible_context_leak_keys as _blind_context_leak_keys,
     context_for_route,
 )
+from factor_factory.revision_council.schema import ADVISORY_NO_REVISION_GUIDANCE
 
 OBJ = FF / "objects"
 TASKBOOK_VERSION = "factorforge_agentic_revision_council_taskbook_v1"
@@ -233,6 +234,8 @@ def agent_task(
             "economic backprojection; or NO_DERIVED_LAW with zero laws and a "
             "complete derivation-failure proof."
         )
+    if evo_context is None:
+        task["research_question"] += " " + ADVISORY_NO_REVISION_GUIDANCE
     return task
 
 

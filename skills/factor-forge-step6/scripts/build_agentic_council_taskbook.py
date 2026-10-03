@@ -32,6 +32,12 @@ from factor_factory.revision_council.production import (
     build_evo_task_identity,
     validate_formal_evo_packet,
 )
+from factor_factory.revision_council.visibility import (
+    TOKEN_BLIND_CONTEXT_LEAK,
+    WITHHELD_CONTEXT_KEYS,
+    blind_visible_context_leak_keys as _blind_context_leak_keys,
+    context_for_route,
+)
 
 OBJ = FF / "objects"
 TASKBOOK_VERSION = "factorforge_agentic_revision_council_taskbook_v1"
@@ -41,7 +47,6 @@ TOKEN_PACKET_MISSING = "BLOCK_REVISION_COUNCIL_PACKET_MISSING"
 TOKEN_MEASUREMENT_PROGRAM_INVALID = "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID"
 TOKEN_EVO_V2_PACKET = "BLOCK_COUNCIL_EVO_V2_FORMAL_PACKET_INVALID"
 TOKEN_EVO_V2_EXECUTOR = "BLOCK_COUNCIL_EVO_V2_REAL_AGENT_DISPATCH_REQUIRED"
-TOKEN_BLIND_CONTEXT_LEAK = "BLOCK_AGENTIC_COUNCIL_DISPATCH_BLIND_CONTEXT_LEAK"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -76,61 +81,6 @@ def nested(data: dict[str, Any], *keys: str) -> Any:
 def safe_token(value: Any) -> str:
     text = "".join(ch.lower() if ch.isalnum() else "_" for ch in str(value or "route"))
     return "_".join(part for part in text.split("_") if part)[:72] or "route"
-
-
-def _has_visible_value(value: Any) -> bool:
-    """Return whether a context value carries disclosure, not just a placeholder."""
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return bool(value.strip())
-    return bool(value)
-
-
-def _blind_context_leak_keys(visible_context: dict[str, Any]) -> list[str]:
-    """Identify main-agent thesis material that a blind route must not receive.
-
-    The ordinary measurement-program contract is author-disclosed context and is
-    therefore not itself a leak.  Only an explicit main-agent/preferred-thesis
-    authority marker inside that program is sensitive.
-    """
-    leaked: list[str] = []
-    direct_keys = (
-        "formula_specific_derivation",
-        "main_agent_mechanism_memo_ref",
-        "main_agent_mechanism_memo",
-        "main_agent_math_hypothesis",
-        "main_math_context",
-        "final_revision_strategy",
-        "favored_route_id",
-        "favored_thesis",
-        "preferred_thesis",
-    )
-    for key in direct_keys:
-        if _has_visible_value(visible_context.get(key)):
-            leaked.append(key)
-
-    program = visible_context.get("mechanism_conditioned_measurement_program")
-    if isinstance(program, dict):
-        for key in (
-            "selected_model_authority",
-            "main_agent_selected_model",
-            "favored_thesis",
-            "preferred_thesis",
-        ):
-            if _has_visible_value(program.get(key)):
-                leaked.append(f"mechanism_conditioned_measurement_program.{key}")
-        # A model name alone may be an author-disclosed specification.  Treat it
-        # as sensitive only when its provenance explicitly names the main agent
-        # or preferred thesis.
-        source = program.get("selected_model_source")
-        if str(source or "").strip().lower() in {
-            "main_agent",
-            "main_agent_memo",
-            "preferred_thesis",
-        }:
-            leaked.append("mechanism_conditioned_measurement_program.selected_model_source")
-    return leaked
 
 
 def select_dispatch_routes(registry_routes: Any, *, limit: int = 8) -> list[dict[str, Any]]:
@@ -192,12 +142,7 @@ def agent_task(
             "withheld_context_keys": (
                 []
                 if favored_visible
-                else [
-                    "main_agent_mechanism_memo_ref",
-                    "main_agent_math_hypothesis",
-                    "final_revision_strategy",
-                    "favored_route_id",
-                ]
+                else sorted(WITHHELD_CONTEXT_KEYS)
             ),
         },
         "visible_context": visible_context,
@@ -205,6 +150,8 @@ def agent_task(
         "research_question": question
         + (
             " Work independently from formula facts and executed evidence; the favored thesis is intentionally withheld."
+            " Use only this assigned packet and its declared public evidence. Do not read the full Council packet,"
+            " shared taskbook, main-agent memo, or loop brief. Mark critiques of withheld material as not_visible."
             if not favored_visible
             else " Critique the main agent mechanism memo and any prior executable revision outcome."
         )
@@ -620,6 +567,8 @@ def main() -> None:
         routes = default_routes(failure_signature)
 
     fact_context = {
+        "factor_formula": packet.get("factor_formula"),
+        "implementation_mode": packet.get("implementation_mode"),
         "decision": (
             None
             if evo_context is not None
@@ -643,6 +592,14 @@ def main() -> None:
     }
     if evo_context is not None:
         fact_context["evo_v2"] = evo_context
+    shared_context = {
+        **fact_context,
+        "main_agent_mechanism_memo_ref": packet.get("main_agent_mechanism_memo_ref"),
+        "main_agent_formula_component_map": packet.get("main_agent_formula_component_map") or [],
+        "main_agent_math_hypothesis": packet.get("main_agent_math_hypothesis") or {},
+        "main_agent_evidence_comparison": packet.get("main_agent_evidence_comparison") or {},
+        "council_required_critiques": packet.get("council_required_critiques") or [],
+    }
     tasks: list[dict[str, Any]] = []
     for route in routes:
         family = str(route.get("route_family") or "unclassified")
@@ -655,7 +612,7 @@ def main() -> None:
                 rid,
                 route=route,
                 visible_context={
-                    **fact_context,
+                    **context_for_route(shared_context, favored_visible=route.get("favored_thesis_visible") is True),
                     "route_contract": {
                         "route_id": route.get("route_id"),
                         "route_family": family,
@@ -707,14 +664,7 @@ def main() -> None:
             f"objects/factor_library_official/factor_record__{rid}.json",
             "data/clean/",
         ],
-        "shared_context": {
-            **fact_context,
-            "main_agent_mechanism_memo_ref": packet.get("main_agent_mechanism_memo_ref"),
-            "main_agent_formula_component_map": packet.get("main_agent_formula_component_map") or [],
-            "main_agent_math_hypothesis": packet.get("main_agent_math_hypothesis") or {},
-            "main_agent_evidence_comparison": packet.get("main_agent_evidence_comparison") or {},
-            "council_required_critiques": packet.get("council_required_critiques") or [],
-        },
+        "shared_context": shared_context,
         "agent_tasks": tasks,
     }
     out = council_dir / f"agentic_taskbook__{rid}.json"

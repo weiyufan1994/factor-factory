@@ -16,6 +16,11 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from factor_factory.revision_council.visibility import (
+    TOKEN_BLIND_CONTEXT_LEAK,
+    blind_task_packet_leak_keys,
+)
+
 OBJ = FF / "objects"
 TASKBOOK_VERSION = "factorforge_agentic_revision_council_taskbook_v1"
 MANIFEST_VERSION = "factorforge_agentic_council_dispatch_manifest_v1"
@@ -82,6 +87,7 @@ def main() -> None:
         runtime_dispatch_policy = {}
     manifest_tasks: list[dict[str, Any]] = []
     task_packet_paths: list[str] = []
+    pending_packets: list[tuple[Path, dict[str, Any]]] = []
     for task in taskbook.get("agent_tasks") or []:
         if not isinstance(task, dict):
             continue
@@ -91,6 +97,7 @@ def main() -> None:
             continue
         task_packet_path = task_dir / f"task__{rid}__{task_id}.json"
         expected_result_path = result_dir / f"agent_result__{rid}__{task_id}.json"
+        blind = (task.get("blind_context_policy") or {}).get("blind_phase") is True
         packet = {
             "task_packet_version": TASK_PACKET_VERSION,
             "report_id": rid,
@@ -108,8 +115,10 @@ def main() -> None:
             "proof_obligation_ids": task.get("proof_obligation_ids") or [],
             "exact_gap": task.get("exact_gap"),
             "reopen_only_if": task.get("reopen_only_if") or [],
-            "source_taskbook_path": relpath(taskbook_path),
-            "source_packet_path": taskbook.get("source_packet_path"),
+            # Full source/taskbook provenance remains in the orchestrator's
+            # manifest. Blind recipients must not be directed to root judgments.
+            "source_taskbook_path": None if blind else relpath(taskbook_path),
+            "source_packet_path": None if blind else taskbook.get("source_packet_path"),
             "expected_result_path": relpath(expected_result_path),
             "write_scope": relpath(result_dir) + "/",
             "canonical_write_permission": False,
@@ -152,8 +161,11 @@ def main() -> None:
                 ),
             },
         }
-        write_json(task_packet_path, packet)
-        task_packet_sha256 = sha256_file(task_packet_path)
+        if blind:
+            leaked = blind_task_packet_leak_keys(packet)
+            if leaked:
+                block(TOKEN_BLIND_CONTEXT_LEAK, {"task_id": task_id, "leaked_context_keys": leaked})
+        pending_packets.append((task_packet_path, packet))
         task_packet_paths.append(relpath(task_packet_path))
         manifest_tasks.append(
             {
@@ -171,7 +183,7 @@ def main() -> None:
                 "evo_v2_required": task.get("evo_v2_required") is True,
                 "evo_v2_packet_context": task.get("evo_v2_packet_context"),
                 "evo_v2_task_identity": task.get("evo_v2_task_identity"),
-                "task_packet_sha256": task_packet_sha256,
+                "task_packet_sha256": None,
                 "blind_phase": (
                     (task.get("blind_context_policy") or {}).get("blind_phase")
                     is True
@@ -182,6 +194,11 @@ def main() -> None:
                 "required": True,
             }
         )
+
+    # Validate every recipient before writing any dispatchable task packet.
+    for (path, packet), manifest_task in zip(pending_packets, manifest_tasks):
+        write_json(path, packet)
+        manifest_task["task_packet_sha256"] = sha256_file(path)
 
     manifest = {
         "dispatch_manifest_version": MANIFEST_VERSION,

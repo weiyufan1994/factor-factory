@@ -20,6 +20,10 @@ from factor_factory.revision_council.production import (
     load_formal_evo_packet_context,
     validate_evo_task_identity,
 )
+from factor_factory.revision_council.visibility import (
+    TOKEN_BLIND_CONTEXT_LEAK,
+    blind_task_packet_leak_keys,
+)
 
 OBJ = FF / "objects"
 MANIFEST_VERSION = "factorforge_agentic_council_dispatch_manifest_v1"
@@ -219,6 +223,16 @@ def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: 
         reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_EXECUTION_ALLOWED_BY_DEFAULT:{idx}")
     if packet.get("human_approval_required") is not True:
         reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK_HUMAN_APPROVAL_REQUIRED:{idx}")
+    blind = packet.get("blind_context_policy") or {}
+    is_blind = blind.get("blind_phase") is True
+    if manifest_task.get("blind_phase") is not is_blind:
+        reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_BLIND_POLICY_INVALID:{idx}")
+    if is_blind:
+        leaked = blind_task_packet_leak_keys(packet)
+        if leaked:
+            reasons.append(TOKEN_BLIND_CONTEXT_LEAK + ":" + ",".join(leaked))
+        if blind.get("favored_thesis_visible") is not False:
+            reasons.append(f"BLOCK_AGENTIC_COUNCIL_DISPATCH_BLIND_POLICY_INVALID:{idx}")
     packet_policy = packet.get("runtime_dispatch_policy")
     reasons.extend(validate_runtime_policy(packet_policy, "BLOCK_AGENTIC_COUNCIL_DISPATCH_TASK"))
     if isinstance(manifest_policy, dict) and isinstance(packet_policy, dict) and packet_policy != manifest_policy:
@@ -298,25 +312,6 @@ def validate_task_packet(report_id: str, manifest_task: dict[str, Any], packet: 
             reasons.append(
                 f"BLOCK_AGENTIC_COUNCIL_DISPATCH_RESEARCH_ROUTE_MISMATCH:{idx}"
             )
-        blind = packet.get("blind_context_policy")
-        blind = blind if isinstance(blind, dict) else {}
-        if blind.get("blind_phase") is True:
-            forbidden_context = {
-                "main_agent_mechanism_memo_ref",
-                "main_agent_math_hypothesis",
-                "final_revision_strategy",
-                "favored_route_id",
-            }
-            leaked = sorted(forbidden_context & set((packet.get("shared_context") or {}).keys()))
-            if leaked:
-                reasons.append(
-                    "BLOCK_AGENTIC_COUNCIL_DISPATCH_BLIND_CONTEXT_LEAK:"
-                    + ",".join(leaked)
-                )
-            if blind.get("favored_thesis_visible") is not False:
-                reasons.append(
-                    f"BLOCK_AGENTIC_COUNCIL_DISPATCH_BLIND_POLICY_INVALID:{idx}"
-                )
     shared_context = packet.get("shared_context") if isinstance(packet.get("shared_context"), dict) else {}
     prior_revision = shared_context.get("prior_revision_memory") if isinstance(shared_context.get("prior_revision_memory"), dict) else {}
     if prior_revision.get("required_for_next_council") is True:

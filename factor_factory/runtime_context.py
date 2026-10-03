@@ -70,6 +70,32 @@ def manifest_factor_workspace(manifest: dict[str, Any]) -> Path | None:
     return Path(raw).expanduser() if raw else None
 
 
+def implementation_workspace_root(
+    active_root: Path, *, manifest: dict[str, Any] | None = None,
+    legacy_workspace: Path | None = None,
+) -> Path:
+    """Resolve new auxiliary selectors/helper imports without rebasing old paths.
+
+    Ultimate's explicit factor workspace is the import/input root itself. Only
+    legacy layouts without that binding use the active root's parent. Do not
+    search neighbouring studies when an explicit binding disagrees.
+    """
+    declared = manifest_factor_workspace(manifest or {})
+    raw = os.getenv('FACTORFORGE_FACTOR_WORKSPACE')
+    configured = Path(raw).expanduser() if raw else None
+    if declared is not None and configured is not None and declared.resolve() != configured.resolve():
+        raise ValueError('BLOCK_FACTOR_IMPLEMENTATION_WORKSPACE_CONFLICT: manifest/environment')
+    workspace = declared or configured
+    if workspace is not None:
+        workspace = workspace.resolve()
+        if workspace != active_root.resolve():
+            raise ValueError('BLOCK_FACTOR_IMPLEMENTATION_WORKSPACE_CONFLICT: active root')
+        if not workspace.is_dir():
+            raise ValueError('BLOCK_FACTOR_IMPLEMENTATION_WORKSPACE_MISSING')
+        return workspace
+    return (legacy_workspace or active_root.parent).resolve()
+
+
 def write_json_atomic(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = json.dumps(data, ensure_ascii=False, indent=2)

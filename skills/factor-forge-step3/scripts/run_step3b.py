@@ -21,6 +21,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 WORKSPACE = FF.parent
+_RUNTIME_MANIFEST = None
 OBJ = FF / 'objects'
 CODEGEN = FF / 'generated_code'
 RUNS = FF / 'runs'
@@ -48,7 +49,7 @@ from factor_factory.formula.kernels import default_kernel_profile, resolve_formu
 from factor_factory.formula.operators import default_ts_rank_engine_profile, resolve_ts_rank_engine as resolve_formula_ts_rank_engine
 from factor_factory.formula.parity import compare_outputs, make_operator_fixture
 from factor_factory.performance import PhaseTimer, safe_file_size
-from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id, implementation_workspace_root
 from factor_factory.local_is_execution import local_is_workspace_errors
 from factor_factory.factor_laws.moneyflow.registry import resolve_contract as resolve_moneyflow_law_contract
 from factor_factory.step3.high_speed_policy import assert_high_speed_code_policy, build_high_speed_code_profile
@@ -497,10 +498,11 @@ def apply_executable_revision_spec(report_id: str, spec: dict, spec_path: Path) 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
     """Apply the orchestrator-owned runtime manifest before Step3B resolves paths."""
-    global FF, WORKSPACE, OBJ, CODEGEN, RUNS
+    global FF, WORKSPACE, OBJ, CODEGEN, RUNS, _RUNTIME_MANIFEST
+    _RUNTIME_MANIFEST = load_runtime_manifest(manifest_path) if manifest_path else None
     if not manifest_path:
         return None, None
-    manifest = load_runtime_manifest(manifest_path)
+    manifest = _RUNTIME_MANIFEST
     FF = manifest_factorforge_root(manifest)
     WORKSPACE = FF.parent
     OBJ = FF / 'objects'
@@ -951,12 +953,9 @@ def patch_json_with_step2_research_context(path: Path, step2_research_context: d
 
 
 def import_module_from_path(path: Path):
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f'cannot create import spec for {path}')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from factor_factory.implementation_runtime import load_implementation
+    return load_implementation(path, workspace=implementation_workspace_root(
+        FF, manifest=_RUNTIME_MANIFEST, legacy_workspace=WORKSPACE))
 
 
 def add_direct_code_alias_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -1444,10 +1443,14 @@ def generate_first_run_factor_values(
     executability of the factor implementation, not IC/NAV/backtest evidence.
     """
     input_mode = str(local_inputs.get('input_mode') or '')
+    from factor_factory.implementation_runtime import named_input_bindings
+    if input_mode == 'derived_state_with_daily' and named_input_bindings(local_inputs):
+        raise ValueError('BLOCK_FACTOR_IMPLEMENTATION_ADDITIONAL_INPUT_ROUTE_UNSUPPORTED: partitioned controller')
     from factor_factory.prepared_daily_inputs import is_prepared_daily, sample_inputs, validate_sample_frames, check_sample_size
     prepared_daily = is_prepared_daily(local_inputs)
+    implementation_workspace = implementation_workspace_root(FF, manifest=_RUNTIME_MANIFEST, legacy_workspace=WORKSPACE)
     if prepared_daily:
-        check_sample_size(local_inputs, WORKSPACE)
+        check_sample_size(local_inputs, WORKSPACE, additional_workspace=implementation_workspace)
         local_inputs = sample_inputs(local_inputs)
     prepared_derived_state = input_mode == 'derived_state_with_daily'
     prepared_sample_config_path = None
@@ -1467,6 +1470,13 @@ def generate_first_run_factor_values(
     daily_parquet_path = resolve_local_input_path(daily_parquet_rel)
     daily_csv_path = resolve_local_input_path(daily_csv_rel)
     exchange_calendar_path = resolve_local_input_path(exchange_calendar_rel)
+    from factor_factory.implementation_runtime import load_named_inputs
+    additional_inputs, additional_paths = load_named_inputs(
+        local_inputs, implementation_workspace,
+        window=local_inputs['step3b_sample_window'] if prepared_daily else None,
+    )
+    from factor_factory.implementation_runtime import implementation_input_identity
+    implementation_inputs = implementation_input_identity(implementation_path, implementation_workspace, additional_paths)
     daily_selected_format = 'parquet' if daily_path and daily_path.suffix.lower() == '.parquet' else 'csv'
     csv_policy = resolve_csv_policy(csv_output_policy)
     trust_sort_contract = resolve_trust_step3a_sort_contract(trust_step3a_sort_contract)
@@ -1590,16 +1600,18 @@ def generate_first_run_factor_values(
                 controller_result = run_partitioned_controller(module, local_inputs=local_inputs, derived_state_root=derived_state_root, daily_input_path=daily_path, output_path=controller_output, run_dir=controller_output.parent, report_id=report_id, factor_id=factor_id, factorforge_root=FF, workspace_root=WORKSPACE)
                 result_df = read_df(controller_result) if isinstance(controller_result, Path) else controller_result
             else:
-                profiled_result, formula_engine_profile = _run_formula_engine_with_profile(
-                module,
-                daily_df,
-                formula_engine=selected_formula_engine,
-                operator_profile=operator_profile_enabled,
-                ts_rank_engine_config=ts_rank_engine_config,
-                formula_kernel_config=formula_kernel_config,
-                daily_parquet_path=daily_parquet_path,
-                formula_ir_override=lazy_polars_formula_ir,
-            )
+                profiled_result = None
+                if not additional_inputs:
+                    profiled_result, formula_engine_profile = _run_formula_engine_with_profile(
+                        module,
+                        daily_df,
+                        formula_engine=selected_formula_engine,
+                        operator_profile=operator_profile_enabled,
+                        ts_rank_engine_config=ts_rank_engine_config,
+                        formula_kernel_config=formula_kernel_config,
+                        daily_parquet_path=daily_parquet_path,
+                        formula_ir_override=lazy_polars_formula_ir,
+                    )
                 if profiled_result is not None:
                     result_df = profiled_result
                 else:
@@ -1608,6 +1620,7 @@ def generate_first_run_factor_values(
                         daily_df,
                         minute_df,
                         exchange_calendar=exchange_calendar_df,
+                        additional_inputs=additional_inputs,
                     )
         except ModuleNotFoundError as exc:
             if 'BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING' in str(exc):
@@ -1801,6 +1814,11 @@ def generate_first_run_factor_values(
         'universe_hash': universe_hash_from_frame(result_df),
         'frequency': 'daily',
     }
+    if any(implementation_inputs.values()):
+        step3b_cache_identity['data_catalog_hash'] = stable_json_hash({
+            'declared_data_identity': step3b_cache_identity['data_catalog_hash'],
+            'implementation_inputs': implementation_inputs,
+        })
     step3b_cache_identity.update(factor_artifact_binding_profile(step3b_cache_parquet, result_df))
     metadata = {
         'report_id': report_id,
@@ -1827,6 +1845,7 @@ def generate_first_run_factor_values(
         'step3b_compute_cache_identity': step3b_cache_identity,
         'step3b_compute_cache_path': str(step3b_cache_parquet),
         'input_paths': {
+            'additional_inputs': {name: str(path) for name, path in additional_paths.items()},
             'minute': str(minute_path) if minute_path else None,
             'daily': str(daily_path),
             'exchange_calendar': (
@@ -1836,6 +1855,7 @@ def generate_first_run_factor_values(
                 str(prepared_sample_config_path) if prepared_sample_config_path else None
             ),
         },
+        'implementation_inputs': implementation_inputs,
         'prepared_sample_calendar_dates': prepared_sample_calendar,
         'factor_audit_sidecar': {
             'path': str(step3b_audit_parquet) if audit_columns else None,
@@ -2456,8 +2476,8 @@ def ensure_direct_code_keyword_adapter(source_code: str, input_schema: dict | No
     marker = '_factorforge_user_compute_factor'
     if marker in source_code:
         return source_code
-    declared_roles = set(input_schema or {})
-    if 'exchange_calendar' in declared_roles:
+    declared_roles = sorted(set(input_schema or {}) - {'daily_df', 'minute_df', 'grain', 'state_dataset', 'minute_required'})
+    if declared_roles:
         adapter = r'''
 
 # Factor Forge formal API adapter: factorforge_implementation_runtime_v1.
@@ -2465,18 +2485,19 @@ def ensure_direct_code_keyword_adapter(source_code: str, input_schema: dict | No
 # single invocation. Body exceptions propagate without positional retries.
 _factorforge_user_compute_factor = compute_factor
 
-def compute_factor(daily_df=None, minute_df=None, exchange_calendar=None):
+def compute_factor(daily_df=None, minute_df=None, **additional_inputs):
     from factor_factory.implementation_runtime import invoke_factor
 
-    if exchange_calendar is None:
-        raise TypeError("BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: exchange_calendar")
+    missing = [role for role in __FACTORFORGE_NAMED_ROLES__ if additional_inputs.get(role) is None]
+    if missing:
+        raise TypeError("BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: " + ",".join(missing))
     return invoke_factor(
         _factorforge_user_compute_factor,
         daily_df,
         minute_df,
-        additional_inputs={"exchange_calendar": exchange_calendar},
+        additional_inputs=additional_inputs,
     )
-'''
+'''.replace("__FACTORFORGE_NAMED_ROLES__", repr(declared_roles))
     else:
         adapter = r'''
 

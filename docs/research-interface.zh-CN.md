@@ -1,7 +1,7 @@
 # 人工可复现的因子研究接口
 
-本次工程源：`factorforge-it-hybrid-integration-20261002`。这是基于 R32 的代码修复，
-不是宣称现有 `current` release 已自动升级。研究保持暂停；本文例子完全离线。
+本次工程源：`factorforge-it-hybrid-integration-20261002`。以所选 checkout 的实现为准；
+源码修改不会自动升级 `current` release。本文例子完全离线。
 
 ## 1. 职责只有五段
 
@@ -25,6 +25,45 @@ DataApiClient → 命名 DataFrame → Factor 实例 → 标准 factor values
 | 人工展示 | `write_factor_review` | 实际代码、输入、head/tail/date slice、metrics 的离线 HTML，不重新计算指标 |
 
 ## 2. 手写因子：一个实例，一个出口
+
+### 显式辅助输入与工作区 Python 模块
+
+因子仍只声明 `input_columns` 并实现 `compute(inputs)`。在现有 prepared daily
+输入声明中，使用下列可选字段为任意辅助角色绑定文件；名字不限定为成员表：
+
+```json
+{
+  "additional_input_paths": {"formation_membership": "source/members_full.parquet"},
+  "step3b_additional_input_paths": {"formation_membership": "source/members_sample.parquet"}
+}
+```
+
+这两个字段与 `daily_df_parquet`、`step3b_daily_df_parquet` 等一起放在同一份
+prepared inputs / `local_input_paths` 中。辅助表相对路径与 Python helper 都从 runtime
+manifest 的 `factor_workspace` 或显式 `FACTORFORGE_FACTOR_WORKSPACE` 解析；两者同时
+提供时必须一致，并与当前运行根一致。没有显式研究工作区的旧布局使用运行根的父目录。
+辅助表也接受明确绝对路径。既有 daily/calendar 路径的解析规则保持不变。
+Step3A 保留绑定；Step3B 和其 validator 读取明确的样本文件；Step4
+读取完整文件。两组角色必须一致。主表、分钟表、独立日历继续使用既有专用字段，
+不得在辅助 map 中重名。文件支持 Parquet/CSV，不自动下载、合并、推断成员或填零。
+样本受既有行数预算约束；含 `trade_date` 的辅助表必须在相应声明窗口内。
+
+普通工作区模块可直接导入，例如：
+
+```python
+from implementation.local_math import calculate  # workspace/implementation/local_math.py
+```
+
+框架在实际 generated module 装载和调用期间承载 workspace，不依赖开发 shell 的
+`PYTHONPATH`；允许函数内普通 lazy import。结束或异常后恢复 `sys.path` 和同名模块缓存，
+不同研究的 `implementation` 不互相替代。无需研究者写 loader 或 wrapper。
+该机制服务单进程中的单次因子调用，不是代码安全沙箱。通过静态普通 import 引用的本地
+Python 包和显式辅助文件内容进入已有计算缓存身份，变更后重新计算；未声明的动态加载
+不在该约定内。已有无辅助输入、无本地 helper 的路径保留原来的缓存行为。
+
+此绑定支持普通 DataFrame 执行路径。分钟流式和 partitioned controller 有自己的输入
+契约，本补丁不自动扩展它们；在这些路径声明辅助 map 会明确报不支持，不能静默丢弃。
+这也不等于 Step3A 已能从 Data API 自动生产任意角色的数据，或已证明该角色的 PIT 含义。
 
 完整实现：[factor_definitions.py](../examples/manual_interface_replay/factor_definitions.py)。
 该文件包含量价、hybrid、基本面类和注释；量价例子并非新 alpha，只检查计算能力。

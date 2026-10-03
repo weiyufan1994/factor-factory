@@ -64,7 +64,7 @@ from factor_factory.formula.semantics import (
     operator_lookback as shared_operator_lookback,
     requires_cross_sectional_sample as shared_requires_cross_sectional_sample,
 )
-from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id, implementation_workspace_root
 from factor_factory.measurement_program import (
     BLOCK_MEASUREMENT_PROGRAM_INVALID,
     research_compatibility_profile_from_spec,
@@ -90,6 +90,7 @@ from factor_factory.primary_evaluator import validate_primary_evaluator_plan
 
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (_legacy_runtime_root_if_accessible() or REPO_ROOT))
 WORKSPACE = FF.parent
+_RUNTIME_MANIFEST = None
 OBJ = FF / 'objects'
 RUNS = FF / 'runs'
 REAL_PRICE_VOLUME_BASE = WORKSPACE / 'tmp' / 'price_volume_run_2016'
@@ -254,10 +255,11 @@ def data_api_dataset_registered(dataset_id: str) -> tuple[bool, str | None]:
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
     """Apply the orchestrator-owned runtime manifest before any Step3 path writes."""
-    global FF, WORKSPACE, OBJ, RUNS, REAL_PRICE_VOLUME_BASE, CLEAN_DAILY_LAYER
+    global FF, WORKSPACE, OBJ, RUNS, REAL_PRICE_VOLUME_BASE, CLEAN_DAILY_LAYER, _RUNTIME_MANIFEST
+    _RUNTIME_MANIFEST = load_runtime_manifest(manifest_path) if manifest_path else None
     if not manifest_path:
         return None, None
-    manifest = load_runtime_manifest(manifest_path)
+    manifest = _RUNTIME_MANIFEST
     FF = manifest_factorforge_root(manifest)
     WORKSPACE = FF.parent
     OBJ = FF / 'objects'
@@ -2915,7 +2917,8 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
         ])
         if local_input_paths['input_mode'] == 'daily_only':
             from factor_factory.prepared_daily_inputs import validate_paths
-            validate_paths(local_input_paths, WORKSPACE)
+            validate_paths(local_input_paths, WORKSPACE, additional_workspace=implementation_workspace_root(
+                FF, manifest=_RUNTIME_MANIFEST, legacy_workspace=WORKSPACE))
             data_sources.append({'name': 'exchange_calendar', 'kind': 'study_local_prepared_input', 'path': local_input_paths['exchange_calendar_parquet'], 'fields': ['trade_date'], 'normalized_dataset': 'exchange_calendar'})
             notes.append('Prepared daily route: use separately declared Step3B daily/calendar sample; preserve full inputs for Step4. Membership is a reviewed consumer column, not inferred here.')
         else:

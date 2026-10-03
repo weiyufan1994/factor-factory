@@ -13,6 +13,7 @@ def is_prepared_daily(inputs: dict) -> bool:
 
 
 def validate_prepared_daily(inputs: dict) -> dict:
+    from .implementation_runtime import named_input_bindings
     if inputs.get('input_mode') != 'daily_only':
         raise ValueError('prepared daily inputs require daily_only')
     for key in ('minute_df_parquet', 'minute_df_csv', 'minute_streaming_query',
@@ -36,6 +37,10 @@ def validate_prepared_daily(inputs: dict) -> dict:
         windows.append(bounds)
     if not (windows[0][0] <= windows[1][0] <= windows[1][1] <= windows[0][1]):
         raise ValueError('prepared daily sample window outside actual window')
+    full_roles = named_input_bindings(inputs)
+    sample_roles = named_input_bindings(inputs, key='step3b_additional_input_paths')
+    if full_roles.keys() != sample_roles.keys():
+        raise ValueError('BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: full/sample auxiliary roles differ')
     return {**inputs, 'prepared_input_kind': KIND}
 
 
@@ -45,6 +50,8 @@ def sample_inputs(inputs: dict) -> dict:
         **validated,
         'daily_df_parquet': validated['step3b_daily_df_parquet'],
         'exchange_calendar_parquet': validated['step3b_exchange_calendar_parquet'],
+        **({'additional_input_paths': dict(validated.get('step3b_additional_input_paths', {}))}
+           if 'additional_input_paths' in validated or 'step3b_additional_input_paths' in validated else {}),
         'sample_window_actual': dict(validated['step3b_sample_window']),
     }
 
@@ -73,12 +80,17 @@ def validate_sample_frames(daily, calendar, window: dict) -> None:
         raise ValueError('prepared daily sample has duplicate security/date keys')
 
 
-def validate_paths(inputs: dict, workspace: Path) -> None:
+def validate_paths(inputs: dict, workspace: Path, *, additional_workspace: Path | None = None) -> None:
+    from .implementation_runtime import named_input_bindings
     validated = validate_prepared_daily(inputs)
     for key in ('daily_df_parquet', 'step3b_daily_df_parquet',
                 'exchange_calendar_parquet', 'step3b_exchange_calendar_parquet'):
         if not (workspace / validated[key]).is_file():
             raise ValueError(f'prepared daily input missing file: {key}')
+    for key in ('additional_input_paths', 'step3b_additional_input_paths'):
+        for role, path in named_input_bindings(validated, key=key).items():
+            if not ((additional_workspace or workspace) / path).is_file():
+                raise ValueError(f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: {key}.{role}')
     if validated['sample_window_actual'] != validated['step3b_sample_window']:
         for full, sample in (('daily_df_parquet', 'step3b_daily_df_parquet'),
                              ('exchange_calendar_parquet', 'step3b_exchange_calendar_parquet')):
@@ -86,7 +98,7 @@ def validate_paths(inputs: dict, workspace: Path) -> None:
                 raise ValueError('prepared daily full/sample alias with different declared windows')
 
 
-def validate_full_scope(inputs: dict, workspace: Path) -> dict:
+def validate_full_scope(inputs: dict, workspace: Path, *, additional_workspace: Path | None = None) -> dict:
     """Read only date columns; prevent a sample being promoted to full IS input.
 
     Prepared windows use inclusive open-session endpoints. Individual securities
@@ -96,7 +108,7 @@ def validate_full_scope(inputs: dict, workspace: Path) -> dict:
     import pandas as pd
     import pyarrow.parquet as pq
 
-    validate_paths(inputs, workspace)
+    validate_paths(inputs, workspace, additional_workspace=additional_workspace)
     window = inputs['sample_window_actual']
     start, end = str(window['start']), str(window['end'])
 
@@ -123,7 +135,7 @@ def validate_full_scope(inputs: dict, workspace: Path) -> dict:
             'row_count': daily.metadata.num_rows, 'scope_check': 'actual_full_dates_vs_calendar'}
 
 
-def check_sample_size(inputs: dict, workspace: Path) -> None:
+def check_sample_size(inputs: dict, workspace: Path, *, additional_workspace: Path | None = None) -> None:
     """Reject oversized prepared samples before loading; do not silently resample."""
     import pyarrow.parquet as pq
 
@@ -134,3 +146,15 @@ def check_sample_size(inputs: dict, workspace: Path) -> None:
         rows = pq.read_metadata(workspace / inputs[key]).num_rows
         if not 0 < rows <= limit:
             raise ValueError(f'prepared daily sample outside row budget: {key}, rows={rows}, limit={limit}')
+    from .implementation_runtime import named_input_bindings
+    for role, raw in named_input_bindings(inputs, key='step3b_additional_input_paths').items():
+        path = (additional_workspace or workspace) / raw
+        if not path.is_file():
+            raise ValueError(f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: {role}={path}')
+        if path.suffix.lower() == '.parquet':
+            rows = pq.read_metadata(path).num_rows
+        else:
+            import pandas as pd
+            rows = len(pd.read_csv(path, nrows=limit + 1))
+        if rows > limit:
+            raise ValueError(f'prepared daily sample outside row budget: {role}, rows={rows}, limit={limit}')

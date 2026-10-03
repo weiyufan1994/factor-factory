@@ -91,6 +91,7 @@ FACTORFORGE = Path(
     or (_legacy_path_if_accessible(LEGACY_WORKSPACE / 'factorforge') or REPO_ROOT)
 )
 WORKSPACE = FACTORFORGE.parent
+_RUNTIME_MANIFEST = None
 OBJ = FACTORFORGE / 'objects'
 RUNS = FACTORFORGE / 'runs'
 
@@ -122,6 +123,7 @@ from factor_factory.formula.semantics import max_formula_ir_lookback as shared_m
 from factor_factory.formula import parse_formula
 from factor_factory.formula.evaluator import evaluate_formula_frame
 from factor_factory.runtime_context import (
+    implementation_workspace_root,
     load_runtime_manifest,
     manifest_factorforge_root,
     manifest_path,
@@ -2480,12 +2482,9 @@ def resolve_implementation_path(handoff: dict[str, Any], fsm: dict[str, Any]) ->
 
 
 def import_module_from_path(path: Path):
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f'cannot create import spec for {path}')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from factor_factory.implementation_runtime import load_implementation
+    return load_implementation(path, workspace=implementation_workspace_root(
+        FACTORFORGE, manifest=_RUNTIME_MANIFEST, legacy_workspace=WORKSPACE))
 
 
 def add_direct_code_alias_columns(df: Any) -> Any:
@@ -4750,7 +4749,7 @@ def build_failure_outputs(report_id: str, factor_id: str | None, implementation_
 
 
 def main() -> None:
-    global FACTORFORGE, WORKSPACE, OBJ, RUNS
+    global FACTORFORGE, WORKSPACE, OBJ, RUNS, _RUNTIME_MANIFEST
     ap = argparse.ArgumentParser()
     ap.add_argument('--report-id')
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
@@ -4771,6 +4770,7 @@ def main() -> None:
     args = ap.parse_args()
     enforce_direct_step_policy(args.manifest)
     manifest: dict[str, Any] | None = load_runtime_manifest(args.manifest) if args.manifest else None
+    _RUNTIME_MANIFEST = manifest
     if manifest:
         FACTORFORGE = manifest_factorforge_root(manifest)
         WORKSPACE = FACTORFORGE.parent
@@ -4979,7 +4979,8 @@ def main() -> None:
         try:
             if prepared_daily:
                 try:
-                    validate_full_scope(local_inputs, WORKSPACE)
+                    validate_full_scope(local_inputs, WORKSPACE, additional_workspace=implementation_workspace_root(
+                        FACTORFORGE, manifest=manifest, legacy_workspace=WORKSPACE))
                 except (ValueError, OSError, KeyError) as exc:
                     raise SystemExit(f'BLOCK_STEP4_PREPARED_DAILY_SCOPE: {exc}') from exc
             if not (prepared_derived_state or prepared_daily):
@@ -5038,6 +5039,16 @@ def main() -> None:
             or legacy_daily_fallback
         )
         exchange_calendar_path = local_inputs.get('exchange_calendar_parquet')
+        from factor_factory.implementation_runtime import load_named_inputs, named_input_bindings
+        implementation_workspace = implementation_workspace_root(FACTORFORGE, manifest=manifest, legacy_workspace=WORKSPACE)
+        if (minute_streaming_query or prepared_derived_state) and named_input_bindings(local_inputs):
+            raise ValueError('BLOCK_FACTOR_IMPLEMENTATION_ADDITIONAL_INPUT_ROUTE_UNSUPPORTED: streaming/partitioned controller')
+        additional_inputs, additional_paths = load_named_inputs(
+            local_inputs, implementation_workspace,
+            window=local_inputs['sample_window_actual'] if prepared_daily else None,
+        )
+        from factor_factory.implementation_runtime import implementation_input_identity
+        implementation_inputs = implementation_input_identity(impl_path, implementation_workspace, additional_paths)
         input_mode = str(local_inputs.get('input_mode') or '')
         minute_required = bool(
             minute_path
@@ -5175,6 +5186,11 @@ def main() -> None:
                 else None
             ),
         )
+        if any(implementation_inputs.values()):
+            expected_reuse_identity['data_catalog_hash'] = stable_json_hash({
+                'declared_data_identity': expected_reuse_identity['data_catalog_hash'],
+                'implementation_inputs': implementation_inputs,
+            })
         existing_factor_reuse_gate = None
         if parquet_existed_before_step4:
             existing_factor_source, existing_factor_reuse_gate, may_reuse_existing_factor = resolve_existing_step4_formal_reuse(
@@ -5248,6 +5264,8 @@ def main() -> None:
                 'output_path': str(parquet_path),
             }
         input_io_profile = {
+            'additional_input_paths': {name: str(path) for name, path in additional_paths.items()},
+            'implementation_inputs': implementation_inputs,
             'source': 'local_snapshot' if data_api_profile is None else 'factorforge_data_api_full_query',
             'daily_selected_format': 'parquet' if daily_file.suffix.lower() == '.parquet' else 'csv',
             'daily_selected_path': str(daily_file),
@@ -5460,6 +5478,7 @@ def main() -> None:
                     signal_daily_df,
                     minute_df,
                     exchange_calendar=exchange_calendar_df,
+                    additional_inputs=additional_inputs,
                 )
             if evo_pre_release:
                 end_agent_execution_isolation()

@@ -12,6 +12,7 @@ FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if 
 OBJ = FF / 'objects'
 CODE = FF / 'generated_code'
 RUNS = FF / 'runs'
+_RUNTIME_MANIFEST = None
 
 
 def _contract_excepthook(exc_type, exc, tb):
@@ -30,7 +31,7 @@ from factor_factory.formula.parity import compare_outputs, make_operator_fixture
 from factor_factory.formula.parser import resolved_binding_hash_for_formula_ir
 from factor_factory.formula.registry import operator_meta
 from factor_factory.implementation_runtime import invoke_factor
-from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id, implementation_workspace_root
 
 FORBIDDEN_DIRECT_CODE_PATTERNS = [
     r"shift\s*\(\s*-\d+",
@@ -76,10 +77,11 @@ MIN_LARGE_STEP3B_COMPUTE_ROWS_PER_SECOND = 5_000.0
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
-    global FF, OBJ, CODE, RUNS
+    global FF, OBJ, CODE, RUNS, _RUNTIME_MANIFEST
+    _RUNTIME_MANIFEST = load_runtime_manifest(manifest_path) if manifest_path else None
     if not manifest_path:
         return None, None
-    manifest = load_runtime_manifest(manifest_path)
+    manifest = _RUNTIME_MANIFEST
     FF = manifest_factorforge_root(manifest)
     OBJ = FF / 'objects'
     CODE = FF / 'generated_code'
@@ -869,12 +871,8 @@ def assert_step3b_runtime_performance_policy(run_metadata: dict) -> dict:
 
 
 def import_module_from_path(path: Path):
-    spec = importlib.util.spec_from_file_location(path.stem, path)
-    if spec is None or spec.loader is None:
-        raise ImportError(f'cannot import generated direct_code artifact: {path}')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    from factor_factory.implementation_runtime import load_implementation
+    return load_implementation(path, workspace=implementation_workspace_root(FF, manifest=_RUNTIME_MANIFEST))
 
 
 def add_direct_code_alias_columns(df):
@@ -1147,20 +1145,23 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
         maybe_polars_frame(exchange_calendar, use_polars)
         if exchange_calendar is not None else None
     )
+    additional_inputs = {}
     if prepared_daily_inputs is not None:
         from factor_factory.prepared_daily_inputs import sample_inputs, validate_sample_frames, check_sample_size
-        check_sample_size(prepared_daily_inputs, FF.parent)
+        implementation_workspace = implementation_workspace_root(FF, manifest=_RUNTIME_MANIFEST)
+        check_sample_size(prepared_daily_inputs, FF.parent, additional_workspace=implementation_workspace)
         sample = sample_inputs(prepared_daily_inputs)
+        from factor_factory.implementation_runtime import load_named_inputs
+        named_frames, _ = load_named_inputs(sample, implementation_workspace, window=sample['step3b_sample_window'])
+        additional_inputs = {name: maybe_polars_frame(frame, use_polars) for name, frame in named_frames.items()}
         daily = pd.read_parquet(FF.parent / sample['daily_df_parquet'])
         calendar = pd.read_parquet(FF.parent / sample['exchange_calendar_parquet'])
         validate_sample_frames(daily, calendar, sample['step3b_sample_window'])
         daily_input = maybe_polars_frame(daily, use_polars)
         minute_input = None
         calendar_input = maybe_polars_frame(calendar, use_polars) if 'exchange_calendar' in input_schema else None
-    additional_inputs = (
-        {'exchange_calendar': calendar_input}
-        if calendar_input is not None else None
-    )
+    if calendar_input is not None:
+        additional_inputs['exchange_calendar'] = calendar_input
     try:
         signature = inspect.signature(compute)
     except (TypeError, ValueError) as exc:
@@ -1177,8 +1178,9 @@ def run_direct_code_fixture_smoke(path: Path, output_schema: dict, code_contract
             f'BLOCK_STEP3B_DIRECT_CODE_SIGNATURE_MISMATCH: {signature}'
         )
     try:
-        result = invoke_factor(
-            compute,
+        from factor_factory.implementation_runtime import invoke_implementation
+        result = invoke_implementation(
+            module,
             daily_input,
             minute_input,
             additional_inputs=additional_inputs,

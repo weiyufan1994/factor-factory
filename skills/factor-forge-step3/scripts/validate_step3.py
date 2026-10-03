@@ -11,6 +11,7 @@ if str(REPO_ROOT) not in sys.path:
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 FF = Path(os.getenv('FACTORFORGE_ROOT') or (LEGACY_WORKSPACE / 'factorforge' if (LEGACY_WORKSPACE / 'factorforge').exists() else REPO_ROOT))
 WORKSPACE = FF.parent
+_RUNTIME_MANIFEST = None
 OBJ = FF / 'objects'
 CODE = FF / 'generated_code'
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
@@ -103,14 +104,15 @@ def validate_direct_code_source_contract(impl: dict) -> None:
         'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code output_schema must include ts_code/trade_date/factor_value'
     )
 
-from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
+from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id, implementation_workspace_root
 
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
-    global FF, WORKSPACE, OBJ, CODE
+    global FF, WORKSPACE, OBJ, CODE, _RUNTIME_MANIFEST
+    _RUNTIME_MANIFEST = load_runtime_manifest(manifest_path) if manifest_path else None
     if not manifest_path:
         return None, None
-    manifest = load_runtime_manifest(manifest_path)
+    manifest = _RUNTIME_MANIFEST
     FF = manifest_factorforge_root(manifest)
     WORKSPACE = FF.parent
     OBJ = FF / 'objects'
@@ -600,7 +602,8 @@ def validate_step3_readiness_contract(
     if prepared_daily:
         assert os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1', 'BLOCK_STEP3_PREPARED_DAILY_LOCAL_IS_ONLY'
         assert not isinstance(prep.get('research_windows'), dict), 'prepared daily cannot replace EVO data evidence'
-        validate_paths(local_inputs, workspace)
+        validate_paths(local_inputs, workspace, additional_workspace=implementation_workspace_root(
+            factorforge_root, manifest=_RUNTIME_MANIFEST, legacy_workspace=workspace))
     prepared_local = prepared_derived_state or prepared_daily
     snapshot_source = str(local_inputs.get('snapshot_source') or '')
     if isinstance(prep.get('research_windows'), dict) and not prepared_derived_state:
@@ -884,7 +887,8 @@ if __name__ == '__main__':
         if input_mode == 'daily_only':
             from factor_factory.prepared_daily_inputs import is_prepared_daily, validate_paths
             if is_prepared_daily(prep['local_input_paths']):
-                validate_paths(prep['local_input_paths'], WORKSPACE)
+                validate_paths(prep['local_input_paths'], WORKSPACE, additional_workspace=implementation_workspace_root(
+                    FF, manifest=_RUNTIME_MANIFEST, legacy_workspace=WORKSPACE))
             else:
                 validate_daily_io_contract(prep['local_input_paths'])
             assert not minute_rel, 'daily_only Step 3A output must not claim minute snapshot'

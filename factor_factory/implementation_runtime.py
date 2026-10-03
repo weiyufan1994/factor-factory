@@ -6,12 +6,172 @@ never evidence that another signature or backend should be tried.
 from __future__ import annotations
 
 import ast
+from contextlib import contextmanager, nullcontext
+import hashlib
+import importlib.util
 import inspect
+import keyword
 from pathlib import Path
+import sys
+from threading import RLock
+import tokenize
 from typing import Any, Callable
 
 
 RUNTIME_VERSION = "factorforge_implementation_runtime_v1"
+_IMPORT_LOCK = RLock()
+_PRIMARY_ROLES = {'daily_df', 'minute_df', 'exchange_calendar'}
+
+
+def implementation_input_identity(path: Path, workspace: Path, additional_paths: dict[str, Path]) -> dict:
+    """Extend existing compute-cache identity for explicit frames and Python helpers.
+
+    Ordinary import statements (including imports inside functions) select local
+    packages. Hash their Python sources, including relative-import siblings;
+    this does not execute code or invent a data-admission receipt.
+    """
+    def digest(file):
+        value = hashlib.sha256()
+        with file.open('rb') as stream:
+            for block in iter(lambda: stream.read(1024 * 1024), b''):
+                value.update(block)
+        return value.hexdigest()
+
+    protected = {'factor_factory', 'factorforge_data_api', 'skills'} | set(sys.stdlib_module_names)
+    pending = [path]
+    inspected, roots, helpers = set(), set(), {}
+    while pending:
+        file = pending.pop()
+        if file in inspected:
+            continue
+        inspected.add(file)
+        try:
+            with tokenize.open(file) as stream:
+                tree = ast.parse(stream.read())
+        except (SyntaxError, UnicodeError):
+            if file == path:
+                raise
+            # An unused sibling's malformed text does not prevent importing a
+            # valid helper. Its bytes still invalidate the conservative cache.
+            continue
+        for node in ast.walk(tree):
+            names = ([item.name for item in node.names] if isinstance(node, ast.Import) else
+                     [node.module] if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module else [])
+            for name in names:
+                root = name.split('.', 1)[0]
+                if root in roots or root in protected:
+                    continue
+                roots.add(root)
+                module, package = workspace / (root + '.py'), workspace / root
+                files = [module] if module.is_file() else sorted(package.rglob('*.py')) if package.is_dir() else []
+                for helper in files:
+                    helpers[str(helper.relative_to(workspace))] = digest(helper)
+                    pending.append(helper)
+    return {'additional_inputs': {name: {'path': str(file), 'sha256': digest(file)}
+                                  for name, file in sorted(additional_paths.items())},
+            'workspace_python_sources': dict(sorted(helpers.items()))}
+
+
+def named_input_bindings(inputs: dict, *, key: str = 'additional_input_paths') -> dict[str, str]:
+    """Explicit local file selectors; never infer auxiliary roles from daily rows."""
+    bindings = inputs.get(key, {})
+    if not isinstance(bindings, dict):
+        raise ValueError(f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_INVALID: {key} must be an object')
+    for role, path in bindings.items():
+        if not isinstance(role, str) or not role.isidentifier() or keyword.iskeyword(role):
+            raise ValueError(f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_INVALID: {role!r}')
+        if role in _PRIMARY_ROLES:
+            raise ValueError(f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_DUPLICATE: {role}')
+        if not isinstance(path, str) or not path.strip():
+            raise ValueError(f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: {role}')
+        if Path(path).suffix.lower() not in {'.parquet', '.csv'}:
+            raise ValueError(f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_FORMAT: {role}')
+    return dict(bindings)
+
+
+def load_named_inputs(inputs: dict, workspace: Path, *, window: dict | None = None) -> tuple[dict, dict[str, Path]]:
+    """Load declared frames without joins, filtering or missing-value substitution."""
+    import pandas as pd
+    paths = {role: (workspace / value).resolve()
+             for role, value in named_input_bindings(inputs).items()}
+    for role, path in paths.items():
+        if not path.is_file():
+            raise ValueError(f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: {role}={path}')
+    frames = {
+        role: pd.read_parquet(path) if path.suffix.lower() == '.parquet' else
+        pd.read_csv(path, dtype={'ts_code': str, 'trade_date': str})
+        for role, path in paths.items()
+    }
+    if window is not None:
+        for role, frame in frames.items():
+            if 'trade_date' not in frame.columns:
+                continue
+            dates = frame.trade_date.astype(str).str.replace('-', '', regex=False).str[:8]
+            pd.to_datetime(dates, format='%Y%m%d', errors='raise')
+            if not dates.between(str(window['start']), str(window['end'])).all():
+                raise ValueError(f'BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_WINDOW: {role}')
+    return frames, paths
+
+
+@contextmanager
+def workspace_imports(workspace: Path, *, modules: dict | None = None):
+    """Scope ordinary workspace imports to one invocation, including lazy imports.
+
+    Step processes execute one factor at a time. The lock also serializes callers
+    of this shared import context inside a process; it is not a code sandbox.
+    Framework/SDK/stdlib modules keep their existing authority. Same-name helper
+    modules from another study are restored, never reused for the current study.
+    """
+    workspace = workspace.resolve()
+    protected = {'factor_factory', 'factorforge_data_api', 'skills'} | set(sys.stdlib_module_names)
+    roots = {p.stem if p.is_file() else p.name for p in workspace.iterdir()
+             if (p.is_dir() or p.suffix == '.py') and (p.stem if p.is_file() else p.name).isidentifier()}
+    roots -= protected
+    belongs = lambda name: name.split('.', 1)[0] in roots
+    active = dict(modules or {})
+    with _IMPORT_LOCK:
+        old_path = list(sys.path)
+        old_modules = {name: value for name, value in list(sys.modules.items()) if belongs(name)}
+        try:
+            for name in old_modules:
+                del sys.modules[name]
+            sys.modules.update(active)
+            repo = str(Path(__file__).resolve().parents[1])
+            sys.path[:] = [repo, str(workspace), *[p for p in old_path if p not in {repo, str(workspace)}]]
+            importlib.invalidate_caches()
+            yield active
+        finally:
+            active.update({name: value for name, value in list(sys.modules.items()) if belongs(name)})
+            for name in list(sys.modules):
+                if belongs(name):
+                    del sys.modules[name]
+            sys.modules.update(old_modules)
+            sys.path[:] = old_path
+            importlib.invalidate_caches()
+
+
+def load_implementation(path: Path, *, workspace: Path | None = None):
+    """Import a generated artifact with explicit, temporary workspace visibility."""
+    path = path.resolve()
+    name = '_factorforge_implementation_' + hashlib.sha256(str(path).encode()).hexdigest()
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise ImportError(f'cannot create implementation import spec: {path}')
+    module = importlib.util.module_from_spec(spec)
+    context = workspace_imports(workspace) if workspace is not None and workspace.is_dir() else nullcontext({})
+    with context as dependencies:
+        previous = sys.modules.get(name)
+        sys.modules[name] = module
+        try:
+            spec.loader.exec_module(module)
+        finally:
+            if previous is None:
+                sys.modules.pop(name, None)
+            else:
+                sys.modules[name] = previous
+    module._factorforge_workspace = workspace if workspace is not None and workspace.is_dir() else None
+    module._factorforge_workspace_modules = dependencies
+    return module
 
 
 def source_declares_factor_instance(source: str) -> bool:
@@ -52,8 +212,28 @@ def implementation_callable(implementation: Any) -> Callable:
 def invoke_implementation(implementation: Any, daily_df: Any, minute_df: Any, *,
                           additional_inputs: dict[str, Any] | None = None) -> Any:
     """Run a BaseFactor instance/module FACTOR, or the legacy callable once."""
-    return invoke_factor(implementation_callable(implementation), daily_df, minute_df,
-                         additional_inputs=additional_inputs)
+    workspace = getattr(implementation, '_factorforge_workspace', None)
+    context = (workspace_imports(workspace, modules=implementation._factorforge_workspace_modules)
+               if workspace is not None else nullcontext())
+    with context as dependencies:
+        # Registration supports normal Python features such as dataclasses in
+        # a generated module; it has the same bounded lifetime as helper imports.
+        name = getattr(implementation, '__name__', None)
+        registered = name is not None and hasattr(implementation, '_factorforge_workspace')
+        previous = sys.modules.get(name) if registered else None
+        if registered:
+            sys.modules[name] = implementation
+        try:
+            return invoke_factor(implementation_callable(implementation), daily_df, minute_df,
+                                 additional_inputs=additional_inputs)
+        finally:
+            if workspace is not None:
+                implementation._factorforge_workspace_modules = dependencies
+            if registered:
+                if previous is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
 
 
 def _nonempty(frame: Any) -> bool:

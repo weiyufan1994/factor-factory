@@ -109,7 +109,7 @@ def test_direct_code_smoke_blocks_all_null_signal(tmp_path):
     impl.write_text(
         "import pandas as pd\n"
         "def compute_factor(*, daily_df, minute_df=None):\n"
-        "    return pd.DataFrame({'ts_code':['000001.SZ'], 'trade_date':['20260101'], 'factor_value':[None]})\n",
+        "    return pd.DataFrame({'ts_code':['000001.SZ'], 'trade_date':['20260101'], 'factor_value':[float('nan')]})\n",
         encoding="utf-8",
     )
 

@@ -181,7 +181,12 @@ def test_parent_zero_exit_with_silent_live_child_is_failure_and_child_is_stopped
         try: child = psutil.Process(pid)
         except psutil.NoSuchProcess: return
         deadline = time.monotonic()+2
-        while child.is_running() and child.status() not in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD}:
+        while True:
+            try:
+                if not child.is_running() or child.status() in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD}:
+                    break
+            except psutil.NoSuchProcess:
+                break  # Process disappearance is successful termination too.
             assert time.monotonic() < deadline
             time.sleep(.01)
     finally:

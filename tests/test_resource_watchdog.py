@@ -4,6 +4,7 @@ import io
 import json
 from pathlib import Path
 import sys
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -47,7 +48,8 @@ def fixture(tmp_path, monkeypatch, *, root_rss=100, free=500*GIB, available=8*GI
             return [Process(2), Process(3)]
     class NoSuchProcess(Exception): pass
     monkeypatch.setitem(sys.modules, 'psutil', SimpleNamespace(Process=Process, NoSuchProcess=NoSuchProcess,
-        virtual_memory=lambda: SimpleNamespace(available=available)))
+        virtual_memory=lambda: SimpleNamespace(available=available), process_iter=lambda: [],
+        STATUS_ZOMBIE='zombie', STATUS_DEAD='dead'))
     monkeypatch.setattr(guard.subprocess, 'Popen', start)
     monkeypatch.setattr(guard.os, 'killpg', kill)
     count = [0]
@@ -117,6 +119,20 @@ def test_original_limits_and_disk_boundaries():
     with pytest.raises(RuntimeError, match='INITIAL_DISK'): guard.resource_limits(127*GIB, 8*GIB, 1.)
 
 
+def test_exit_check_selects_only_owned_live_group(monkeypatch):
+    def vanished(): raise ProcessLookupError()
+    def never_read(): pytest.fail('other groups are not inspected further')
+    rows = [SimpleNamespace(pid=1, status=lambda: 'running'),
+            SimpleNamespace(pid=2, status=never_read),
+            SimpleNamespace(pid=3, status=lambda: 'zombie'),
+            SimpleNamespace(pid=4, status=never_read)]
+    class NoSuchProcess(Exception): pass
+    psutil = SimpleNamespace(process_iter=lambda: rows, STATUS_ZOMBIE='zombie',
+                             STATUS_DEAD='dead', NoSuchProcess=NoSuchProcess)
+    monkeypatch.setattr(guard.os, 'getpgid', lambda pid: vanished() if pid == 4 else 99 if pid != 2 else 88)
+    assert guard.live_group_members(psutil, 99) == [1]
+
+
 def test_successive_logs_do_not_replace_previous_evidence(tmp_path, monkeypatch):
     fixture(tmp_path, monkeypatch)
     assert guard.main() == 0
@@ -143,3 +159,36 @@ def test_real_small_subprocess_tree_is_observed_and_completes(tmp_path, monkeypa
     assert r['sampled_peak_process_count'] >= 4
     assert r['sampled_combined_peak_rss_bytes'] > 0
     assert 'synthetic leaf' in Path(r['log_path']).read_text()
+
+
+def test_parent_zero_exit_with_silent_live_child_is_failure_and_child_is_stopped(tmp_path, monkeypatch):
+    import psutil
+    monkeypatch.setattr(psutil, 'virtual_memory', lambda: SimpleNamespace(available=8*GIB))
+    monkeypatch.setattr(guard.shutil, 'disk_usage', lambda _: SimpleNamespace(free=500*GIB))
+    pid_path = tmp_path/'synthetic-child.pid'
+    code = ('import subprocess,sys,pathlib; p=subprocess.Popen([sys.executable,"-c",'
+            '"import time; time.sleep(30)"],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); '
+            'pathlib.Path('+repr(str(pid_path))+').write_text(str(p.pid))')
+    monkeypatch.setattr(sys, 'argv', ['guard','--cwd',str(tmp_path),'--minimum-required-gib','.01',
+                                    '--run-reviewed-guard','--',sys.executable,'-c',code])
+    child = None
+    try:
+        assert guard.main() == 2
+        r = report(tmp_path)
+        assert r['child_exit_code'] == 0 and r['failure'] == 'OWNED_PROCESS_GROUP_LEFT_RUNNING'
+        pid = int(pid_path.read_text())
+        assert pid in r['live_owned_group_pids_at_parent_exit']
+        try: child = psutil.Process(pid)
+        except psutil.NoSuchProcess: return
+        deadline = time.monotonic()+2
+        while child.is_running() and child.status() not in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD}:
+            assert time.monotonic() < deadline
+            time.sleep(.01)
+    finally:
+        # Contain even a failing control test to its own known synthetic child.
+        if child is None and pid_path.exists():
+            try: child = psutil.Process(int(pid_path.read_text()))
+            except psutil.NoSuchProcess: pass
+        if child is not None:
+            try: child.kill()
+            except psutil.NoSuchProcess: pass

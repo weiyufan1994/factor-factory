@@ -40,6 +40,20 @@ def resource_limits(initial_free, available, minimum_required_gib):
     return floor, budget
 
 
+def live_group_members(psutil, pgid):
+    """Check only our owned group, including descendants reparented on exit."""
+    members = []
+    for item in psutil.process_iter():
+        try:
+            if os.getpgid(item.pid) != pgid:
+                continue
+            if item.status() not in {psutil.STATUS_ZOMBIE, psutil.STATUS_DEAD}:
+                members.append(item.pid)
+        except (ProcessLookupError, psutil.NoSuchProcess):
+            continue
+    return members
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-reviewed-guard', action='store_true')
@@ -133,6 +147,20 @@ def main():
                     try: os.killpg(proc.pid, signal.SIGKILL)
                     except ProcessLookupError: pass
                 proc.wait()
+                # A caller may exit zero while an inherited-group child is
+                # still running with stdout closed. Pipe EOF is not completion.
+                try:
+                    remaining = live_group_members(psutil, proc.pid)
+                    record['live_owned_group_pids_at_parent_exit'] = remaining
+                    if remaining:
+                        failure = failure or 'OWNED_PROCESS_GROUP_LEFT_RUNNING'
+                        try: os.killpg(proc.pid, signal.SIGKILL)
+                        except ProcessLookupError: pass
+                except Exception as exc:
+                    failure = failure or 'OWNED_PROCESS_GROUP_CHECK_FAILED'
+                    record['group_check_error'] = type(exc).__name__+':'+str(exc)
+                    try: os.killpg(proc.pid, signal.SIGKILL)
+                    except ProcessLookupError: pass
                 if thread is not None: thread.join(timeout=5)
                 if thread is not None and thread.is_alive():
                     failure = failure or 'LOG_DRAIN_INCOMPLETE'

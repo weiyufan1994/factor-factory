@@ -1,4 +1,4 @@
-"""Bounded GP selection over preregistered, fully materialized programs.
+"""Bounded evaluation and selection over preregistered programs.
 
 This adapter is for research objects that do not fit the transient-response
 grammar in :mod:`gp_adapter`.  It deliberately does not invent expressions at
@@ -80,7 +80,7 @@ class ProgramTrace:
 
 
 @dataclass(frozen=True)
-class RegisteredGPSearchResult:
+class RegisteredProgramSearchResult:
     seed: int
     metric: str
     direction: Direction
@@ -95,7 +95,7 @@ class RegisteredGPSearchResult:
 ProgramEvaluator = Callable[[RegisteredProgram, int], ProgramEvaluation]
 
 
-def run_registered_program_gp(
+def run_registered_program_search(
     *,
     programs: tuple[RegisteredProgram, ...],
     evaluator: ProgramEvaluator,
@@ -104,8 +104,8 @@ def run_registered_program_gp(
     seed: int,
     total_budget: float,
     max_evaluations: int,
-) -> RegisteredGPSearchResult:
-    """Evaluate a finite reviewed GP population under one hard budget.
+) -> RegisteredProgramSearchResult:
+    """Evaluate a finite reviewed program set under one reservation budget.
 
     Programs are visited generation by generation.  Seeded order only breaks
     order within a generation.  Cost is reserved before every callback; an
@@ -147,14 +147,26 @@ def run_registered_program_gp(
             stop_reason = "evaluator_exception_unknown_cost"
             break
         try:
+            if not isinstance(result, ProgramEvaluation):
+                raise TypeError("evaluator must return ProgramEvaluation")
             _validate_evaluation(program, result, metric, direction)
-        except ValueError as exc:
+        except (TypeError, ValueError) as exc:
+            known_cost = _known_actual_cost(result)
+            if known_cost is not None:
+                spent += known_cost
             trace.append(_trace(
                 program, evaluator_seed, "evaluator_contract_violation", str(exc),
-                score=result.score, actual_cost=result.actual_cost,
-                evidence_ref=result.evidence_ref,
+                score=result.score if isinstance(result, ProgramEvaluation) else None,
+                actual_cost=known_cost,
+                evidence_ref=(
+                    result.evidence_ref if isinstance(result, ProgramEvaluation) else None
+                ),
             ))
-            stop_reason = "evaluator_contract_violation"
+            stop_reason = (
+                "evaluator_contract_violation"
+                if known_cost is not None
+                else "evaluator_contract_violation_unknown_cost"
+            )
             break
         assert result.actual_cost is not None
         spent += result.actual_cost
@@ -187,7 +199,7 @@ def run_registered_program_gp(
         )
     elif not eligible_rows and stop_reason == "completed":
         stop_reason = "no_eligible_development_evidence"
-    return RegisteredGPSearchResult(
+    return RegisteredProgramSearchResult(
         seed, metric, direction, tuple(trace), selected_id, len(trace), calls,
         spent, stop_reason,
     )
@@ -241,6 +253,15 @@ def _validate_evaluation(
             raise ValueError("completed_evidence_incomplete")
     elif result.score is not None:
         raise ValueError("noncompleted_result_cannot_reward")
+
+
+def _known_actual_cost(result: object) -> float | None:
+    if not isinstance(result, ProgramEvaluation):
+        return None
+    cost = result.actual_cost
+    if cost is None or not isfinite(cost) or cost < 0:
+        return None
+    return cost
 
 
 def _trace(

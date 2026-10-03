@@ -4,7 +4,8 @@ Base release commit: `e6d4e647b82abe275ab49a6e84a8fc8c0c3c8b50`.
 
 The original R34 response GP is a valid but narrow signed-impulse response
 grammar.  It cannot represent the reviewed Amihud panel statistic
-`D*c`.  `registered_gp.py` adds a separate finite-registry selection route for research
+`D*c`.  `registered_program_search.py` adds a separate finite-registry
+evaluation route for research
 objects like this one.  Every expression must be materialized before the call,
 hash-bound to its mathematical object, assigned explicit lineage and cost, and
 evaluated only through development evidence.  The routine cannot create a new
@@ -18,6 +19,26 @@ dry run, actual mutation count and actual crossover count are therefore both
 zero.  Calling finite enumeration or score sorting “GP improvement” would be
 incorrect.  The adapter is the evidence/budget boundary needed before a later
 reviewed variation operator can be connected.
+
+The follow-up `threshold_gp.py` is that separate typed variation operator.  It
+starts from the reviewed uniform-threshold gene and actually materializes the
+two reviewed neighboring genes at runtime.  Signal and exact price-alias
+control are emitted together.  Arbitrary expressions and unreviewed threshold
+families cannot enter the grammar.  Crossover remains disabled with an explicit
+`grammar_not_closed` reason because crossing the two Beta endpoints can create
+an unreviewed family.
+
+`typed_threshold_gp_engineering_trial_v1.json` is the seed-20261003 execution:
+two mutation attempts, two materialized mutations, zero crossover attempts,
+three common-budget callback calls, and zero market evaluations.  Its equal
+readiness scores test grammar/hash/alias binding only.  The reported baseline
+selection is a complexity tie-break and has no economic meaning.
+
+The registered-program layer also retains every valid known `actual_cost` when
+an evaluator result violates identity or reservation.  A wrong return type is
+recorded once as a contract violation with unknown cost and stops without a
+retry.  `spent_cost` is then the known subtotal, never a claim that total cost
+was zero.
 
 `adapter_trial_v1.json` records an actual seed-20261003 invocation against the
 current reviewed D*c identity and source hashes.  Both GP and enabled MCTS each
@@ -42,7 +63,7 @@ counterexample proving eligible evidence can still select.
 Minimal call shape:
 
 ```python
-result = run_registered_program_gp(
+result = run_registered_program_search(
     programs=reviewed_programs,
     evaluator=development_evaluator,
     metric="joint_gate_development_score",

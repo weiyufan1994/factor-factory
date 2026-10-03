@@ -21,12 +21,18 @@ from .mcts import (
     run_action_mcts,
     run_simple_scheduler,
 )
-from .registered_gp import (
+from .registered_program_search import (
     ProgramEvaluation,
     ProgramTrace,
-    RegisteredGPSearchResult,
+    RegisteredProgramSearchResult,
     RegisteredProgram,
-    run_registered_program_gp,
+    run_registered_program_search,
+)
+from .threshold_gp import (
+    MutationRecord,
+    ThresholdGPSearchResult,
+    materialize_threshold_program,
+    run_threshold_family_gp,
 )
 
 __all__ = [
@@ -49,7 +55,11 @@ __all__ = [
     "run_simple_scheduler",
     "ProgramEvaluation",
     "ProgramTrace",
-    "RegisteredGPSearchResult",
+    "RegisteredProgramSearchResult",
     "RegisteredProgram",
-    "run_registered_program_gp",
+    "run_registered_program_search",
+    "MutationRecord",
+    "ThresholdGPSearchResult",
+    "materialize_threshold_program",
+    "run_threshold_family_gp",
 ]

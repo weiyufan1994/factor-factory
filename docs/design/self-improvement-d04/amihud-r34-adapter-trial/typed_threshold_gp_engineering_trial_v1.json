@@ -1,0 +1,177 @@
+{
+  "schema": "amihud_typed_threshold_gp_engineering_trial_v1",
+  "seed": 20261003,
+  "base_commit": "431502d",
+  "proposal_ref": "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md",
+  "proposal_sha256": "a1e250ccec910e2fa1cb8c90ccf6211e89eb570ad986070ab3b5de0ccd61a461",
+  "elapsed_seconds": 0.0001384579809382558,
+  "result": {
+    "seed": 20261003,
+    "programs": [
+      {
+        "program_id": "amihud_threshold__uniform",
+        "expression": "D*c",
+        "mathematical_object": "threshold_family=uniform; signal_h=D*c; exact_price_alias_h=D*a",
+        "generation": 0,
+        "parents": [],
+        "operation": "initialize_threshold_gene",
+        "complexity": 5,
+        "estimated_cost": 1.0,
+        "evidence_refs": [
+          "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md"
+        ]
+      },
+      {
+        "program_id": "amihud_threshold__beta_late",
+        "expression": "D*c*c",
+        "mathematical_object": "threshold_family=beta_late; signal_h=D*c*c; exact_price_alias_h=D*a*a",
+        "generation": 1,
+        "parents": [
+          "amihud_threshold__uniform"
+        ],
+        "operation": "mutate_threshold_family",
+        "complexity": 6,
+        "estimated_cost": 1.0,
+        "evidence_refs": [
+          "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md"
+        ]
+      },
+      {
+        "program_id": "amihud_threshold__beta_early",
+        "expression": "D*(2*c-c*c)",
+        "mathematical_object": "threshold_family=beta_early; signal_h=D*(2*c-c*c); exact_price_alias_h=D*(2*a-a*a)",
+        "generation": 1,
+        "parents": [
+          "amihud_threshold__uniform"
+        ],
+        "operation": "mutate_threshold_family",
+        "complexity": 8,
+        "estimated_cost": 1.0,
+        "evidence_refs": [
+          "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md"
+        ]
+      }
+    ],
+    "mutations": [
+      {
+        "attempt": 1,
+        "parent_family": "uniform",
+        "child_family": "beta_late",
+        "parent_program_hash": "32bd5935c3bc81946d16328c351bd13b42ea747581a1df23b1a620ccc1f1624d",
+        "child_program_hash": "8444200ba67b4ce82fd53f537771a11f5853f10e095a447c870fabfa02077688",
+        "status": "materialized",
+        "reason": "reviewed_typed_mutation"
+      },
+      {
+        "attempt": 2,
+        "parent_family": "uniform",
+        "child_family": "beta_early",
+        "parent_program_hash": "32bd5935c3bc81946d16328c351bd13b42ea747581a1df23b1a620ccc1f1624d",
+        "child_program_hash": "31f568c0fc2c7cc8a914b1786b06f8f6d4f29db81ddb09f6e7469b71c688f2fb",
+        "status": "materialized",
+        "reason": "reviewed_typed_mutation"
+      }
+    ],
+    "mutation_attempts": 2,
+    "materialized_mutations": 2,
+    "duplicate_mutations": 0,
+    "crossover_attempts": 0,
+    "crossover_reason": "grammar_not_closed: crossing beta_early and beta_late can create an unreviewed threshold family",
+    "search": {
+      "seed": 20261003,
+      "metric": "typed_program_readiness",
+      "direction": 1,
+      "trace": [
+        {
+          "program_id": "amihud_threshold__uniform",
+          "program_hash": "32bd5935c3bc81946d16328c351bd13b42ea747581a1df23b1a620ccc1f1624d",
+          "generation": 0,
+          "parents": [],
+          "operation": "initialize_threshold_gene",
+          "evaluator_seed": 6250465867235281891,
+          "status": "eligible",
+          "reason": "completed_development_evidence",
+          "score": 1.0,
+          "actual_cost": 0.0,
+          "evidence_ref": "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md"
+        },
+        {
+          "program_id": "amihud_threshold__beta_early",
+          "program_hash": "31f568c0fc2c7cc8a914b1786b06f8f6d4f29db81ddb09f6e7469b71c688f2fb",
+          "generation": 1,
+          "parents": [
+            "amihud_threshold__uniform"
+          ],
+          "operation": "mutate_threshold_family",
+          "evaluator_seed": 2645364743439446082,
+          "status": "eligible",
+          "reason": "completed_development_evidence",
+          "score": 1.0,
+          "actual_cost": 0.0,
+          "evidence_ref": "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md"
+        },
+        {
+          "program_id": "amihud_threshold__beta_late",
+          "program_hash": "8444200ba67b4ce82fd53f537771a11f5853f10e095a447c870fabfa02077688",
+          "generation": 1,
+          "parents": [
+            "amihud_threshold__uniform"
+          ],
+          "operation": "mutate_threshold_family",
+          "evaluator_seed": 9182573914196937908,
+          "status": "eligible",
+          "reason": "completed_development_evidence",
+          "score": 1.0,
+          "actual_cost": 0.0,
+          "evidence_ref": "/Users/humphrey/projects/factorforge-local-runtime/workspaces/factor_research/AMIHUD_POSTDECLINE_ACTIVITY_RF_V1/amihud_postdecline_activity_rf_v1_20261002/source/gp_mcts_response_neighborhood_proposal_v1.md"
+        }
+      ],
+      "selected_id": "amihud_threshold__uniform",
+      "attempted_count": 3,
+      "evaluator_calls": 3,
+      "spent_cost": 0.0,
+      "stop_reason": "completed"
+    }
+  },
+  "callback_calls": [
+    {
+      "program_id": "amihud_threshold__uniform",
+      "program_hash": "32bd5935c3bc81946d16328c351bd13b42ea747581a1df23b1a620ccc1f1624d",
+      "seed": 6250465867235281891,
+      "checks": {
+        "source_bound": true,
+        "signal_alias_bound": true,
+        "typed_expression": true
+      }
+    },
+    {
+      "program_id": "amihud_threshold__beta_early",
+      "program_hash": "31f568c0fc2c7cc8a914b1786b06f8f6d4f29db81ddb09f6e7469b71c688f2fb",
+      "seed": 2645364743439446082,
+      "checks": {
+        "source_bound": true,
+        "signal_alias_bound": true,
+        "typed_expression": true
+      }
+    },
+    {
+      "program_id": "amihud_threshold__beta_late",
+      "program_hash": "8444200ba67b4ce82fd53f537771a11f5853f10e095a447c870fabfa02077688",
+      "seed": 9182573914196937908,
+      "checks": {
+        "source_bound": true,
+        "signal_alias_bound": true,
+        "typed_expression": true
+      }
+    }
+  ],
+  "actual_mutation_attempts": 2,
+  "actual_materialized_mutations": 2,
+  "actual_crossover_attempts": 0,
+  "market_rows_read": 0,
+  "market_evaluations": 0,
+  "campaign_trials_before": 2,
+  "campaign_trials_after": 2,
+  "score_scope": "engineering grammar/hash/alias readiness only; not market or factor quality",
+  "interpretation": "The typed GP actually mutated the uniform threshold gene into the two reviewed neighboring families at runtime. All three programs passed engineering readiness. Baseline selection is only the deterministic complexity tie-break under equal readiness scores, not an economic recommendation. Crossover remained zero because the reviewed grammar is not closed under crossover."
+}

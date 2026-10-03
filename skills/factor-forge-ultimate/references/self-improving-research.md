@@ -110,6 +110,27 @@ disk quota. Callers must keep development inputs legally available, explicitly
 bound fit sizes/budgets, and use the existing research trial accounting before
 any return-scored search. A development fixture consumes no market-study slot.
 
+### Restricted panel-expression search (R35 and later supporting releases)
+
+`factor_factory.hybrid_research.threshold_gp.run_threshold_family_gp` supplies
+an actual, bounded variation operator for the reviewed threshold-response
+family: one categorical gene, one generation, at most two mutations. It emits
+the signal and its paired price-alias control together; crossover is disabled
+because the grammar is not closed under it. This is not open-expression or
+fitness-driven multigeneration GP, and it does not replace the induction above.
+Use only a Step2-reviewed family and the study's explicitly selected release.
+
+`registered_program_search.run_registered_program_search` in the same package
+evaluates an already materialized registry; it creates no mutations and must
+not be reported as GP. Both routes require the caller's real development
+evaluator, shared market-trial accounting and durable evidence. They neither
+load market data nor dispatch Step3–6. Preserve attempted/rejected candidates,
+seed, lineage, paired controls, known costs and unknown completion. Engineering
+scores or Unknown callbacks do not demonstrate market efficacy. For GP/MCTS
+comparisons, reused results remain reused evidence, not free independent trials.
+See `docs/design/self-improvement-d04/amihud-r34-adapter-trial/README.md` in the
+selected checkout; its historical R34 name is not the current release pin.
+
 `run_action_mcts(enabled=True, evaluator=...)` is a library interface; its real
 `ActionEvaluator(ResearchState, Action, seed) -> ActionResult` callback performs
 the authorized action and returns an evidence-bound `Observation`. It has no

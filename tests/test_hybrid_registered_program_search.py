@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import pytest
 
 from factor_factory.hybrid_research.registered_program_search import (
@@ -130,6 +131,112 @@ def test_wrong_return_type_stops_once_with_unknown_cost_trace():
     assert report.trace[0].status == "evaluator_contract_violation"
     assert report.trace[0].actual_cost is None
     assert report.trace[0].reason == "evaluator must return ProgramEvaluation"
+
+
+@pytest.mark.parametrize("bad_cost", ("bad", {}, True, math.inf, math.nan))
+def test_invalid_cost_type_preserves_one_unknown_cost_trace(bad_cost):
+    calls = 0
+    def invalid_cost(item, seed):
+        nonlocal calls
+        calls += 1
+        return ProgramEvaluation(
+            item.program_hash, "development", "loss", -1, .2,
+            bad_cost, "completed", "evidence",
+        )
+    report = run_registered_program_search(
+        programs=(program("a"), program("b")), evaluator=invalid_cost,
+        metric="loss", direction=-1, seed=1, total_budget=2,
+        max_evaluations=2,
+    )
+    assert calls == report.evaluator_calls == 1
+    assert report.spent_cost == 0
+    assert report.stop_reason == "evaluator_contract_violation_unknown_cost"
+    assert report.trace[0].actual_cost is None
+    assert report.trace[0].reason == "actual_cost_invalid"
+
+
+@pytest.mark.parametrize("bad_score", (True, "0.2", {}, math.inf, math.nan))
+def test_invalid_score_type_stops_with_known_cost(bad_score):
+    row = program("a")
+    report = run_registered_program_search(
+        programs=(row,),
+        evaluator=lambda item, seed: ProgramEvaluation(
+            item.program_hash, "development", "loss", -1,
+            bad_score, 1, "completed", "evidence",
+        ),
+        metric="loss", direction=-1, seed=1, total_budget=1,
+        max_evaluations=1,
+    )
+    assert report.spent_cost == 1
+    assert report.stop_reason == "evaluator_contract_violation"
+    assert report.trace[0].reason == "score_invalid"
+
+
+def test_boolean_direction_is_rejected_before_evaluator_call():
+    calls = 0
+    def never(item, seed):
+        nonlocal calls
+        calls += 1
+        return result(item, .2)
+    with pytest.raises(ValueError, match="direction"):
+        run_registered_program_search(
+            programs=(program("a"),), evaluator=never, metric="loss",
+            direction=True, seed=1, total_budget=1, max_evaluations=1,  # type: ignore[arg-type]
+        )
+    assert calls == 0
+
+
+def test_boolean_result_direction_is_contract_violation_with_known_cost():
+    row = program("a")
+    report = run_registered_program_search(
+        programs=(row,),
+        evaluator=lambda item, seed: ProgramEvaluation(
+            item.program_hash, "development", "loss", True, .2, 1,
+            "completed", "evidence",  # type: ignore[arg-type]
+        ),
+        metric="loss", direction=1, seed=1, total_budget=1,
+        max_evaluations=1,
+    )
+    assert report.spent_cost == 1
+    assert report.stop_reason == "evaluator_contract_violation"
+    assert report.trace[0].reason == "metric_contract_mismatch"
+
+
+def test_boolean_program_cost_is_rejected_at_construction():
+    with pytest.raises(ValueError, match="estimated cost"):
+        program("a", cost=True)
+
+
+@pytest.mark.parametrize("bad_count", (True, 1.5, math.inf))
+def test_invalid_evaluation_count_is_rejected_before_callback(bad_count):
+    calls = 0
+    def never(item, seed):
+        nonlocal calls
+        calls += 1
+        return result(item, .2)
+    with pytest.raises(ValueError, match="evaluations positive"):
+        run_registered_program_search(
+            programs=(program("a"),), evaluator=never, metric="loss",
+            direction=-1, seed=1, total_budget=1,
+            max_evaluations=bad_count,  # type: ignore[arg-type]
+        )
+    assert calls == 0
+
+
+@pytest.mark.parametrize("bad_budget", (True, math.inf, math.nan, "1"))
+def test_invalid_total_budget_is_rejected_before_callback(bad_budget):
+    calls = 0
+    def never(item, seed):
+        nonlocal calls
+        calls += 1
+        return result(item, .2)
+    with pytest.raises(ValueError, match="budget"):
+        run_registered_program_search(
+            programs=(program("a"),), evaluator=never, metric="loss",
+            direction=-1, seed=1, total_budget=bad_budget,  # type: ignore[arg-type]
+            max_evaluations=1,
+        )
+    assert calls == 0
 
 
 def test_registry_rejects_unmaterialized_lineage_and_duplicate_math():

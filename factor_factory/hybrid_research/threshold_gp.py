@@ -113,7 +113,7 @@ def run_threshold_family_gp(
         raise ValueError("allowed families must be nonempty and unique")
     if any(family not in _FAMILIES for family in allowed_families):
         raise ValueError("allowed families contain an unreviewed value")
-    if max_mutations < 0:
+    if type(max_mutations) is not int or max_mutations < 0:
         raise ValueError("max_mutations must be non-negative")
 
     parent = materialize_threshold_program(

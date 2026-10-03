@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 import json
 from math import isfinite
+from numbers import Real
 from random import Random
 from typing import Callable, Literal
 
@@ -35,11 +36,13 @@ class RegisteredProgram:
     def __post_init__(self) -> None:
         if not self.program_id or not self.expression or not self.mathematical_object:
             raise ValueError("program id, expression, and mathematical object are required")
+        if type(self.generation) is not int or type(self.complexity) is not int:
+            raise ValueError("generation and complexity must be integers")
         if self.generation < 0 or self.complexity < 1:
             raise ValueError("generation must be non-negative and complexity positive")
         if not self.operation or not self.evidence_refs:
             raise ValueError("operation and evidence refs are required")
-        if not isfinite(self.estimated_cost) or self.estimated_cost < 0:
+        if not _is_finite_real(self.estimated_cost) or self.estimated_cost < 0:
             raise ValueError("estimated cost must be finite and non-negative")
 
     @property
@@ -112,9 +115,11 @@ def run_registered_program_search(
     exception has unknown cost and stops without retry.  Only completed
     development evidence with a matching program hash can become an elite.
     """
-    if not metric or direction not in (-1, 1):
+    if not metric or type(direction) is not int or direction not in (-1, 1):
         raise ValueError("metric and direction (+1 or -1) are required")
-    if not isfinite(total_budget) or total_budget < 0 or max_evaluations < 1:
+    if not _is_finite_real(total_budget) or total_budget < 0:
+        raise ValueError("budget must be finite and non-negative")
+    if type(max_evaluations) is not int or max_evaluations < 1:
         raise ValueError("budget must be finite/non-negative and evaluations positive")
     _validate_registry(programs)
     rng = Random(seed)
@@ -238,15 +243,19 @@ def _validate_evaluation(
         raise ValueError("program_hash_mismatch")
     if result.split != "development":
         raise ValueError("development_split_required")
-    if result.metric != metric or result.direction != direction:
+    if (
+        result.metric != metric
+        or type(result.direction) is not int
+        or result.direction != direction
+    ):
         raise ValueError("metric_contract_mismatch")
     if result.actual_cost is None:
         raise ValueError("actual_cost_unknown")
-    if not isfinite(result.actual_cost) or result.actual_cost < 0:
+    if not _is_finite_real(result.actual_cost) or result.actual_cost < 0:
         raise ValueError("actual_cost_invalid")
     if result.actual_cost > program.estimated_cost:
         raise ValueError("actual_cost_exceeds_reservation")
-    if result.score is not None and not isfinite(result.score):
+    if result.score is not None and not _is_finite_real(result.score):
         raise ValueError("score_invalid")
     if result.status == "completed":
         if result.score is None or not result.evidence_ref:
@@ -259,9 +268,13 @@ def _known_actual_cost(result: object) -> float | None:
     if not isinstance(result, ProgramEvaluation):
         return None
     cost = result.actual_cost
-    if cost is None or not isfinite(cost) or cost < 0:
+    if cost is None or not _is_finite_real(cost) or cost < 0:
         return None
-    return cost
+    return float(cost)
+
+
+def _is_finite_real(value: object) -> bool:
+    return isinstance(value, Real) and not isinstance(value, bool) and isfinite(value)
 
 
 def _trace(

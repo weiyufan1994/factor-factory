@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import pytest
 
 from factor_factory.hybrid_research.registered_program_search import ProgramEvaluation
@@ -98,3 +99,16 @@ def test_common_budget_prevents_unfunded_mutations_from_being_scored():
     assert len(calls) == 1
     assert result.search.spent_cost == 1
     assert sum(row.status == "rejected" for row in result.search.trace) == 2
+
+
+@pytest.mark.parametrize("bad_count", (True, 1.5, math.inf))
+def test_invalid_mutation_count_is_rejected_before_callback(bad_count):
+    evaluate, calls = evaluator({"amihud_threshold__uniform": .4})
+    with pytest.raises(ValueError, match="max_mutations"):
+        run_threshold_family_gp(
+            initial_family="uniform", allowed_families=("uniform",),
+            evaluator=evaluate, evidence_ref="step2", metric="loss", direction=-1,
+            seed=1, total_budget=1, max_evaluations=1,
+            max_mutations=bad_count,  # type: ignore[arg-type]
+        )
+    assert calls == []

@@ -28,6 +28,9 @@ families cannot enter the grammar.  Crossover remains disabled with an explicit
 `grammar_not_closed` reason because crossing the two Beta endpoints can create
 an unreviewed family.
 
+This is one generation over one categorical family gene, with at most two
+mutations.  It is not a fitness-driven multigeneration or open-ended GP system.
+
 `typed_threshold_gp_engineering_trial_v1.json` is the seed-20261003 execution:
 two mutation attempts, two materialized mutations, zero crossover attempts,
 three common-budget callback calls, and zero market evaluations.  Its equal

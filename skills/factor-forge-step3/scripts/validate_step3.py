@@ -28,6 +28,7 @@ from factor_factory.formula.extension_registry import EXTENSION_OPERATORS, exten
 from factor_factory.formula.semantics import operator_lookback as shared_operator_lookback
 from factor_factory.data_api import default_catalog_path
 from factor_factory.step3_execution_readiness import require_execution_readiness
+from factor_factory.implementation_runtime import source_declares_factor_instance, source_declares_legacy_callable
 from factor_factory.evo_data_boundary import (
     BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_INVALID,
     BLOCK_STEP3A_SAMPLE_DATA_EVIDENCE_MISSING,
@@ -81,9 +82,23 @@ def validate_direct_code_source_contract(impl: dict) -> None:
         f'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: unsupported direct_code source derivation {source_derivation.get("derivation")}'
     )
     entrypoint = str(code_contract.get('entrypoint') or code_contract.get('function_name') or '')
-    assert entrypoint == 'compute_factor', 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code entrypoint/function_name must be compute_factor'
-    assert re.search(r'def\s+compute_factor\s*\(', source), (
-        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code source_code must define compute_factor()'
+    assert entrypoint in {'FACTOR', 'compute_factor'}, (
+        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: entrypoint/function_name must be FACTOR or compute_factor'
+    )
+    if code_contract.get('entrypoint') and code_contract.get('function_name'):
+        assert code_contract['entrypoint'] == code_contract['function_name'], (
+            'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: entrypoint/function_name conflict'
+        )
+    try:
+        compile(source, '<direct_code_contract>', 'exec')  # syntax only; never import/execute authored code here
+        has_factor = source_declares_factor_instance(source)
+        has_function = source_declares_legacy_callable(source)
+    except SyntaxError as exc:
+        raise AssertionError('BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: invalid source syntax') from exc
+    # Match the shared runtime's class precedence. A module-level binding is
+    # structural evidence only; Step3B/4 still check BaseFactor type and output.
+    assert (has_factor if entrypoint == 'FACTOR' else has_function and not has_factor), (
+        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: declared entrypoint does not match module-level source binding'
     )
     declared_hash = str(code_contract.get('code_hash') or impl.get('code_hash') or '')
     assert declared_hash, 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code requires code_hash'
@@ -99,10 +114,15 @@ def validate_direct_code_source_contract(impl: dict) -> None:
     assert isinstance(output_schema, dict) and output_schema.get('columns'), (
         'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code output_schema.columns required'
     )
-    required_outputs = {'ts_code', 'trade_date', 'factor_value'}
-    assert required_outputs.issubset(set(output_schema.get('columns') or [])), (
-        'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: direct_code output_schema must include ts_code/trade_date/factor_value'
-    )
+    if 'index' in output_schema:
+        assert output_schema['index'] == ['datetime', 'instrument'] and output_schema['columns'] == ['factor_value'], (
+            'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: indexed output requires datetime/instrument and only factor_value'
+        )
+    else:
+        required_outputs = {'ts_code', 'trade_date', 'factor_value'}
+        assert required_outputs.issubset(set(output_schema.get('columns') or [])), (
+            'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: long output must include ts_code/trade_date/factor_value'
+        )
 
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id, implementation_workspace_root
 

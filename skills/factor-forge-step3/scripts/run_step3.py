@@ -1049,8 +1049,8 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
     code_contract = {
         **existing_code_contract,
         'code_contract_version': existing_code_contract.get('code_contract_version') or DIRECT_CODE_CONTRACT_VERSION,
-        'function_name': 'compute_factor' if uses_retained_state else (existing_code_contract.get('function_name') or contract.get('function_name') or 'compute_factor'),
-        'entrypoint': 'compute_factor' if uses_retained_state else (existing_code_contract.get('entrypoint') or contract.get('entrypoint') or 'compute_factor'),
+        'function_name': 'compute_factor' if uses_retained_state else (existing_code_contract.get('function_name') or existing_code_contract.get('entrypoint') or contract.get('function_name') or contract.get('entrypoint') or 'compute_factor'),
+        'entrypoint': 'compute_factor' if uses_retained_state else (existing_code_contract.get('entrypoint') or existing_code_contract.get('function_name') or contract.get('entrypoint') or contract.get('function_name') or 'compute_factor'),
         'source_code': source,
         'code_hash': source_hash(source),
         'imports': imports,

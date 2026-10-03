@@ -6,8 +6,12 @@ No market reads, wrapper injection or mocked factor loading/argument binding.
 from __future__ import annotations
 
 import importlib.util
+import copy
+import hashlib
 import json
+import os
 from pathlib import Path
+import subprocess
 import sys
 from types import ModuleType
 
@@ -100,7 +104,9 @@ class ArithmeticFactor(PriceVolumeFactor):
         return measure(inputs)
 FACTOR = ArithmeticFactor()
 '''
-    contract = {'source_code': source, 'input_schema': {
+    contract = {'source_code': source, 'entrypoint': 'FACTOR',
+        'output_schema': {'index': ['datetime', 'instrument'], 'columns': ['factor_value']},
+        'input_schema': {
         'daily_df': ['ts_code', 'trade_date', 'close'],
         'exchange_calendar': ['trade_date'],
         'formation_membership': ['ts_code', 'trade_date', 'eligible']},
@@ -158,8 +164,17 @@ def test_real_step3b_prepared_roles_and_workspace_import(tmp_path, monkeypatch, 
 
 
 @pytest.mark.parametrize('layout', ['legacy', 'environment', 'manifest'])
-def test_real_step3a_prepared_bindings_and_readiness(tmp_path, monkeypatch, layout):
+@pytest.mark.parametrize('route', ['class', 'function'])
+def test_real_step3a_prepared_bindings_and_readiness(tmp_path, monkeypatch, layout, route):
     ff, payload, _contract, fsm, _path = prepared_fixture(tmp_path, monkeypatch, layout=layout)
+    if route == 'function':
+        _contract['entrypoint'] = 'compute_factor'
+        _contract['output_schema'] = {'columns': ['ts_code', 'trade_date', 'factor_value']}
+        _contract['source_code'] = _contract['source_code'].split('class ArithmeticFactor')[0] + '''
+def compute_factor(daily_df, minute_df=None, *, exchange_calendar, formation_membership):
+    return measure(dict(daily_df=daily_df, exchange_calendar=exchange_calendar,
+                        formation_membership=formation_membership))
+'''
     # Supply the unrelated structural Step2 requirement, explicitly as a
     # synthetic fixture; do not mock the Step3A builder or input validation.
     from factor_factory.measurement_program import measurement_program_template
@@ -187,6 +202,105 @@ def test_real_step3a_prepared_bindings_and_readiness(tmp_path, monkeypatch, layo
     validator = load_stage(3, 'validate_step3.py')
     bind_manifest(validator, ff)
     validator.validate_step3_readiness_contract(prep, qcfg, impl, {})
+    # Exercise the real gate that Ultimate calls, not just its readiness helper.
+    # Only entrypoint was supplied above: Step3A must mirror its function_name.
+    assert impl['code_contract']['function_name'] == _contract['entrypoint']
+    validator.validate_direct_code_source_contract(impl)
+    for kind, name, value in [
+        ('data_prep_master', 'data_prep_master', prep),
+        ('data_prep_master', 'qlib_adapter_config', qcfg),
+        ('implementation_plan_master', 'implementation_plan_master', impl),
+        ('handoff', 'handoff_to_step4', {'report_id': 'NAMED_ROLES', 'step3a_ready': True, 'step3b_ready': False}),
+        ('validation', 'data_feasibility_report', {'report_id': 'NAMED_ROLES', 'final_result': prep['feasibility']}),
+    ]:
+        target = ff / 'objects' / kind / f'{name}__NAMED_ROLES.json'
+        target.parent.mkdir(exist_ok=True, parents=True)
+        target.write_text(json.dumps(value))
+    command = [sys.executable, str(ROOT / 'skills/factor-forge-step3/scripts/validate_step3.py'),
+               '--report-id', 'NAMED_ROLES', '--require-ready']
+    if layout == 'manifest':
+        command.extend(['--manifest', str(ff / 'runtime_manifest.json')])
+    result = subprocess.run(command, env=os.environ.copy(), text=True, capture_output=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert 'RESULT: PASS' in result.stdout
+
+
+def source_plan(source='FACTOR = object()\n', entrypoint='FACTOR'):
+    return {'code_contract': {
+        'code_contract_version': 'factorforge_direct_code_contract_v1',
+        'entrypoint': entrypoint, 'function_name': entrypoint,
+        'source_code': source, 'code_hash': hashlib.sha256(source.encode()).hexdigest(),
+        'source_derivation': {'not_fallback': True, 'derivation': 'source_code_preserved_from_step2_direct_code_contract'},
+        'imports': ['pandas'], 'input_schema': {'daily_df': ['ts_code', 'trade_date', 'close']},
+        'output_schema': {'index': ['datetime', 'instrument'], 'columns': ['factor_value']},
+    }}
+
+
+@pytest.mark.parametrize('source,entrypoint', [
+    ('# FACTOR = Fake()\n', 'FACTOR'),
+    ('message = "FACTOR = Fake()"\n', 'FACTOR'),
+    ('def nested():\n    FACTOR = object()\n', 'FACTOR'),
+    ('def compute_factor(daily_df):\n    return daily_df\n', 'FACTOR'),
+    ('FACTOR = object()\n', 'compute_factor'),
+    ('# def compute_factor(daily_df):\npass\n', 'compute_factor'),
+    ('def nested():\n    def compute_factor(daily_df):\n        return daily_df\n', 'compute_factor'),
+    ('async def compute_factor(daily_df):\n    return daily_df\n', 'compute_factor'),
+    ('FACTOR = object()\ndef compute_factor(daily_df):\n    return daily_df\n', 'compute_factor'),
+    ('FACTOR = (\n', 'FACTOR'),
+    ('FACTOR = object()\nreturn 1\n', 'FACTOR'),
+    ('FACTOR = object()\n', 'arbitrary_name'),
+])
+def test_step3_contract_rejects_forged_or_mismatched_source_entry(source, entrypoint):
+    validator = load_stage(3, 'validate_step3.py')
+    with pytest.raises(AssertionError, match='BLOCK_DIRECT_CODE_SOURCE_CONTRACT'):
+        validator.validate_direct_code_source_contract(source_plan(source, entrypoint))
+
+
+@pytest.mark.parametrize('change', [
+    {'function_name': 'compute_factor'}, {'code_hash': '0' * 64},
+    {'source_derivation': {'not_fallback': False}},
+    {'output_schema': {'index': ['instrument', 'datetime'], 'columns': ['factor_value']}},
+    {'output_schema': {'index': ['datetime', 'instrument'], 'columns': ['factor_value', 'extra']}},
+    {'output_schema': {'columns': ['factor_value']}},
+    {'output_schema': {'columns': ['ts_code', 'trade_date', 'close']}},
+])
+def test_step3_contract_retains_hash_provenance_and_output_gates(change):
+    plan = source_plan()
+    plan['code_contract'].update(copy.deepcopy(change))
+    with pytest.raises(AssertionError, match='BLOCK_DIRECT_CODE_SOURCE_CONTRACT'):
+        load_stage(3, 'validate_step3.py').validate_direct_code_source_contract(plan)
+
+
+def test_step3_structure_never_executes_source_and_runtime_still_rejects_fake_class(tmp_path):
+    validator = load_stage(3, 'validate_step3.py')
+    validator.validate_direct_code_source_contract(source_plan('FACTOR = object()\nraise RuntimeError("must not execute")\n'))
+    # A source declaration is not a runtime type certificate. The same gate
+    # shared by Step3B/4 must reject it before attempting any factor calculation.
+    from factor_factory.implementation_runtime import implementation_callable, load_implementation
+    path = tmp_path / 'fake.py';path.write_text('FACTOR = object()\n')
+    with pytest.raises(TypeError, match='BaseFactor instance'):
+        implementation_callable(load_implementation(path))
+
+
+@pytest.mark.parametrize('body', [
+    "return f[['ts_code', 'trade_date', 'close']]",
+    "return f[['ts_code', 'trade_date']].assign(factor_value='wrong dtype')",
+])
+def test_class_with_wrong_actual_output_fails_real_step3b_gate(tmp_path, body):
+    source = '''from factor_factory.factors import PriceVolumeFactor
+class Bad(PriceVolumeFactor):
+    name = 'SYNTHETIC_BAD_OUTPUT'
+    def compute(self, inputs):
+        f = inputs['daily_df']
+        BODY
+FACTOR = Bad()
+'''.replace('BODY', body)
+    plan = source_plan(source)
+    load_stage(3, 'validate_step3.py').validate_direct_code_source_contract(plan)
+    path = tmp_path / 'bad.py';path.write_text(source)
+    with pytest.raises((AssertionError, ValueError), match='factor_value|numeric real dtype'):
+        load_stage(3, 'validate_step3b.py').run_direct_code_fixture_smoke(
+            path, plan['code_contract']['output_schema'], plan['code_contract'])
 
 
 def dispatch_step4(tmp_path, monkeypatch, fixture):

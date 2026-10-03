@@ -105,6 +105,7 @@ from factor_factory.data_access import (
 from factor_factory.partitioned_direct_code import run_partitioned_controller
 from factor_factory.primary_evaluator import primary_evaluator_plan
 from factor_factory.result_artifacts import resolve_result_path, validate_result_artifacts
+from factor_factory.source_version import current_source_commit
 from factor_factory.evo_child_execution import (
     EvoChildExecutionError,
     materialize_evo_child_execution_result,
@@ -1257,19 +1258,7 @@ def current_repo_sha() -> str:
     admitted = str(os.getenv('FACTORFORGE_ADMITTED_ENGINE_COMMIT') or '')
     if not local_is_only and re.fullmatch(r'[0-9a-f]{40,64}', admitted):
         return admitted
-    try:
-        result = subprocess.run(
-            ['git', 'rev-parse', 'HEAD'],
-            cwd=REPO_ROOT,
-            check=False,
-            text=True,
-            capture_output=True,
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            return result.stdout.strip()
-    except Exception:
-        pass
-    return 'unknown'
+    return current_source_commit(REPO_ROOT)
 
 
 def _backend_status(backend_runs: list[dict[str, Any]], backend: str) -> str:

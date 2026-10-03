@@ -318,3 +318,10 @@ python examples/manual_interface_replay/run_result_artifact_demo.py --output-dir
 目录误写进 `artifacts` 会明确报错。历史失败的受限引用修复见
 [本地代码评审续接](../skills/factor-forge-ultimate/references/local-code-review.md)，
 保留原 payload 字节和失败记录，不改数值、不重算，修复后仍须原生校验。
+
+发布归档不依赖 `.git` 或启动目录识别版本。打包时，在刚解出的 `git archive`
+源码根目录调用 `write_source_archive_version(root, commit, source_files)`；三个参数分别是
+绝对源码根、归档的精确 commit 和该归档明确的文件成员列表。它只创建一次
+`factorforge_source_version.json`。`current_source_commit(root)` 校验清单内文件后返回包版本；
+源码 checkout 则只读自己的 Git 根，未标记的归档保持 `unknown`，不借用父目录版本。
+这只是构建来源信息，不改变 Host 准入、数据口径或研究结论。

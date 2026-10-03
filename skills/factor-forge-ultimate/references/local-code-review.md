@@ -209,6 +209,19 @@ inspection, never a guessed completion or automatic writer retry. Successful
 recovery returns `computed`: the unchanged compatible native wrapper reuses the
 bound writer result and must run its original native validator before Step5.
 
+An older source archive may have produced `acceptance_summary.repo_sha="unknown"`.
+If its original native Step4 validator failed **only** with
+`BLOCK_ACCEPTANCE_SUMMARY_REPO_IDENTITY_INVALID`, use the same manager's
+`recover-source-version --proof <preserved-failed-wrapper.json> --release-record
+<original-assembly.json> --reference <actual-evidence>` (with the existing
+workspace/report/request and original `--repo-root`). `--dry-run` is read-only.
+The tool verifies that exact archive's inventoried source files, original
+commands/runtime, unchanged outputs and the single validator error; it preserves
+the old run master and failure before correcting only the unknown source commit.
+The original writer stays cached, the failed validator remains in recovery
+history, and a fresh original native validator must run. Do not insert the
+maintenance tool's commit, create another research review request, or rerun data.
+
 Successful CLI recording may still return `status=BLOCK` (for example, awaiting
 review). Exit code zero means the requested journal operation succeeded, not
 that review, tests, research, OOS or promotion passed.

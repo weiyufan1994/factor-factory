@@ -16,7 +16,7 @@ from factor_factory.code_review_handoff import CodeReviewHandoff
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "delivery", "receive", "tests", "command-result", "recover-artifacts", "status"))
+    parser.add_argument("action", choices=("prepare", "delivery", "receive", "tests", "command-result", "recover-artifacts", "recover-source-version", "status"))
     parser.add_argument("--workspace-root", required=True)
     parser.add_argument("--report-id", required=True)
     parser.add_argument("--repo-root", default=str(REPO_ROOT))
@@ -29,8 +29,12 @@ def main() -> int:
     parser.add_argument("--step", choices=("4", "5"), help="Blocked writer stage for recover-artifacts")
     parser.add_argument("--proof", help="Original failed Ultimate wrapper report; never a newly invented receipt")
     parser.add_argument("--artifact-repair", help="Explicit file/directory reference correction JSON; no metrics or code changes")
+    parser.add_argument("--release-record", help="Original assembly JSON proving the executing archive's source version")
+    parser.add_argument('--dry-run', action='store_true', help='Read-only source-version recovery preflight')
     args = parser.parse_args()
     try:
+        if args.dry_run and args.action != 'recover-source-version':
+            raise ValueError('--dry-run is supported only for recover-source-version')
         flow = CodeReviewHandoff(args.workspace_root, args.report_id, args.repo_root)
         if args.action == "prepare":
             if not args.request_file:
@@ -43,6 +47,11 @@ def main() -> int:
                 raise ValueError("--request-id is required; stale handoffs cannot change current work")
             if args.action == "delivery":
                 result = flow.delivery(args.request_id, args.outcome, args.reference, retry_reason=args.retry_reason)
+            elif args.action == 'recover-source-version':
+                if not args.proof or not args.release_record or not args.reference:
+                    raise ValueError('recover-source-version needs --proof, --release-record and --reference')
+                result = flow.recover_source_version(args.request_id, proof_path=args.proof,
+                    release_record=args.release_record, reference=args.reference, dry_run=args.dry_run)
             elif args.action == "recover-artifacts":
                 if not args.step or not args.proof or not args.reference:
                     raise ValueError("recover-artifacts needs --step, --proof and actual tool/result --reference")

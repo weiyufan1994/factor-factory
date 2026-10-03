@@ -132,7 +132,7 @@ def test_step4_repo_identity_uses_and_validates_host_admitted_commit(
 
 
 def test_step4_local_is_uses_checkout_identity_without_host_admission(
-    monkeypatch: pytest.MonkeyPatch,
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
 ) -> None:
     admitted = "a" * 40
     checkout = "b" * 40
@@ -140,10 +140,13 @@ def test_step4_local_is_uses_checkout_identity_without_host_admission(
     monkeypatch.setenv("FACTORFORGE_ADMITTED_ENGINE_COMMIT", admitted)
     monkeypatch.setenv("FACTORFORGE_AGENT_EXECUTION_NETWORK_POLICY", "DENY")
     run_step4 = _load_run_step4()
+    (tmp_path / '.git').mkdir()
+    monkeypatch.setattr(run_step4, 'REPO_ROOT', tmp_path)
     monkeypatch.setattr(
         run_step4.subprocess,
         "run",
-        lambda *_args, **_kwargs: SimpleNamespace(returncode=0, stdout=checkout + "\n"),
+        lambda argv, **_kwargs: SimpleNamespace(returncode=0, stdout=(
+            str(run_step4.REPO_ROOT) if '--show-toplevel' in argv else checkout) + "\n"),
     )
     assert run_step4.current_repo_sha() == checkout
 

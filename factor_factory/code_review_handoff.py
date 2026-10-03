@@ -724,6 +724,119 @@ class CodeReviewHandoff:
                 'original_version': original_version, 'original_stat': path.stat(),
                 'request_file': str(request_file), 'request_version': request_version}
 
+    def recover_source_version(self, request_id: str, *, proof_path: str | Path,
+                               release_record: str | Path, reference: str, dry_run: bool = False) -> dict:
+        """Correct only an unknown source commit after the corresponding native rejection.
+
+        Keeps the original writer and failed validator as evidence. A fresh native
+        validator must run; the old writer stays cached with its original binding.
+        """
+        from factor_factory.source_version import verify_source_archive
+        reference = _text(reference, 'recovery reference')
+        entry = self._active(request_id)
+        execution = (entry or {}).get('execution', {}).get('4', {})
+        view = self.status()
+        result = execution.get('validate_step4') or {}
+        writer = execution.get('run_step4') or {}
+        if (not entry or entry['status'] != 'ready' or execution.get('status') != 'failed'
+                or execution.get('pending_command') != 'validate_step4'
+                or view['reasons'] != ['EXECUTION_FAILED_TRIAGE_REQUIRED:4']
+                or result.get('returncode') != 1 or result.get('status') != 'FAIL'
+                or writer.get('returncode') != 0 or writer.get('status') != 'PASS'):
+            raise HandoffError('SOURCE_RECOVERY_REQUIRES_FAILED_NATIVE_VALIDATOR_AND_SUCCESSFUL_WRITER')
+        issues = self._command_result_issues(execution, result)
+        versions = execution.get('artifacts') or {}
+        if not versions:
+            raise HandoffError('SOURCE_RECOVERY_ARTIFACT_SNAPSHOT_REQUIRED')
+        issues.extend(self._changed_artifacts(versions))
+        if issues:
+            raise HandoffError('; '.join(issues))
+        proof_file = _resolve(proof_path, self.workspace)
+        if proof_file.suffix.lower() != '.json':
+            raise HandoffError('SOURCE_RECOVERY_PROOF_MUST_BE_BOUNDED_JSON')
+        proof_version = _artifact_version(proof_file)
+        proof = _read(proof_file)
+        if (proof.get('status') != 'FAIL' or proof.get('report_id') != self.report_id
+                or proof.get('failure') != {'command': 'validate_step4', 'returncode': 1}
+                or [x for x in proof.get('commands', []) if x.get('name') == 'validate_step4'] != [result]):
+            raise HandoffError('SOURCE_RECOVERY_ORIGINAL_VALIDATOR_PROOF_MISMATCH')
+        manifest_file = _resolve(proof.get('manifest_path'), self.workspace)
+        manifest_version = _artifact_version(manifest_file)
+        manifest = _read(manifest_file)
+        if execution['artifact_contract'] != self._artifact_contract(manifest, '4'):
+            raise HandoffError('SOURCE_RECOVERY_STAGE_PATHS_CHANGED')
+        for name, command in (('run_step4', writer), ('validate_step4', result)):
+            context = {'command': command['command'], 'cwd': command['cwd'],
+                       'manifest': {k: v for k, v in manifest.items() if k != 'created_at_utc'}}
+            if execution.get(name + '_binding') != _digest(context):
+                raise HandoffError('SOURCE_RECOVERY_COMMAND_RUNTIME_BINDING_CHANGED')
+        revision_path = self.workspace / 'objects/validation' / f'factor_run_validation_revision__{self.report_id}.json'
+        revision_version = _artifact_version(revision_path)
+        revision = _read(revision_path)
+        errors = [x.get('code') for x in revision.get('issues', []) if x.get('severity') == 'error']
+        if (revision.get('report_id') != self.report_id or revision.get('verdict') != 'FAIL'
+                or errors != ['BLOCK_ACCEPTANCE_SUMMARY_REPO_IDENTITY_INVALID']):
+            raise HandoffError('SOURCE_RECOVERY_REQUIRES_ONLY_UNKNOWN_REPO_VERSION_ERROR')
+        finished = datetime.fromisoformat(result['finished_at_utc'].replace('Z', '+00:00')).timestamp()
+        if max(revision_path.stat().st_mtime, revision_path.stat().st_ctime) > finished:
+            raise HandoffError('SOURCE_RECOVERY_VALIDATION_EVIDENCE_CHANGED_AFTER_COMMAND')
+        release_file = _resolve(release_record, self.repo)
+        source = verify_source_archive(self.repo, release_file)
+        started = datetime.fromisoformat(writer['started_at_utc'].replace('Z', '+00:00')).timestamp()
+        if max(release_file.stat().st_mtime, release_file.stat().st_ctime) > started:
+            raise HandoffError('SOURCE_RECOVERY_RELEASE_RECORD_POSTDATES_WRITER')
+        run_path = next(Path(p['path']) for p in execution['artifact_contract']['paths']
+                        if p['key'] == 'factor_run_master' and p['direction'] == 'outputs')
+        original = run_path.read_bytes()
+        corrected = json.loads(original)
+        if (corrected.get('acceptance_summary') or {}).get('repo_sha') != 'unknown':
+            raise HandoffError('SOURCE_RECOVERY_ONLY_UNKNOWN_FIELD_MAY_CHANGE')
+        corrected['acceptance_summary']['repo_sha'] = source['commit']
+        checks = {**versions, str(proof_file): proof_version, str(manifest_file): manifest_version,
+                  str(revision_path): revision_version, str(release_file): _artifact_version(release_file)}
+        issues = self._changed_artifacts(checks)
+        if issues:
+            raise HandoffError('; '.join(issues))
+        if dry_run:
+            return {'status': 'READY_FOR_METADATA_REPAIR', 'source': source,
+                    'run_master': {'path': str(run_path), **versions[str(run_path)]},
+                    'artifact_count': len(versions), 'computation_reexecuted': False,
+                    'native_validation_required': True, 'writes_performed': False}
+        audit = self.path.parent / 'artifact_recovery' / _digest({'source_version': source, 'request': request_id})[:24]
+        audit.mkdir(parents=True, exist_ok=False)
+        backup = audit / 'original_run_master.json'
+        with backup.open('xb') as stream:
+            stream.write(original)
+        validation_backup = audit / 'original_validation_revision.json'
+        with validation_backup.open('xb') as stream:
+            stream.write(revision_path.read_bytes())
+        if _artifact_version(validation_backup) != revision_version:
+            raise HandoffError('SOURCE_RECOVERY_VALIDATION_EVIDENCE_CHANGED_DURING_BACKUP')
+        attempt = {'recorded_at': utc_now(), 'status': 'prepared', 'reference': reference,
+                   'source': source, 'preserved_original': _snapshot(backup, 'original_run_master_bytes'),
+                   'original_wrapper_proof': {'path': str(proof_file), **proof_version},
+                   'original_validation': {'path': str(revision_path), **revision_version},
+                   'preserved_validation': _snapshot(validation_backup, 'original_validation_revision_bytes'),
+                   'failed_validator': deepcopy(result), 'failed_validator_binding': execution['validate_step4_binding'],
+                   'failed_pending_invocation': deepcopy(execution['pending_invocation']),
+                   'failed_intent_started_at': execution['started_at'],
+                   'recovery_tool': _snapshot(Path(__file__), 'source_version_recovery'),
+                   'source_version_tool': _snapshot(Path(__file__).with_name('source_version.py'), 'source_version_verifier'),
+                   'computation_reexecuted': False, 'native_validation_required': True}
+        execution.setdefault('source_version_recovery_history', []).append(attempt)
+        self._save()
+        write_json_atomic(run_path, corrected)
+        expected = {**versions, str(run_path): _artifact_version(run_path)}
+        issues = self._changed_artifacts({**checks, str(run_path): expected[str(run_path)]})
+        if issues or self._capture_artifacts(execution['artifact_contract']) != expected:
+            raise HandoffError('SOURCE_RECOVERY_CONCURRENT_CHANGE: inspect prepared repair')
+        attempt.update(status='applied', corrected_run_master=_snapshot(run_path, 'source_version_corrected_run_master'))
+        del execution['validate_step4']
+        del execution['validate_step4_binding']
+        execution.update(status='computed', artifacts=expected)
+        self._save()
+        return self.status()
+
     def _apply_reference_repair(self, entry: dict, step: str, repair: dict, versions: dict) -> dict:
         """Preserve original bytes plus a prepared audit record before metadata changes.
 

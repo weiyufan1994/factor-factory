@@ -6,7 +6,10 @@ It does not manufacture legacy decile/backtest evidence: absent fields remain
 from __future__ import annotations
 
 import math
+from pathlib import Path
 from typing import Any
+
+from factor_factory.result_artifacts import result_artifact_paths, validate_result_artifacts
 
 PRIMARY_EVALUATOR_SCOPE = "local_is_only"
 PRIMARY_EVALUATOR_PLAN_VERSION = "factorforge_primary_evaluator_plan_v1"
@@ -125,7 +128,7 @@ def recovery_evidence_complete(metrics: dict[str, Any] | None) -> bool:
     return _finite(values.get("long_side_recovery_days")) is not None or (values.get("long_side_recovery_status") == RIGHT_CENSORED_RECOVERY_STATUS and _finite(values.get("long_side_recovery_lower_bound_days")) is not None and isinstance(values.get("long_side_recovery_observation_end"), str) and bool(values["long_side_recovery_observation_end"].strip()))
 
 
-def validate_primary_evaluator_payload(payload: dict[str, Any] | None, evaluation_plan: dict[str, Any] | None) -> list[dict[str, str]]:
+def validate_primary_evaluator_payload(payload: dict[str, Any] | None, evaluation_plan: dict[str, Any] | None, *, base_dir: str | Path | None = None) -> list[dict[str, str]]:
     normalized = normalize_primary_evaluator_payload(payload, evaluation_plan)
     if normalized is None: return [{"code": "PRIMARY_EVALUATOR_PLAN_MISSING", "message": "custom primary evaluator plan is missing"}]
     raw, metrics = normalized.get("raw_payload") or {}, normalized.get("metrics") or {}
@@ -140,4 +143,12 @@ def validate_primary_evaluator_payload(payload: dict[str, Any] | None, evaluatio
     artifacts = normalized.get("artifacts") if isinstance(normalized.get("artifacts"), dict) else {}
     absent = [key for key in PRIMARY_REQUIRED_ARTIFACTS if not artifacts.get(key)]
     if absent: issues.append({"code": "PRIMARY_EVALUATOR_ARTIFACTS_MISSING", "message": "primary evaluator missing artifacts: " + ",".join(absent)})
+    artifact_errors = validate_result_artifacts(raw, base_dir=base_dir)
+    for error in artifact_errors:
+        issues.append({"code": "PRIMARY_EVALUATOR_ARTIFACT_UNREADABLE", "message": error})
+    if not artifact_errors:
+        paths = result_artifact_paths(raw, base_dir=base_dir)
+        for key in PRIMARY_REQUIRED_ARTIFACTS:
+            if key in paths and paths[key].stat().st_size <= 0:
+                issues.append({"code": "PRIMARY_EVALUATOR_ARTIFACT_UNREADABLE", "message": f"empty primary artifact: {key}"})
     return issues

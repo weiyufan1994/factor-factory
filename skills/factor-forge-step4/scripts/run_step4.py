@@ -104,6 +104,7 @@ from factor_factory.data_access import (
 )
 from factor_factory.partitioned_direct_code import run_partitioned_controller
 from factor_factory.primary_evaluator import primary_evaluator_plan
+from factor_factory.result_artifacts import resolve_result_path, validate_result_artifacts
 from factor_factory.evo_child_execution import (
     EvoChildExecutionError,
     materialize_evo_child_execution_result,
@@ -1882,7 +1883,7 @@ def write_backend_payloads(
         if not payload_path:
             updated.append(item)
             continue
-        p = Path(payload_path)
+        p = resolve_result_path(payload_path, FACTORFORGE)
         p.parent.mkdir(parents=True, exist_ok=True)
         backend = item.get('backend')
         backend_cfg = dict(item.get('backend_config')) if isinstance(item.get('backend_config'), dict) else {}
@@ -1958,6 +1959,15 @@ def write_backend_payloads(
                 p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
             if p.exists():
                 payload = json.loads(p.read_text(encoding='utf-8'))
+                artifact_errors = validate_result_artifacts(payload, base_dir=FACTORFORGE)
+                if artifact_errors:
+                    new_item['status'] = 'failed'
+                    new_item['payload_contract_error'] = 'BACKEND_RESULT_ARTIFACTS_INVALID'
+                    new_item['artifact_errors'] = artifact_errors
+                    timing_profile['backends'][_backend_timing_key(backend)] = {
+                        'attempted': True, 'status': 'failed', 'wall_seconds': wall_seconds}
+                    updated.append(new_item)
+                    continue
                 payload_status = payload.get('status')
                 if payload_status in {'success', 'partial', 'failed', 'skipped'}:
                     new_item['status'] = payload_status
@@ -2025,6 +2035,10 @@ def write_backend_payloads(
                 payload_error = payload_error or 'CUSTOM_BACKEND_PAYLOAD_STATUS_INVALID'
             elif rc != 0 and payload_status != 'failed':
                 payload_error = payload_error or 'CUSTOM_BACKEND_PROCESS_PAYLOAD_CONTRADICTION'
+            artifact_errors = validate_result_artifacts(payload, base_dir=FACTORFORGE)
+            if artifact_errors:
+                payload_error = payload_error or 'BACKEND_RESULT_ARTIFACTS_INVALID'
+                new_item['artifact_errors'] = artifact_errors
             new_item['payload_status'] = payload_status if valid_status else None
             new_item['status'] = 'failed' if payload_error else payload_status
             new_item['summary'] = payload.get('summary') or payload.get('metrics') or payload

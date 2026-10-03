@@ -76,8 +76,17 @@ def test_normalization_uses_only_declared_primary_fields() -> None:
     assert "group_top_decile_mean_return" not in normalized["metrics"]
 
 
-def test_primary_payload_requires_actual_valuation_and_metrics() -> None:
-    payload = _payload({key: f"/tmp/{key}.csv" for key in ("daily_nav", "trades", "monthly_ic", "performance", "coverage")})
+def _real_artifacts(tmp_path: Path) -> dict[str, str]:
+    artifacts = {}
+    for key in ("daily_nav", "trades", "monthly_ic", "performance", "coverage"):
+        path = tmp_path / f'{key}.csv'
+        path.write_text('synthetic fixture evidence\n')
+        artifacts[key] = str(path)
+    return artifacts
+
+
+def test_primary_payload_requires_actual_valuation_and_metrics(tmp_path: Path) -> None:
+    payload = _payload(_real_artifacts(tmp_path))
     assert validate_primary_evaluator_payload(payload, _plan()) == []
     payload["performance"]["gross_valuation_complete"] = False
     codes = {item["code"] for item in validate_primary_evaluator_payload(payload, _plan())}
@@ -102,9 +111,9 @@ def test_primary_partial_no_trade_or_unknown_valuation_stays_missing_not_zero() 
     assert "PRIMARY_EVALUATOR_NET_VALUATION_INCOMPLETE" in codes
 
 
-def test_right_censored_recovery_is_complete_evidence_but_not_a_recovered_day_count() -> None:
+def test_right_censored_recovery_is_complete_evidence_but_not_a_recovered_day_count(tmp_path: Path) -> None:
     payload = _payload(
-        {key: f"/tmp/{key}.csv" for key in ("daily_nav", "trades", "monthly_ic", "performance", "coverage")},
+        _real_artifacts(tmp_path),
         right_censored_recovery=True,
     )
     normalized = normalize_primary_evaluator_payload(payload, _plan())

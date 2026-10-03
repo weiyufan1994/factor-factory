@@ -18,6 +18,7 @@ from factor_factory.code_review_checkpoint import (
     _file_snapshots, _resolve, _timestamp, resolve_review_inputs, validate_code_review,
 )
 from factor_factory.runtime_context import utc_now, write_json_atomic
+from factor_factory.result_artifacts import repair_result_references, result_artifact_paths, validate_result_artifacts
 from datetime import datetime, timezone
 
 
@@ -160,8 +161,11 @@ class CodeReviewHandoff:
                     paths[path] = {"path": path, "direction": "outputs", "key": key, "required": False}
         return {"step": step, "paths": list(paths.values())}
 
-    def _capture_artifacts(self, contract: dict, *, inputs_only: bool = False) -> dict:
+    def _capture_artifacts(self, contract: dict, *, inputs_only: bool = False,
+                           payload_overrides: dict[str, dict] | None = None) -> dict:
         versions: dict[str, dict] = {}
+        used_overrides: set[str] = set()
+        expanded_roles: set[tuple[str, str]] = set()
         queue = [p for p in contract["paths"] if not inputs_only or p["direction"] == "inputs"]
         while queue:
             item = queue.pop(0)
@@ -169,14 +173,15 @@ class CodeReviewHandoff:
             if raw in versions:
                 if item["required"] and not versions[raw]["exists"]:
                     raise HandoffError(f"ARTIFACT_MISSING:{raw}")
-                continue
-            if len(versions) >= _MAX_ARTIFACT_REFS:
-                raise HandoffError(_ARTIFACT_REFERENCE_LIMIT)
+                version = versions[raw]
+            else:
+                if len(versions) >= _MAX_ARTIFACT_REFS:
+                    raise HandoffError(_ARTIFACT_REFERENCE_LIMIT)
+                version = _artifact_version(Path(raw))
+                if item["required"] and not version["exists"]:
+                    raise HandoffError(f"ARTIFACT_MISSING:{raw}")
+                versions[raw] = version
             path = Path(raw)
-            version = _artifact_version(path)
-            if item["required"] and not version["exists"]:
-                raise HandoffError(f"ARTIFACT_MISSING:{raw}")
-            versions[raw] = version
             if not version["exists"] or path.suffix.lower() != ".json":
                 continue
             # These are the references consumed by existing Step4/5 validators;
@@ -185,6 +190,11 @@ class CodeReviewHandoff:
             if key not in ("factor_run_master", "factor_case_master", "backend_payload",
                            "self_quant_payload", "qlib_backtest_payload"):
                 continue
+            # A file may first appear as a terminal output and later as a
+            # payload. Deduplicate versions/count by path, expansion by role.
+            if (raw, key) in expanded_roles:
+                continue
+            expanded_roles.add((raw, key))
             obj = _read(path)
             refs: list[tuple[str, str]] = []
             if key == "factor_run_master":
@@ -195,10 +205,19 @@ class CodeReviewHandoff:
             elif key == "factor_case_master":
                 refs.extend((p, "archive_file") for p in (obj.get("evidence") or {}).get("archive_paths", []))
             else:
-                refs.extend((p, "backend_artifact") for p in (obj.get("artifacts") or {}).values() if isinstance(p, str) and p)
+                if raw in (payload_overrides or {}):
+                    obj = payload_overrides[raw]
+                    used_overrides.add(raw)
+                try:
+                    refs.extend((str(p), "backend_artifact") for p in result_artifact_paths(
+                        obj, base_dir=self.workspace).values())
+                except ValueError as exc:
+                    raise HandoffError(str(exc)) from exc
             for ref, ref_key in refs:
                 queue.append({"path": str(_resolve(ref, self.workspace)), "direction": item["direction"],
                               "key": ref_key, "required": True})
+        if set(payload_overrides or {}) != used_overrides:
+            raise HandoffError('REFERENCE_REPAIR_PAYLOAD_NOT_DECLARED_BY_STAGE')
         return versions
 
     @staticmethod
@@ -576,8 +595,9 @@ class CodeReviewHandoff:
         self._save()
 
     def recover_artifacts(self, request_id: str, step: str, *,
-                          proof_path: str | Path, reference: str) -> dict:
-        """Bind a known successful writer after a reference-count-only failure.
+                          proof_path: str | Path, reference: str,
+                          repair_path: str | Path | None = None) -> dict:
+        """Bind a known successful writer after a supported reference failure.
 
         No producer or validator is executed. Original argv/runtime/result stay
         historical evidence; this tool's identity and later capture are separate.
@@ -589,12 +609,15 @@ class CodeReviewHandoff:
             raise HandoffError("Artifact recovery requires an active Step4/5 request")
         name = "run_step" + step
         execution = entry["execution"].get(step, {})
+        artifact_issues = execution.get('artifact_issues') or []
+        repair_directory = (repair_path is not None and len(artifact_issues) == 1
+                            and artifact_issues[0].startswith('ARTIFACT_FILE_REQUIRED:'))
         if (execution.get("status") != "artifacts_blocked"
                 or execution.get("pending_command") != name
-                or execution.get("artifact_issues") != [_ARTIFACT_REFERENCE_LIMIT]):
-            raise HandoffError("Artifact recovery requires a reference-limit-only blocked writer")
+                or (not repair_directory and (repair_path is not None or artifact_issues != [_ARTIFACT_REFERENCE_LIMIT]))):
+            raise HandoffError("Artifact recovery requires a reference-limit-only blocked writer or an explicit directory reference repair")
         view = self.status()
-        if entry["status"] != "ready" or view["reasons"] != [_ARTIFACT_REFERENCE_LIMIT]:
+        if entry["status"] != "ready" or view["reasons"] != artifact_issues:
             raise HandoffError(f"Artifact recovery has other blockers: {view['reasons']}")
         result = execution.get(name)
         if (not isinstance(result, dict) or result.get("name") != name
@@ -617,7 +640,7 @@ class CodeReviewHandoff:
                 or proof.get("report_id") != self.report_id or proof.get("status") != "FAIL"
                 or failure.get("command") != "save_code_review_continuation"
                 or failure.get("actual_command") != name
-                or failure.get("detail") != "Actual command returned zero but its artifacts cannot establish completion: " + _ARTIFACT_REFERENCE_LIMIT
+                or failure.get("detail") != "Actual command returned zero but its artifacts cannot establish completion: " + artifact_issues[0]
                 or [x for x in commands if x.get("name") == name] != [result]):
             raise HandoffError("Original wrapper failure/result does not match the stored writer")
         manifest_file = _resolve(proof.get("manifest_path"), self.workspace)
@@ -633,7 +656,11 @@ class CodeReviewHandoff:
         issues = self._changed_artifacts(execution["pending_artifacts"])
         if issues:
             raise HandoffError("; ".join(issues))
-        versions = self._capture_artifacts(execution["artifact_contract"])
+        repair = None
+        if repair_directory:
+            repair = self._prepare_reference_repair(execution, repair_path, artifact_issues[0])
+        overrides = {repair['path']: repair['corrected']} if repair else None
+        versions = self._capture_artifacts(execution["artifact_contract"], payload_overrides=overrides)
         # Legacy failures did not persist an output snapshot. Conservatively
         # reject any file changed/replaced since the actual writer finished,
         # including restored bytes or backdated mtime (ctime still changes).
@@ -650,6 +677,13 @@ class CodeReviewHandoff:
                                               str(manifest_file): manifest_version}))
         if issues:
             raise HandoffError("; ".join(issues))
+        repair_receipt = None
+        if repair:
+            repair_receipt = self._apply_reference_repair(entry, step, repair, versions)
+            versions = self._capture_artifacts(execution['artifact_contract'])
+            issues = self._changed_artifacts({str(proof_file): proof_version, str(manifest_file): manifest_version})
+            if issues:
+                raise HandoffError('; '.join(issues))
         recovered = deepcopy(execution)
         recovered.setdefault("artifact_recovery_history", []).append({
             "recorded_at": utc_now(), "reference": reference,
@@ -659,8 +693,72 @@ class CodeReviewHandoff:
             "recovery_tool": _snapshot(Path(__file__), "artifact_capture_recovery"),
             "artifact_count": len(versions), "max_artifact_refs": _MAX_ARTIFACT_REFS,
             "computation_reexecuted": False, "native_validation_required": True,
+            **({'reference_repair': repair_receipt} if repair_receipt else {}),
         })
         recovered.update(status="computed", artifacts=versions, artifact_issues=[])
         entry["execution"][step] = recovered
         self._save()
         return self.status()
+
+    def _prepare_reference_repair(self, execution: dict, repair_path: str | Path, original_issue: str) -> dict:
+        """Dry projection only. All references must pass capture and age checks before writing."""
+        request_file = _resolve(repair_path, self.workspace)
+        if request_file.suffix.lower() != '.json':
+            raise HandoffError('REFERENCE_REPAIR_REQUEST_MUST_BE_BOUNDED_JSON')
+        request_version = _artifact_version(request_file)
+        request = _read(request_file)
+        path = _resolve(_text(request.get('path'), 'repair payload path'), self.workspace)
+        if path.suffix.lower() != '.json' or str(path) in execution['pending_artifacts']:
+            raise HandoffError('REFERENCE_REPAIR_REQUIRES_OUTPUT_PAYLOAD')
+        original_version = _artifact_version(path)
+        if original_version.get('sha256') != request.get('sha256'):
+            raise HandoffError('REFERENCE_REPAIR_ORIGINAL_HASH_MISMATCH')
+        original_bytes = path.read_bytes()
+        original = json.loads(original_bytes)
+        if validate_result_artifacts(original, base_dir=self.workspace) != [original_issue]:
+            raise HandoffError('REFERENCE_REPAIR_ORIGINAL_FAILURE_MISMATCH')
+        corrected = repair_result_references(original, request, base_dir=self.workspace)
+        if len(json.dumps(corrected, ensure_ascii=False, indent=2).encode()) > _MAX_ARTIFACT_JSON:
+            raise HandoffError('REFERENCE_REPAIR_PAYLOAD_TOO_LARGE')
+        return {'path': str(path), 'original_bytes': original_bytes, 'corrected': corrected,
+                'original_version': original_version, 'original_stat': path.stat(),
+                'request_file': str(request_file), 'request_version': request_version}
+
+    def _apply_reference_repair(self, entry: dict, step: str, repair: dict, versions: dict) -> dict:
+        """Preserve original bytes plus a prepared audit record before metadata changes.
+
+        An interrupted repair stays blocked and visible; it cannot retry a writer.
+        Single journal ownership is required, as for all other handoff operations.
+        """
+        path = Path(repair['path'])
+        checks = {**versions, repair['request_file']: repair['request_version']}
+        issues = self._changed_artifacts(checks)
+        if issues or path.read_bytes() != repair['original_bytes']:
+            raise HandoffError('REFERENCE_REPAIR_INPUT_CHANGED:' + '; '.join(issues))
+        repair_id = _digest({'request': entry['request_id'], 'step': step,
+                             'repair': repair['request_version']})[:24]
+        audit_dir = self.path.parent / 'artifact_recovery' / repair_id
+        audit_dir.mkdir(parents=True, exist_ok=False)
+        backup = audit_dir / 'original_payload.json'
+        with backup.open('xb') as stream:
+            stream.write(repair['original_bytes'])
+        stat = repair['original_stat']
+        receipt = {
+            'recorded_at': utc_now(), 'status': 'prepared',
+            'request': {'path': repair['request_file'], **repair['request_version']},
+            'original_payload': {'path': str(path), **repair['original_version'],
+                                 'size': stat.st_size, 'mtime_ns': stat.st_mtime_ns, 'ctime_ns': stat.st_ctime_ns},
+            'preserved_original': _snapshot(backup, 'original_payload_bytes'),
+            'reference_tool': _snapshot(Path(__file__).with_name('result_artifacts.py'), 'result_reference_repair'),
+        }
+        execution = entry['execution'][step]
+        execution.setdefault('artifact_repair_attempts', []).append(receipt)
+        self._save()
+        write_json_atomic(path, repair['corrected'])
+        expected = {**versions, str(path): _artifact_version(path)}
+        actual = self._capture_artifacts(execution['artifact_contract'])
+        issues = self._changed_artifacts(expected)
+        if actual != expected or issues:
+            raise HandoffError('REFERENCE_REPAIR_CONCURRENT_CHANGE: preserve backup and inspect prepared repair')
+        receipt.update(status='applied', corrected_payload=_snapshot(path, 'reference_corrected_payload'))
+        return deepcopy(receipt)

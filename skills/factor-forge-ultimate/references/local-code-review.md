@@ -176,7 +176,8 @@ returns the stage to `computed`. A fresh native validator is required before
 or other blocker is refused without changing the journal. The original wrapper
 report must be preserved before another wrapper invocation can replace it.
 
-For a frozen runtime with the older 256-file recorder, use the reviewed
+For a frozen runtime whose recorder cannot capture the declared finite set
+(the maintained implementation defines the reference cap), use the reviewed
 maintenance checkout for this one journal repair and explicitly record its
 commit/hash separately. Do not replace a module in the frozen runtime while
 claiming its identity is unchanged. The single Ultimate journal owner can then
@@ -187,6 +188,26 @@ the normal tool, and record its actual result with `command-result` from the
 maintenance checkout. This avoids both producer replay and old recorder capacity.
 After validation succeeds, the original runtime may continue at native Step6.
 The recovery tool does not relax native validation, research or promotion gates.
+
+For an actual zero-return writer blocked only by `ARTIFACT_FILE_REQUIRED`, the
+same command accepts `--artifact-repair <explicit-repair.json>`. That JSON has
+exactly `path` (the declared output payload), `sha256` (its original bytes),
+`artifacts` (unchanged existing file roles plus explicit old files inside the
+misdeclared directories), and `artifact_directories` (those original directory
+roles plus any existing directory metadata). No metrics/status/identity fields,
+directory discovery, newly computed files or unrelated file-role changes are
+accepted. Every selected file must predate the original writer's finish.
+
+The single journal owner runs the reviewed maintenance script with the original
+research `--repo-root`, request and proof; do not change the study's runtime or
+manifest. The tool first saves the exact original payload bytes at a create-only
+audit path and records a `prepared` attempt, then atomically corrects only the
+current payload's two reference fields. History records both versions and the
+repair module hashes; actual result files and original failure proof stay intact.
+An interrupted attempt remains blocked with its backup and prepared record for
+inspection, never a guessed completion or automatic writer retry. Successful
+recovery returns `computed`: the unchanged compatible native wrapper reuses the
+bound writer result and must run its original native validator before Step5.
 
 Successful CLI recording may still return `status=BLOCK` (for example, awaiting
 review). Exit code zero means the requested journal operation succeeded, not

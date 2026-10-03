@@ -14,6 +14,7 @@ from factor_factory.primary_evaluator import (
     validate_primary_evaluator_payload,
 )
 from factor_factory.provenance import classify_long_side_evidence
+from factor_factory.result_artifacts import build_result_artifacts, resolve_result_path, validate_result_artifacts
 
 
 def _resolve_factorforge_root(root: Path) -> Path:
@@ -202,7 +203,7 @@ def _issue(severity: str, code: str, message: str, evidence: Dict[str, Any] | No
 
 
 
-def _payload_shape_errors(payload: Any) -> list[str]:
+def _payload_shape_errors(payload: Any, *, base_dir: str | Path | None = None) -> list[str]:
     """Validate only the structure consumed below, before accessing fields."""
     if not isinstance(payload, dict):
         return ["backend payload must be a JSON object"]
@@ -222,7 +223,6 @@ def _payload_shape_errors(payload: Any) -> list[str]:
         checks = contract["checks"]
         if not isinstance(checks, list) or any(not isinstance(check, dict) for check in checks):
             errors.append("standard_metric_contract.checks must be a list of objects")
-    artifacts = payload.get("artifacts")
     research_metrics = payload.get('research_metrics')
     if isinstance(research_metrics, dict):
         try:
@@ -242,10 +242,7 @@ def _payload_shape_errors(payload: Any) -> list[str]:
                     errors.append(f'research_metrics.metrics.{name} unavailable value requires reason')
                 elif metric['value'] is not None and (isinstance(metric['value'], bool) or not isinstance(metric['value'], (int, float))):
                     errors.append(f'research_metrics.metrics.{name} requires numeric value or null')
-    if isinstance(artifacts, dict):
-        for key, path in artifacts.items():
-            if path is not None and not isinstance(path, str):
-                errors.append(f"artifacts.{key} must be a path string")
+    errors.extend(validate_result_artifacts(payload, base_dir=base_dir))
     return errors
 
 
@@ -444,14 +441,15 @@ def read_backend_payloads(
         payload_error = None
         if payload_path:
             try:
-                selected = Path(payload_path)
-                if not selected.is_absolute():
-                    selected = ff_root / selected
+                selected = resolve_result_path(payload_path, ff_root)
                 decoded = json.loads(selected.read_text(encoding="utf-8"))
-                shape_errors = _payload_shape_errors(decoded)
+                shape_errors = _payload_shape_errors(decoded, base_dir=ff_root)
                 if shape_errors:
                     raise ValueError("; ".join(shape_errors))
-                payload = decoded
+                # Normalize only in memory for metric readers using Path directly.
+                # The original payload bytes, metrics and status stay unchanged.
+                payload = {**decoded, **build_result_artifacts(files=decoded.get('artifacts') or {},
+                    directories=decoded.get('artifact_directories'), base_dir=ff_root)}
                 payload_path = str(selected)
             except (OSError, UnicodeError, ValueError, TypeError) as exc:
                 payload_error = f"{type(exc).__name__}: {exc}"

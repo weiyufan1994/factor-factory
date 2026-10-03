@@ -28,6 +28,7 @@ def main() -> int:
     parser.add_argument("--retry-reason", default="")
     parser.add_argument("--step", choices=("4", "5"), help="Blocked writer stage for recover-artifacts")
     parser.add_argument("--proof", help="Original failed Ultimate wrapper report; never a newly invented receipt")
+    parser.add_argument("--artifact-repair", help="Explicit file/directory reference correction JSON; no metrics or code changes")
     args = parser.parse_args()
     try:
         flow = CodeReviewHandoff(args.workspace_root, args.report_id, args.repo_root)
@@ -46,7 +47,7 @@ def main() -> int:
                 if not args.step or not args.proof or not args.reference:
                     raise ValueError("recover-artifacts needs --step, --proof and actual tool/result --reference")
                 result = flow.recover_artifacts(args.request_id, args.step,
-                                                proof_path=args.proof, reference=args.reference)
+                                                proof_path=args.proof, reference=args.reference, repair_path=args.artifact_repair)
             else:
                 if not args.record:
                     raise ValueError("--record is required")

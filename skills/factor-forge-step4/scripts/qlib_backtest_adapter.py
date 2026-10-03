@@ -54,6 +54,7 @@ for candidate in [WORKSPACE / 'qlib_repo', Path.home() / 'projects' / 'qlib_repo
     if (candidate / 'qlib' / '__init__.py').exists() and str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
+from factor_factory.result_artifacts import build_result_artifacts, write_result_payload
 from factor_factory.data_access import (
     build_forward_return_frame,
     daily_to_qlib_features,
@@ -669,8 +670,10 @@ def main() -> None:
     args = ap.parse_args()
     data = run_qlib_backtest_stub(args.report_id)
     out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(_to_jsonable(data), ensure_ascii=False, indent=2), encoding='utf-8')
+    data = _to_jsonable(data)
+    data.update(build_result_artifacts(files=data.get('artifacts') or {},
+                                      directories=data.get('artifact_directories'), base_dir=FF))
+    write_result_payload(out, data, base_dir=FF)
     print(f'[WRITE] {out}')
 
 

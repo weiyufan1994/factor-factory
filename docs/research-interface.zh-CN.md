@@ -277,3 +277,44 @@ Microsoft Qlib 在已核对的 R32 venv 中不可用；未把错误同名包或�
 `backend="qlib"` 明确返回 unsupported，当前不偷偷降级到自研或分组均值。
 当前研究 release 与原研究 pin 不因本手册改变。先完成源代码与离线验证，再明确说明
 部署/发布情况，不能把“新文件可运行”说成“所有历史调用链已升级”。
+
+## 结果文件、目录与交接
+
+沿用现有 `FactorForgeContext` 和 workspace manifest；以下是位置说明，
+不要求旧 workspace 补建 `source/implementation` 等目录，也不迁移历史文件：
+
+```text
+<明确的研究 workspace>/
+  source/、implementation/       已声明的来源、实现及辅助代码（位置以 manifest 为准）
+  step3_runtime/                 run_step3/run_step3b 的运行副本及 meta
+  runs/<report_id>/              因子值、运行元数据和检查点
+    step3a_local_inputs/         准备后的日表；其他辅助输入按 manifest 显式引用
+  evaluations/<report_id>/<backend>/
+    evaluation_payload.json     指标、状态、身份和明确的文件引用
+    account/、diagnostics/       本 backend 生成的具体结果文件
+  reports/                      面向研究员的报告
+```
+
+输入和实现仍通过现有 manifest/resolver 定位，因子输出仍用
+`context.factor_values_path()`、`context.run_metadata_path()`。
+backend 用 `factor_factory.result_artifacts.prepare_result_paths(context, report_id,
+backend, files=..., directories=...)` 分配输出路径并创建父目录；它不移动或覆盖文件。
+相对文件名以该 backend 输出目录为基准，绝对路径必须仍在该目录内。
+
+写完具体文件后，以 `build_result_artifacts()` 构造引用，用 `write_result_payload()`
+校验并原子写入 payload。`artifacts` 是“角色 → 具体文件路径”，可选文件不可用时显式填
+`null`；`artifact_directories` 只记录目录位置。月度结果须逐项列出文件，不自动遍历目录，
+不能用一个目录代替文件清单。Step4 保存、原生校验、Step5 和续接记录使用同一规则。
+通用读写函数的相对路径都相对于显式绝对 `base_dir`，不使用当前工作目录猜测。
+
+可运行 [run_result_artifact_demo.py](../examples/manual_interface_replay/run_result_artifact_demo.py)：
+
+```bash
+python examples/manual_interface_replay/run_result_artifact_demo.py --output-dir '/tmp/结果文件 示例 workspace'
+```
+
+示例要求新的绝对目录，产生两个合成文件和 `evaluation_payload.json`。
+它只展示文件接口，不证明回测、指标完备性或研究结论。已有文件型 payload 保持兼容；
+目录误写进 `artifacts` 会明确报错。历史失败的受限引用修复见
+[本地代码评审续接](../skills/factor-forge-ultimate/references/local-code-review.md)，
+保留原 payload 字节和失败记录，不改数值、不重算，修复后仍须原生校验。

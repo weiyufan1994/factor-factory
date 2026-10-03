@@ -29,6 +29,7 @@ QLIB_NATIVE_STATUS_VALUES = {
 }
 
 from factor_factory.artifact_identity import assert_identity_matches_strict
+from factor_factory.result_artifacts import build_result_artifacts, resolve_result_path, validate_result_artifacts
 from factor_factory.evo_child_execution import validate_evo_child_execution_gate
 from factor_factory.primary_evaluator import (
     PRIMARY_REQUIRED_ARTIFACTS,
@@ -345,14 +346,24 @@ def main() -> None:
                 proposed_status = 'failed'
             if item.get('status') in {'success', 'partial'}:
                 payload_path = item.get('payload_path')
+                if payload_path:
+                    payload_path = resolve_result_path(payload_path, FACTORFORGE)
                 if not payload_path or not Path(payload_path).exists():
                     issues.append({'severity': 'error', 'code': 'BACKEND_PAYLOAD_MISSING', 'message': 'backend claims success/partial but payload_path is missing', 'evidence': item})
                     proposed_status = 'failed'
                 else:
                     payload = load_json(Path(payload_path))
+                    artifact_errors = validate_result_artifacts(payload, base_dir=FACTORFORGE)
+                    if artifact_errors:
+                        issues.append({'severity': 'error', 'code': 'BACKEND_RESULT_ARTIFACTS_INVALID',
+                                       'message': '; '.join(artifact_errors), 'evidence': {'payload_path': str(payload_path)}})
+                        proposed_status = 'failed'
+                        continue
+                    payload = {**payload, **build_result_artifacts(files=payload.get('artifacts') or {},
+                        directories=payload.get('artifact_directories'), base_dir=FACTORFORGE)}
                     payload_status = payload.get('status')
                     if payload_status in {'success', 'partial', 'failed', 'skipped'} and payload_status != item.get('status'):
-                        issues.append({'severity': 'error', 'code': 'BACKEND_STATUS_PAYLOAD_MISMATCH', 'message': 'backend run status must match payload status', 'evidence': {'backend_run': item.get('status'), 'payload': payload_status, 'payload_path': payload_path}})
+                        issues.append({'severity': 'error', 'code': 'BACKEND_STATUS_PAYLOAD_MISMATCH', 'message': 'backend run status must match payload status', 'evidence': {'backend_run': item.get('status'), 'payload': payload_status, 'payload_path': str(payload_path)}})
                         proposed_status = 'failed'
                     if item.get('backend') == 'qlib_backtest':
                         mandatory_qlib = bool((run_master.get('evaluation_plan') or {}).get('qlib_native_mandatory'))
@@ -465,7 +476,7 @@ def main() -> None:
                             issues.append({'severity': 'error', 'code': 'SELF_QUANT_LONG_SIDE_UNITS_MISSING', 'message': 'daily self_quant evidence must declare metric_period=daily and annualization_factor', 'evidence': long_side})
                             proposed_status = 'failed'
                     if primary_plan is not None and item.get('backend') == primary_plan['backend']:
-                        for issue in validate_primary_evaluator_payload(payload, eval_plan):
+                        for issue in validate_primary_evaluator_payload(payload, eval_plan, base_dir=FACTORFORGE):
                             issues.append({'severity': 'error', 'code': issue['code'], 'message': issue['message'], 'evidence': {'backend': primary_plan['backend']}})
                             proposed_status = 'failed'
                         artifacts = payload.get('artifacts') or {}

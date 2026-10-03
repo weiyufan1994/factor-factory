@@ -36,6 +36,7 @@ from factor_factory.data_access import (
     resolve_daily_snapshot_path,
 )
 from factor_factory.performance import PhaseTimer
+from factor_factory.result_artifacts import build_result_artifacts, write_result_payload
 from factor_factory.risk.drawdown_geometry import drawdown_geometry
 from factor_factory.research_api import evaluate_factor
 
@@ -1000,8 +1001,9 @@ def main() -> None:
     args = ap.parse_args()
     data = run_self_quant_quick(args.report_id)
     out = Path(args.output)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding='utf-8')
+    data.update(build_result_artifacts(files=data.get('artifacts') or {},
+                                      directories=data.get('artifact_directories'), base_dir=FF))
+    write_result_payload(out, data, base_dir=FF)
     print(f'[WRITE] {out}')
 
 

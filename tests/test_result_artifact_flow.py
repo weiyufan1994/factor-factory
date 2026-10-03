@@ -46,6 +46,7 @@ def _execute(case, name, argv, *, record=True):
     assert _flow(case).before_command(name, end_step='5', execution_context=context)['status'] == 'RUN'
     started = _now()
     cp = subprocess.run(argv, cwd=REPO, env={**os.environ, 'FACTORFORGE_ROOT': str(case['workspace']),
+                         'PYTHONPATH': str(REPO) + os.pathsep + os.environ.get('PYTHONPATH', ''),
                          'FACTORFORGE_RUNTIME_PYTHON': sys.executable, 'FACTORFORGE_LOCAL_IS_ONLY': '1'},
                         capture_output=True, text=True)
     result = dict(name=name, command=argv, cwd=str(REPO), started_at_utc=started, finished_at_utc=_now(),
@@ -117,7 +118,7 @@ for key, raw in ''' + repr(case['manifest']['step_io']['step4']['outputs']) + ''
     case['request']['helpers'].extend([{'path': str(adapter)}, {'path': str(driver)}])
     request_id = _ready(case)
     context, result = _execute(case, 'run_step4', [sys.executable, '-B', str(driver)], record=False)
-    assert result['returncode'] == 0, result
+    assert result['returncode'] == 0, result['stdout_tail'] + result['stderr_tail']
     proof = workspace / 'original-wrapper-failure.json'
     if legacy:
         with pytest.raises(HandoffError, match='ARTIFACT_FILE_REQUIRED') as error:

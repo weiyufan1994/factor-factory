@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import ast
+import math
 import re
 from fractions import Fraction
 from typing import Any
+
+from factor_factory.formula import parse_formula
+from factor_factory.formula.registry import canonical_operator_name, validate_operator_call
+from factor_factory.formula.semantics import operator_lookback
 
 
 DERIVATION_VERSION = "factorforge_formula_specific_derivation_v1"
@@ -90,6 +95,38 @@ def _walk_formula_ir(node: Any, operators: set[str], fields: set[str], constants
             pass
 
 
+def _recognized_formula_root(formula_ir: Any) -> dict[str, Any] | None:
+    """Recognize typed formula structure using the existing operator contract."""
+    if not isinstance(formula_ir, dict) or formula_ir.get("parse_status") not in (None, "success"):
+        return None
+
+    def recognize(node: Any) -> dict[str, Any]:
+        if not isinstance(node, dict):
+            raise ValueError("unrecognized formula node")
+        kind = node.get("type")
+        if kind == "field":
+            field = node.get("resolved_field") or node.get("name") or node.get("field")
+            if not isinstance(field, str) or not field.strip():
+                raise ValueError("missing field name")
+            return node
+        if kind == "constant":
+            value = node.get("value")
+            if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+                raise ValueError("invalid constant")
+            return node
+        if kind == "operator" and isinstance(node.get("args"), list):
+            op = canonical_operator_name(node.get("operator"))
+            args = [recognize(arg) for arg in node["args"]]
+            validate_operator_call(op, args)
+            return {**node, "operator": op, "args": args}
+        raise ValueError("unrecognized formula node")
+
+    try:
+        return recognize(formula_ir.get("root") or formula_ir)
+    except (KeyError, TypeError, ValueError, OverflowError):
+        return None
+
+
 def formula_features(spec_like: dict[str, Any], mechanism_analysis: dict[str, Any] | None = None) -> dict[str, Any]:
     canonical = _canonical(spec_like or {})
     operators = {str(item).lower() for item in _as_list(canonical.get("operators") or canonical.get("operator_set")) if str(item).strip()}
@@ -98,9 +135,51 @@ def formula_features(spec_like: dict[str, Any], mechanism_analysis: dict[str, An
         fields.update(str(item).lower() for item in _as_list(canonical.get(key)) if str(item).strip())
     constants: list[float] = []
     formula_ir = canonical.get("formula_ir") or spec_like.get("formula_ir")
-    if isinstance(formula_ir, dict):
-        _walk_formula_ir(formula_ir.get("root") or formula_ir, operators, fields, constants)
     formula_text = str(canonical.get("formula_text") or canonical.get("raw_formula_text") or spec_like.get("formula_text") or "")
+    # Only registered operator argument positions establish temporal windows.
+    # Unit scales, thresholds, code digits and free-text prose are not windows.
+    temporal_root = _recognized_formula_root(formula_ir)
+    temporal_source = "formula"
+    if temporal_root is None:
+        temporal_root = _recognized_formula_root(parse_formula(formula_text))
+    if temporal_root is None:
+        program = (canonical.get('mechanism_conditioned_measurement_program')
+                   or spec_like.get('mechanism_conditioned_measurement_program')
+                   or (mechanism_analysis or {}).get('mechanism_conditioned_measurement_program'))
+        observation = program.get('observation_and_estimation') if isinstance(program, dict) else None
+        projection = observation.get('executable_formula_projection') if isinstance(observation, dict) else None
+        if isinstance(projection, str) and projection.strip():
+            temporal_root = _recognized_formula_root(parse_formula(projection))
+            temporal_source = "measurement_program.executable_formula_projection"
+    windows: list[dict[str, Any]] = []
+    has_long_return_short_temporal_product = False
+    has_multiplication = False
+
+    def visit(node: Any) -> tuple[bool, bool]:
+        nonlocal has_long_return_short_temporal_product, has_multiplication
+        if not isinstance(node, dict) or node.get('type') != 'operator':
+            return False, False
+        op = str(node.get('operator') or '').lower()
+        args = node.get('args') or []
+        children = [visit(arg) for arg in args]
+        window = operator_lookback(node)
+        if window is not None:
+            windows.append({'operator': op, 'window': window, 'source': temporal_source})
+        operand = args[0] if args and isinstance(args[0], dict) else {}
+        is_return = (operand.get('type') == 'field' and str(operand.get('resolved_field') or operand.get('name')
+                      or operand.get('field') or '').lower() in {'returns', 'return', 'pct_chg'})
+        long_return = op == 'sum' and is_return and window is not None and window >= 120
+        short_change = op in {'delay', 'delta'} and window is not None and 1 <= window <= 20
+        if op in {'multiply', 'mul'}:
+            has_multiplication = True
+            has_long_return_short_temporal_product |= any(a != b and left[0] and right[1]
+                for a, left in enumerate(children) for b, right in enumerate(children))
+        return long_return or any(child[0] for child in children), short_change or any(child[1] for child in children)
+
+    temporal_known = temporal_root is not None
+    if temporal_known:
+        _walk_formula_ir(temporal_root, operators, fields, constants)
+    long_return, short_change = visit(temporal_root) if temporal_known else (False, False)
     text = formula_text.lower()
     for token in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]*", text):
         lower = token.lower()
@@ -131,9 +210,14 @@ def formula_features(spec_like: dict[str, Any], mechanism_analysis: dict[str, An
         "has_volume": bool(fields & {"volume", "vol", "amount", "turnover"}),
         "has_high_low": bool(fields & {"high", "low"}),
         "has_sign_or_threshold": bool(operators & {"sign", "where"}) or "sign(" in text or "where(" in text,
-        "has_long_window": any(value >= 120 for value in constants),
-        "has_250_window": any(value >= 240 for value in constants) or "250" in text,
-        "has_short_delay_or_delta": (bool(operators & {"delta", "delay"}) and any(1 <= value <= 20 for value in constants)) or bool(re.search(r"(delta|delay)\s*\([^)]*,\s*(?:7|5|10)", text)),
+        "window_analysis_status": 'known' if temporal_known else 'unknown',
+        "window_evidence": windows,
+        "has_long_window": any(item['window'] >= 120 for item in windows),
+        "has_250_window": any(item['window'] == 250 for item in windows),
+        "has_long_return_window": long_return,
+        "has_short_delay_or_delta": short_change,
+        "has_multiplication": has_multiplication,
+        "has_long_return_short_temporal_product": has_long_return_short_temporal_product,
         "has_raw_additive": bool(operators & {"plus", "minus"}) or "+" in formula_text or "-" in formula_text,
         "has_open_close_position": bool(fields & {"open"}) and bool(fields & {"close"}) and (
             bool(operators & {"divide", "div", "minus", "negate", "signedpower"})
@@ -148,26 +232,26 @@ def build_formula_understanding(spec_like: dict[str, Any]) -> dict[str, Any]:
     fields = set(features.get("fields") or [])
     components: list[dict[str, Any]] = []
 
-    if features.get("has_250_window"):
+    if features.get("has_long_return_window"):
         components.append({
             "component": "long_window_return_sum",
-            "formula_feature": "sum(returns, 250) or equivalent long rolling return window",
-            "economic_state": "slow winner / long-window trend state",
-            "modelling_role": "persistent state M_i,t that conditions whether short-horizon moves are continuation or pullback opportunities",
+            "formula_feature": "sum(returns, declared long window)",
+            "economic_state": "long-window return aggregate; economic interpretation requires the selected model",
+            "modelling_role": "aggregates observed returns over a declared window; does not establish a predictive mechanism",
         })
     elif features.get("has_long_window"):
         components.append({
             "component": "long_window_state",
-            "formula_feature": "long rolling window",
-            "economic_state": "slow-moving state",
-            "modelling_role": "persistent component in the conditional return process",
+            "formula_feature": "declared long temporal window or lag",
+            "economic_state": "long-history observable; economic interpretation requires the selected model",
+            "modelling_role": "declared temporal dependency, without inferring a return-trend mechanism",
         })
     if features.get("has_short_delay_or_delta"):
         components.append({
-            "component": "short_horizon_price_change",
-            "formula_feature": "close-delay(close,k), delta(close,k), or equivalent short horizon difference",
-            "economic_state": "short-horizon pullback / reversal / temporary dislocation state",
-            "modelling_role": "temporary shock or short-state I_i,t interacting with slow state",
+            "component": "short_horizon_lag_or_difference",
+            "formula_feature": "delay(input,k) or delta(input,k) at a declared short horizon",
+            "economic_state": "short-horizon lag or difference of the declared input; economic interpretation requires the selected model",
+            "modelling_role": "short temporal change or lag; its interaction with other states requires explicit evidence",
         })
     if features.get("has_sign_or_threshold"):
         components.append({
@@ -190,12 +274,12 @@ def build_formula_understanding(spec_like: dict[str, Any]) -> dict[str, Any]:
             "economic_state": "relative cross-sectional state / conditional rank position",
             "modelling_role": "maps raw state estimates into rank-state U_i,t for cross-sectional payoff testing",
         })
-    if operators & {"multiply", "mul"} or "multiply(" in str(features.get("formula_text") or "").lower() or "*" in str(features.get("formula_text") or ""):
+    if features.get('has_multiplication'):
         components.append({
             "component": "state_interaction",
             "formula_feature": "multiplication / interaction",
-            "economic_state": "interaction between state variables",
-            "modelling_role": "tests conditional payoff from slow state times short-horizon state rather than either component alone",
+            "economic_state": "product of declared operands, including possible unit scaling",
+            "modelling_role": "multiplication alone does not identify economic states or their time horizons",
         })
     if not components:
         components.append({
@@ -205,13 +289,11 @@ def build_formula_understanding(spec_like: dict[str, Any]) -> dict[str, Any]:
             "modelling_role": "requires researcher-specific state interpretation",
         })
 
-    if features.get("has_250_window") and features.get("has_short_delay_or_delta") and features.get("has_sign_or_threshold"):
-        interaction = "slow_state_x_short_horizon_threshold"
+    if features.get("has_long_return_short_temporal_product"):
+        interaction = "long_return_aggregate_x_short_lag_or_difference"
         latent = [
-            "slow winner / long-window trend state",
-            "short-horizon pullback / reversal / temporary dislocation state",
-            "threshold migration around sign boundary",
-            "cross-sectional rank-state if rank is present",
+            "product with a long-window return aggregate and a short-horizon lag or difference in distinct operands",
+            "economic mechanism, payoff direction, and payer remain researcher-defined",
         ]
     elif features.get("has_open_close_position"):
         interaction = "open_close_intraday_position"
@@ -251,10 +333,7 @@ def select_math_model_from_economic_hypothesis(
     interaction = understanding.get("interaction_structure")
     candidates = math_hypothesis_candidates or []
     credible_families = {str(item.get("model_family")) for item in candidates if isinstance(item, dict) and item.get("model_family")}
-    if interaction == "slow_state_x_short_horizon_threshold":
-        family = "stochastic_process"
-        why = "Formula understanding identifies slow winner / long-window state interacting with short-horizon reversal/dislocation and sign-threshold boundary."
-    elif candidates and next((item.get("model_family") for item in candidates if isinstance(item, dict) and item.get("model_family")), None):
+    if candidates and next((item.get("model_family") for item in candidates if isinstance(item, dict) and item.get("model_family")), None):
         family = str(next(item.get("model_family") for item in candidates if isinstance(item, dict) and item.get("model_family")))
         why = "Selected from Step1 math_hypothesis_candidates because it is explicit and formula-specific."
     elif interaction == "price_volume_dependence":
@@ -293,16 +372,8 @@ def build_formula_specific_headline(
     subtype = str(second.get("subtype") or "").strip()
     payer = str(second.get("expected_counterparty_or_payer") or "").strip()
     why_pay = str(second.get("why_they_may_pay") or "").strip()
-    interaction = str(formula_understanding.get("interaction_structure") or "").strip()
     model_family = str(math_selection_obj.get("model_family") or math_selection_obj.get("selected_baseline_model") or "").strip()
 
-    if interaction == "slow_state_x_short_horizon_threshold":
-        return (
-            "Formula estimates a slow winner state interacting with short-horizon pullback and sign-threshold migration; "
-            f"expected payoff comes from {payer or 'trend extrapolators or delayed updaters'} because "
-            f"{why_pay or 'they react late to conditional state migration'}; selected math model is "
-            f"{model_family or 'stochastic_process'}."
-        )
     if subtype and why_pay:
         return (
             f"Formula-specific thesis: {subtype}; payer: {payer or 'under-specified counterparty'}; "
@@ -1475,8 +1546,6 @@ def _select_baseline_model(economic_text: str, features: dict[str, Any]) -> str:
         return "copula_rank_dependence"
     if features.get("has_sign_or_threshold"):
         return "jump_threshold"
-    if features.get("has_long_window") or features.get("has_short_delay_or_delta"):
-        return "stochastic_process"
     return "other"
 
 
@@ -1657,14 +1726,7 @@ def build_formula_specific_derivation(
         spec_like,
         mechanism_analysis,
     )
-    if interaction_structure == "slow_state_x_short_horizon_threshold":
-        economic = (
-            "Formula-specific hypothesis: a slow winner or long-window trend state interacts with a "
-            "short-horizon reversal, pullback, temporary dislocation, or sign-threshold boundary. "
-            "Delayed updaters, trend extrapolators, or liquidity-demand accounts may pay when the "
-            "short-state boundary misprices the next-horizon payoff conditional on the slow state."
-        )
-    elif interaction_structure == "open_close_intraday_position":
+    if interaction_structure == "open_close_intraday_position":
         economic = (
             "Formula-specific hypothesis: an open/close relative-position transform estimates overnight-to-intraday "
             "pressure, opening-gap digestion, or close-location reversal. Overnight extrapolators, opening auction "
@@ -1673,19 +1735,19 @@ def build_formula_specific_derivation(
         )
     baseline = selected_baseline or _select_baseline_model(economic, features)
     components: list[dict[str, Any]] = []
-    if features["has_250_window"]:
+    if features["has_long_return_window"]:
         components.append({
             "component": "long_window_return_sum",
             "formula_feature": "sum(returns, long window)",
-            "state_interpretation": "slow winner or trend state over a long information horizon",
-            "mechanism_requirement": "explain why a persistent winner state remains compensated rather than fully arbitraged",
+            "state_interpretation": "long-window aggregate of observed returns",
+            "mechanism_requirement": "justify the aggregate and window using the selected model and evidence",
         })
     if features["has_short_delay_or_delta"]:
         components.append({
-            "component": "short_horizon_price_change",
+            "component": "short_horizon_lag_or_difference",
             "formula_feature": "delta/delay over short horizon",
-            "state_interpretation": "short-horizon reversal, pullback, or temporary dislocation state",
-            "mechanism_requirement": "explain why recent move reverses or interacts with the slow state",
+            "state_interpretation": "short-horizon lag or difference of the declared input",
+            "mechanism_requirement": "justify this input and temporal transform using the selected model and evidence",
         })
     if features["has_sign_or_threshold"]:
         components.append({
@@ -1838,8 +1900,6 @@ def _mechanism_for_baseline(baseline: str, features: dict[str, Any]) -> str:
     if baseline == "stochastic_process":
         if features.get("has_open_close_position"):
             return "stochastic intraday-to-next-horizon return process with an opening-gap or close-location state that may drift, reverse, or decay after the observed session"
-        if features.get("has_250_window") and features.get("has_short_delay_or_delta"):
-            return "price return process combining a slow winner/trend state with a short-horizon reversal or dislocation state"
         return "stochastic return process with drift, reversal, volatility, or jump components estimated from legal history"
     if baseline == "cointegration":
         return "z_t=y_t-beta*x_t with stationary equilibrium error z_t; the estimator measures economically justified displacement from the equilibrium relation"
@@ -2124,16 +2184,6 @@ def validate_mechanism_formula_consistency(
         failures.append({
             "code": "BLOCK_MECHANISM_FORMULA_OPERATOR_OMISSION",
             "message": "formula uses sign/threshold but derivation does not discuss discontinuity, threshold, turnover, or bucket instability",
-        })
-    if features["has_250_window"] and not any(term in text for term in ["slow", "trend", "winner", "long horizon", "long-window", "persistent"]):
-        failures.append({
-            "code": "BLOCK_MECHANISM_FORMULA_OPERATOR_OMISSION",
-            "message": "formula uses long return window but derivation does not discuss slow state, trend, winner state, or long horizon",
-        })
-    if features["has_short_delay_or_delta"] and not any(term in text for term in ["reversal", "dislocation", "temporary", "short-horizon", "short horizon", "pullback"]):
-        failures.append({
-            "code": "BLOCK_MECHANISM_FORMULA_OPERATOR_OMISSION",
-            "message": "formula uses short delta/delay but derivation does not discuss reversal, dislocation, temporary state, or short horizon",
         })
     return {
         "version": CONSISTENCY_VERSION,

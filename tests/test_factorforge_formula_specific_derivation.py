@@ -4,7 +4,15 @@ from copy import deepcopy
 import hashlib
 import json
 
+import pytest
+
+from factor_factory.formula import parse_formula
 from factor_factory.mechanism_math.formula_specific import (
+    build_formula_specific_derivation,
+    build_formula_specific_headline,
+    build_formula_understanding,
+    formula_features,
+    select_math_model_from_economic_hypothesis,
     validate_mechanism_formula_consistency,
     validate_formula_specific_derivation,
 )
@@ -12,6 +20,131 @@ from factor_factory.mechanism_math.main_agent_memo import (
     formula_specific_derivation_from_main_agent_memo,
     validate_main_agent_mechanism_memo,
 )
+
+
+@pytest.mark.parametrize('formula', ['1000*amount', '250*amount', 'amount/250',
+                                    'where(amount>250,amount,0)', 'multiply(1000,amount)'])
+def test_scales_and_thresholds_are_not_temporal_windows(formula):
+    spec = {'canonical_spec': {'formula_text': formula}}
+    features = formula_features(spec)
+    assert features['has_long_window'] is features['has_250_window'] is False
+    assert not features['window_evidence']
+    understanding = build_formula_understanding(spec)
+    assert understanding['interaction_structure'] != 'slow_state_x_short_horizon_threshold'
+    assert 'slow state times short-horizon' not in json.dumps(understanding)
+    assert 'sum(returns' not in json.dumps(understanding)
+
+
+def test_registered_temporal_positions_separate_lags_from_scales():
+    features = formula_features({'formula_text': '1000*amount*delay(close,2)'})
+    assert features['has_short_delay_or_delta'] and not features['has_long_window']
+    assert [(item['operator'], item['window']) for item in features['window_evidence']] == [('delay', 2)]
+
+
+def test_actual_long_return_sum_and_nonreturn_window_are_distinct():
+    returns = formula_features({'formula_text': 'sum(returns,250)'})
+    assert returns['has_250_window'] and returns['has_long_return_window']
+    volume_spec = {'formula_text': 'sum(amount,250)'}
+    volume = formula_features(volume_spec)
+    assert volume['has_250_window'] and not volume['has_long_return_window']
+    assert 'slow winner' not in json.dumps(build_formula_understanding(volume_spec))
+    assert not formula_features({'formula_text': 'sum(returns,240)'})['has_250_window']
+
+
+def test_temporal_interaction_requires_same_product_branches():
+    actual = {'formula_text': 'sum(returns,250)*sign(delta(close,5))'}
+    unrelated = {'formula_text': '1000*amount+sum(returns,250)+sign(delta(close,5))'}
+    assert build_formula_understanding(actual)['interaction_structure'] == 'long_return_aggregate_x_short_lag_or_difference'
+    assert formula_features(unrelated)['has_multiplication']
+    assert not formula_features(unrelated)['has_long_return_short_temporal_product']
+    assert build_formula_understanding(unrelated)['interaction_structure'] != 'long_return_aggregate_x_short_lag_or_difference'
+
+
+def test_unsupported_direct_code_does_not_guess_windows():
+    code = {'formula_text': 'def feature():\n    n=250\n    return 1000*amount'}
+    features = formula_features(code)
+    assert features['window_analysis_status'] == 'unknown' and features['window_evidence'] == []
+    assert not features['has_250_window'] and not features['has_short_delay_or_delta']
+    assert 'long_window_return_sum' not in json.dumps(build_formula_understanding(code))
+
+
+def test_explicit_measurement_projection_can_supply_recognized_window():
+    spec = {'formula_text': 'implementation://custom.py', 'mechanism_conditioned_measurement_program': {
+        'observation_and_estimation': {'executable_formula_projection': 'sum(returns,250)'}}}
+    features = formula_features(spec)
+    assert features['window_analysis_status'] == 'known' and features['has_250_window']
+    assert features['window_evidence'][0]['source'] == 'measurement_program.executable_formula_projection'
+    spec['mechanism_conditioned_measurement_program']['observation_and_estimation']['executable_formula_projection'] = 'unknown_program_250(amount)'
+    assert formula_features(spec)['window_analysis_status'] == 'unknown'
+
+
+@pytest.mark.parametrize('ir', [
+    {}, {'parse_status': 'failed', 'root': {}},
+    {'parse_status': 'success', 'root': {'type': 'unsupported', 'window': 250}},
+    {'type': 'operator', 'operator': 'custom_250', 'args': []},
+    {'type': 'operator', 'operator': 'delay', 'args': [
+        {'type': 'field', 'name': 'amount'}, {'type': 'constant', 'value': 2.5}]},
+    {'type': 'operator', 'operator': 'sum', 'args': [
+        {'type': 'field', 'name': 'returns'}, {'type': 'constant', 'value': 250},
+        {'type': 'unsupported'}]},
+    {'type': 'operator', 'operator': 'delay', 'args': 250},
+])
+def test_unrecognized_ir_stays_unknown_or_falls_back_to_valid_text(ir):
+    unknown = formula_features({'formula_ir': ir, 'formula_text': 'implementation://custom.py'})
+    assert unknown['window_analysis_status'] == 'unknown'
+    assert unknown['window_evidence'] == []
+    assert not unknown['has_long_window'] and not unknown['has_short_delay_or_delta']
+    recovered = formula_features({'formula_ir': ir, 'formula_text': 'delay(amount,2)'})
+    assert recovered['window_analysis_status'] == 'known'
+    assert [item['window'] for item in recovered['window_evidence']] == [2]
+
+
+def test_recognized_typed_ir_and_text_have_same_temporal_evidence():
+    text = '1000*amount*delay(amount,2)'
+    expected = formula_features({'formula_text': text})
+    parsed = parse_formula(text)
+    for ir in (parsed, parsed['root']):
+        actual = formula_features({'formula_ir': ir})
+        assert actual['window_analysis_status'] == 'known'
+        assert actual['window_evidence'] == expected['window_evidence']
+        assert actual['has_short_delay_or_delta'] and not actual['has_long_window']
+
+
+def test_temporal_structure_does_not_invent_economic_model_or_payer():
+    spec = {'formula_text': 'sum(returns,250)*delay(amount,2)'}
+    understanding = build_formula_understanding(spec)
+    neutral = json.dumps(understanding)
+    for invented in ('slow winner', 'pullback', 'reversal', 'price_change'):
+        assert invented not in neutral
+    assert select_math_model_from_economic_hypothesis({}, [], understanding)['model_family'] == 'other'
+    explicit = select_math_model_from_economic_hypothesis(
+        {}, [{'model_family': 'dimensional_scaling'}], understanding)
+    assert explicit['model_family'] == 'dimensional_scaling'
+    assert 'under-specified' in build_formula_specific_headline({}, explicit, understanding)
+    economics = {'second_layer': {'subtype': 'declared scale model',
+                                 'expected_counterparty_or_payer': 'declared payer',
+                                 'why_they_may_pay': 'declared constraint'}}
+    headline = build_formula_specific_headline(economics, explicit, understanding)
+    assert 'declared payer' in headline and 'declared constraint' in headline
+    assert 'trend extrapolators' not in headline
+    derived = build_formula_specific_derivation(spec, {})
+    assert derived['selected_model_family'] == 'other'
+    assert 'slow winner' not in json.dumps(derived)
+    assert 'temporary dislocation' not in json.dumps(derived)
+
+
+def test_temporal_consistency_does_not_require_an_invented_economic_story():
+    spec = {'formula_text': 'sum(returns,250)*delay(amount,2)'}
+    explanation = {'explanation': 'Declared aggregation and lag estimate the selected observable.'}
+    assert validate_mechanism_formula_consistency(spec, {}, explanation)['status'] == 'PASS'
+    # A mathematical discontinuity still requires discussion; the fix does not
+    # disable the separate sign/threshold obligation or field contradictions.
+    threshold = {'formula_text': 'sum(returns,250)*sign(delta(close,5))'}
+    failures = validate_mechanism_formula_consistency(threshold, {}, explanation)['failures']
+    assert any('sign/threshold' in item['message'] for item in failures)
+    contradiction = {'explanation': 'A volume correlation model explains this feature.'}
+    failures = validate_mechanism_formula_consistency(threshold, {}, contradiction)['failures']
+    assert any(item['code'] == 'BLOCK_MECHANISM_FORMULA_FIELD_CONTRADICTION' for item in failures)
 
 
 def _overnight_reversal_derivation() -> dict:

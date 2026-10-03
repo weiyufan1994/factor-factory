@@ -285,8 +285,8 @@ def build_formula_understanding(spec_like: dict[str, Any]) -> dict[str, Any]:
         components.append({
             "component": "primary_formula_state",
             "formula_feature": features.get("formula_text") or "formula_ir",
-            "economic_state": "formula-defined latent state",
-            "modelling_role": "requires researcher-specific state interpretation",
+            "economic_state": "unresolved formula interpretation; use the declared mathematical object or measurement program",
+            "modelling_role": "requires researcher-specific interpretation without assuming a latent state",
         })
 
     if features.get("has_long_return_short_temporal_product"):

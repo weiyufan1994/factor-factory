@@ -66,6 +66,7 @@ def test_unsupported_direct_code_does_not_guess_windows():
     assert features['window_analysis_status'] == 'unknown' and features['window_evidence'] == []
     assert not features['has_250_window'] and not features['has_short_delay_or_delta']
     assert 'long_window_return_sum' not in json.dumps(build_formula_understanding(code))
+    assert build_formula_understanding(code)['component_interpretations'][0]['economic_state'].startswith('unresolved')
 
 
 def test_explicit_measurement_projection_can_supply_recognized_window():

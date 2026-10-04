@@ -75,6 +75,9 @@ def run(args):
     basis = prepared['price_basis_id']
     if not isinstance(basis, str) or not basis.strip():
         raise ValueError('explicit_fixed_price_basis_required')
+    group_boundary = prepared['group_boundary']
+    if group_boundary not in {'lower', 'upper'}:
+        raise ValueError('explicit_group_boundary_must_be_lower_or_upper')
     artifacts_dir = out.with_suffix('')
     artifacts_dir.mkdir(parents=True, exist_ok=False)
     backend = os.environ.get('STEP4_BACKEND_NAME', 'calendar_month_account')
@@ -93,7 +96,8 @@ def run(args):
                             'runtime_manifest_sha256': digest(args.manifest),
                             'adapter_framework_commit': current_source_commit(ROOT),
                             'adapter_source_root': str(ROOT), 'adapter_source_sha256': {p: digest(ROOT / p) for p in source_names},
-                            'price_basis_id': basis, 'is_start': str(start.date()), 'is_end': str(end.date()),
+                            'price_basis_id': basis, 'group_boundary': group_boundary,
+                            'is_start': str(start.date()), 'is_end': str(end.date()),
                             'pin_changed_by_adapter': False}}
     def checkpoint():
         write_json_atomic(out, clean(payload))
@@ -163,7 +167,8 @@ def run(args):
                        observation_status='attempted_do_not_reset_trial')
         checkpoint()
         result = backtest_calendar_month(factor, calendar=calendar, membership=membership, market=market,
-                                        price_basis_id=basis, retain_holdings=False, sinks=sinks, on_complete=complete)
+                                        price_basis_id=basis, group_boundary=group_boundary,
+                                        retain_holdings=False, sinks=sinks, on_complete=complete)
         for key in ('coverage', 'monthly_ic', 'monthly_labels'):
             path = artifacts_dir / (key + '.csv')
             result[key].to_csv(path, index=False)
@@ -179,6 +184,7 @@ def run(args):
                        io_profile=reader.profile,
                        diagnostics={'label': 'observed_adjusted_close_next_monthly_entry_over_entry_minus_one',
                                     'five_groups': 'finite_formation_signal_midrank_percentile_before_labels; available_label_mean',
+                                    'five_group_boundary_equality': group_boundary,
                                     'top_minus_bottom': 'monthly_label_diagnostic_not_short_account',
                                     'hac3': 'Bartlett calendar slots retained; observed-score sandwich; no finite-sample multiplier',
                                     'partial_rank_ic': 'separate_public_statistic_not_computed_here'})

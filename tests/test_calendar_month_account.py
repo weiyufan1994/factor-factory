@@ -246,6 +246,7 @@ def prepared_fixture(tmp_path):
     factor.to_parquet(factor_path, index=False)
     prepared = {'report_id': rid, 'scope': 'local_is_only', 'is_start': str(cal[0].date()),
                 'is_end': str(cal[-1].date()), 'price_basis_id': 'synthetic_fixed_snapshot',
+                'group_boundary': 'lower',
                 'membership_semantics': 'explicit_pit_true_membership_flag', 'files': {}}
     frames = {'calendar': pd.DataFrame({'trade_date': cal}), 'membership': members.assign(is_member=True),
               'daily': market[['ts_code', 'trade_date', 'price']].rename(columns={'price': 'close_adj'}),
@@ -282,6 +283,7 @@ def test_step4_actual_subprocess_adapter_and_primary_result_contract(tmp_path, m
     assert all(Path(p).is_file() for p in payload['artifacts'].values())
     assert payload['io_profile']['full_market_frame_loaded'] is False
     assert payload['bindings']['pin_changed_by_adapter'] is False
+    assert payload['bindings']['group_boundary'] == 'lower'
     assert 'gross_zero_cost_counterfactual_annual_return' not in payload['long_side_performance']
     assert payload['gross_shadow_performance']['return_basis'] == 'same_base30bp_units_fee_refund_idle_cash_shadow'
     assert Path(args.manifest).read_text() == json.dumps({'contract_version': 'factorforge_runtime_context_v2', 'report_id': args.report_id,
@@ -383,3 +385,31 @@ def test_mid_account_failure_preserves_partial_ledger_without_complete_nav(tmp_p
     assert payload['results_computed'] is None
     assert payload['performance']['net_valuation_complete'] is False
     assert not pd.read_csv(payload['artifacts']['base30bp_trades']).empty
+
+
+@pytest.mark.parametrize('boundary', ['lower', 'upper'])
+def test_five_group_exact_cuts_keep_ties_whole_and_choose_explicit_side(boundary):
+    cal, windows, members, factor, market = monthly_fixture()
+    # At N=10 each tied pair has rank 2.5/4.5/6.5/8.5, so its percentile
+    # is exactly .2/.4/.6/.8. Independent hand group counts distinguish sides.
+    values = [0., 1., 1., 2., 2., 3., 3., 4., 4., 5.]
+    day = factor.loc[factor.trade_date.eq(windows.entry_date.iloc[0])].iloc[:10].copy()
+    day['factor_value'] = values
+    periods, _ = calendar_month_diagnostics(day, windows.iloc[:1], market,
+                                           price_basis_id='synthetic_fixed_snapshot', group_boundary=boundary)
+    counts = [periods[f'group_{g}_selected_n'].iloc[0] for g in range(1, 6)]
+    assert counts == ([3, 2, 2, 2, 1] if boundary == 'lower' else [1, 2, 2, 2, 3])
+    assert sum(counts) == 10
+
+
+def test_group_boundary_changes_neither_account_nor_ic_and_invalid_choice_rejects():
+    cal, windows, members, factor, market = monthly_fixture()
+    kwargs = dict(calendar=cal, membership=members, market=market, price_basis_id='synthetic_fixed_snapshot')
+    lower = backtest_calendar_month(factor, **kwargs, group_boundary='lower')
+    upper = backtest_calendar_month(factor, **kwargs, group_boundary='upper')
+    assert lower['ic_summary'] == upper['ic_summary']
+    for name in ['base30bp', 'stress60bp']:
+        for key in ['daily_nav', 'trades', 'stale_marks']:
+            assert_frame_equal(lower['accounts'][name][key], upper['accounts'][name][key], check_exact=True)
+    with pytest.raises(ValueError, match='group_boundary'):
+        backtest_calendar_month(factor, **kwargs, group_boundary='unspecified')

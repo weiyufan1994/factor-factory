@@ -54,6 +54,7 @@ result = backtest_calendar_month(
     membership=formation_true_member_rows,  # ts_code, trade_date at formation
     market=account_market,
     price_basis_id=fixed_snapshot_id,
+    group_boundary="lower",  # exact cut equality belongs to the lower group
 )
 ```
 
@@ -71,7 +72,10 @@ close at next monthly entry divided by entry close minus one. Missing endpoints
 and immature last labels stay missing. The first or next available price never
 substitutes. Raw Pearson and average-tie Rank IC use paired observations.
 Five-group diagnostics rank finite formation signals before labels, using
-`(average_rank-.5)/N` and cuts .2/.4/.6/.8 (boundary enters the upper group).
+`(average_rank-.5)/N` and cuts .2/.4/.6/.8. `group_boundary="lower"` (default)
+puts equality in the lower group; `"upper"` explicitly selects the alternative.
+Ties remain intact in either case. This parameter affects only the five-group
+label diagnostic, not IC, the upper-decile account, or factor values.
 Each group reports selected and observed-label counts. Empty groups and missing
 labels are unavailable, and top-minus-bottom is a label diagnostic.
 
@@ -114,7 +118,8 @@ review or research acceptance. Formal research still enters through Ultimate.
 The existing prepared-input envelope remains `files[role] = {path, sha256,
 columns}` with canonical-to-source column maps and absolute paths. Required
 top-level fields are the current `report_id`, `scope="local_is_only"`, explicit
-`is_start`, `is_end`, `price_basis_id` and `membership_semantics`.
+`is_start`, `is_end`, `price_basis_id`, `membership_semantics`, and an explicit
+`group_boundary` (`"lower"` or `"upper"`) matching the frozen research specification.
 
 | Role | Canonical columns |
 | --- | --- |

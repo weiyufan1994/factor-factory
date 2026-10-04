@@ -92,12 +92,14 @@ def _market_day(market, day, symbols):
     return frame
 
 
-def calendar_month_diagnostics(values, windows, market, *, price_basis_id):
+def calendar_month_diagnostics(values, windows, market, *, price_basis_id, group_boundary='lower'):
     """Observed adjusted close(e_next)/close(e)-1, never stale/next-valid quotes.
 
     Five groups are formed on all finite formation signals before reading labels;
     means disclose the available label counts. They are not accounts or shorts.
     """
+    if group_boundary not in {'lower', 'upper'}:
+        raise ValueError('group_boundary must be lower or upper')
     periods, labels = [], []
     for w in windows.itertuples(index=False):
         day = values.loc[values.trade_date.eq(w.entry_date), ['ts_code', 'factor_value']].copy()
@@ -126,7 +128,8 @@ def calendar_month_diagnostics(values, windows, market, *, price_basis_id):
             row[key] = paired.factor_value.corr(paired.forward_return, method=method) if reason is None else np.nan
         finite = day.loc[day.factor_value.notna()].copy()
         percentile = (finite.factor_value.rank(method='average') - .5) / len(finite) if len(finite) else pd.Series(dtype=float)
-        finite['group'] = np.searchsorted([.2, .4, .6, .8], percentile, side='right') + 1
+        finite['group'] = np.searchsorted([.2, .4, .6, .8], percentile,
+                                          side='left' if group_boundary == 'lower' else 'right') + 1
         for group in range(1, 6):
             selected = finite.loc[finite.group.eq(group), 'forward_return']
             row[f'group_{group}_selected_n'] = len(selected)
@@ -140,7 +143,7 @@ def calendar_month_diagnostics(values, windows, market, *, price_basis_id):
 
 
 def backtest_calendar_month(factor_values, *, calendar, membership, market, price_basis_id,
-                            retain_holdings=True, sinks=None, on_complete=None):
+                            group_boundary='lower', retain_holdings=True, sinks=None, on_complete=None):
     """Public calendar-month account; same accepted kernel, two independent fees.
 
     market is keyed trade_date/ts_code with price (adjusted mark), raw execution
@@ -150,6 +153,8 @@ def backtest_calendar_month(factor_values, *, calendar, membership, market, pric
     """
     if not isinstance(price_basis_id, str) or not price_basis_id.strip():
         raise ValueError('explicit fixed price_basis_id required')
+    if group_boundary not in {'lower', 'upper'}:
+        raise ValueError('group_boundary must be lower or upper')
     calendar = _dates(calendar, name='calendar')
     windows, values, targets, coverage = calendar_month_targets(factor_values, calendar=calendar, membership=membership)
     if isinstance(market, pd.DataFrame):
@@ -167,7 +172,8 @@ def backtest_calendar_month(factor_values, *, calendar, membership, market, pric
         accounts[name] = account
         if on_complete is not None:
             on_complete(name, account)
-    periods, labels = calendar_month_diagnostics(values, windows, market, price_basis_id=price_basis_id)
+    periods, labels = calendar_month_diagnostics(values, windows, market, price_basis_id=price_basis_id,
+                                                group_boundary=group_boundary)
     summary = {}
     for key in ('pearson_ic', 'rank_ic'):
         available = periods[key].dropna()
@@ -179,7 +185,7 @@ def backtest_calendar_month(factor_values, *, calendar, membership, market, pric
         summary[key + '_hac3'] = hac_mean(periods[key].to_numpy(float))
     return {'accounts': accounts, 'windows': windows, 'coverage': coverage,
             'monthly_ic': periods, 'monthly_labels': labels, 'ic_summary': summary,
-            'price_basis_id': price_basis_id, 'account_simulation': True,
+            'price_basis_id': price_basis_id, 'group_boundary': group_boundary, 'account_simulation': True,
             'stress_comparison': 'same_signal_rules_dates_constraints_independent_fee_aware_quantities_not_same_unit_path',
             'tradable_net_alpha_evidence': False}
 
@@ -239,4 +245,3 @@ def hac_mean(slots):
             "positive_p": .5*math.erfc(mean/se/math.sqrt(2)) if se > 0 else None,
             "negative_p": .5*math.erfc(-mean/se/math.sqrt(2)) if se > 0 else None,
             "missing_slots": np.flatnonzero(~mask).tolist()}
-

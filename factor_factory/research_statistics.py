@@ -11,6 +11,18 @@ import numpy as np
 import pandas as pd
 
 
+def zero_variation_at_float_precision(values) -> bool:
+    """Relative float64 guard shared by mean inference, independent of units."""
+    values = np.asarray(values, dtype=float)
+    if values.ndim != 1 or not np.isfinite(values).all():
+        raise ValueError('precision check requires a finite one-dimensional sequence')
+    if len(values) < 2:
+        return False
+    scale = float(np.abs(values).max())
+    scaled = values / scale if scale else values
+    return float(np.ptp(scaled)) <= 16 * np.finfo(float).eps
+
+
 def newey_west_mean(values, lags: int) -> dict:
     """Bartlett HAC variance of a mean; covariance denominator is T, no ddof.
 
@@ -36,7 +48,7 @@ def newey_west_mean(values, lags: int) -> dict:
     # error and enormous significance. This tolerance is RELATIVE to the
     # coefficient scale, so changing factor/return units does not erase real
     # variation in small coefficients. Scale before squaring to avoid underflow.
-    if float(np.ptp(scaled)) <= 16 * np.finfo(float).eps:
+    if zero_variation_at_float_precision(scaled):
         result['reason'] = 'zero_variation_at_float_precision'
         return result
     centered = scaled - scaled_mean

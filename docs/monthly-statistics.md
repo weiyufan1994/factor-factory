@@ -52,7 +52,12 @@ reuses `calendar_month.hac_mean`: Bartlett lag3, original month slots retained,
 observed-score sandwich with denominator n_observed squared, no finite-sample
 multiplier. Missing centered scores contribute zero to the sandwich; missing
 monthly statistics are not filled with zero observations. Nonpositive SE stays
-Unknown. Normal-approximation 95% two-sided intervals and 99.5% one-sided lower
+Unknown. Both monthly and generic mean inference share the existing float64
+zero-variation guard: the observed range after dividing by maximum absolute
+value must exceed 16*eps. Thus last-bit OLS roundoff around a constant coefficient
+cannot produce significance. The guard is relative, so tiny units do not erase
+real relative variation; the nondegenerate calendar-slot HAC formula is unchanged.
+Normal-approximation 95% two-sided intervals and 99.5% one-sided lower
 bounds are descriptive inference, not a research or promotion decision.
 
 ```python

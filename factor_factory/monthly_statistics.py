@@ -13,7 +13,9 @@ import pandas as pd
 
 from factor_factory.calendar_month import hac_mean
 from factor_factory.research_api import _dates, _frame, _index, _numeric
-from factor_factory.research_statistics import fama_macbeth_periods, partial_rank_ic_periods
+from factor_factory.research_statistics import (
+    fama_macbeth_periods, partial_rank_ic_periods, zero_variation_at_float_precision,
+)
 
 RAW_CONTROL_NAMES = ('size_raw', 'value_raw', 'volatility_raw', 'activity_raw',
                      'low_price_raw', 'short_reversal_raw', 'momentum_raw')
@@ -66,6 +68,12 @@ def calendar_slot_hac3(values):
     elif not math.isfinite(mean) or (se is not None and not math.isfinite(se)):
         result.update(mean=mean if math.isfinite(mean) else None, se=None,
                       positive_p=None, negative_p=None, reason='numeric_overflow')
+    elif zero_variation_at_float_precision(x[np.isfinite(x)]):
+        # Mathematically constant fitted coefficients can differ by a few ulps.
+        # Reuse the generic mean-inference guard, relative to observed scale;
+        # no absolute SE floor, gap compression or change to the HAC kernel.
+        result.update(se=None, positive_p=None, negative_p=None,
+                      reason='zero_variation_at_float_precision')
     elif se is None or se <= 0:
         result['reason'] = 'nonpositive_standard_error'
     elif not all(math.isfinite(v) for v in (mean, se, mean / se)):

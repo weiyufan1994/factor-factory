@@ -17,7 +17,7 @@ from factor_factory.monthly_statistics import (
     C11_NAMES, C11_PROFILE, RAW_CONTROL_NAMES, c11_controls,
     calendar_slot_hac3, evaluate_c11_monthly, paired_monthly_rank_ic,
 )
-from factor_factory.research_statistics import fama_macbeth_periods
+from factor_factory.research_statistics import fama_macbeth_periods, newey_west_mean
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT/'scripts/evaluate_monthly_diagnostics.py'
@@ -174,6 +174,39 @@ def test_paired_ic_uses_same_h_and_hac_of_difference():
     assert result['delta_hac3']['se'] != pytest.approx(independent)
     same = paired_monthly_rank_ic(f, f, y, expected_index=idx, calendar_slots=slots)
     assert same['delta_hac3']['mean'] == 0 and same['delta_hac3']['positive_p'] is None
+
+
+@pytest.mark.parametrize('scale', [1., 1e-24, 1e-120])
+def test_constant_exact_ols_coefficients_with_gaps_do_not_imply_significance(scale):
+    f, y, raw, idx, slots = panel(n=137, months=6)
+    for day in slots:
+        quantile = (f.xs(day).factor_value.rank()-.5)/137
+        y.loc[day, 'forward_return'] = .02*scale*quantile.to_numpy()
+    y.loc[slots[2], :] = np.nan
+    result = evaluate(f, y, raw, idx, slots)
+    coefficients = [r['lambda'] for r in result['periods'] if r['lambda'] is not None]
+    np.testing.assert_allclose(np.asarray(coefficients)/scale, .02, atol=1e-15, rtol=0.)
+    inference = result['summary']['lambda']
+    assert inference['missing_slots'] == [2] and inference['n'] == 5
+    assert inference['reason'] == 'zero_variation_at_float_precision'
+    for key in ['se', 'positive_p', 'negative_p', 'tstat', 'ci95_lower', 'ci95_upper', 'lower_995_one_sided']:
+        assert inference[key] is None
+    assert newey_west_mean(coefficients, 3)['reason'] == inference['reason']
+
+
+@pytest.mark.parametrize('scale', [1e-24, 1e-120])
+def test_tiny_units_preserve_real_ols_variation_and_calendar_hac(scale):
+    f, y, raw, idx, slots = panel(n=137, months=6)
+    slopes = [.02, .05, np.nan, .03, .07, .01]
+    for day, slope in zip(slots, slopes):
+        quantile = (f.xs(day).factor_value.rank()-.5)/137
+        y.loc[day, 'forward_return'] = slope*scale*quantile.to_numpy()
+    inference = evaluate(f, y, raw, idx, slots)['summary']['lambda']
+    expected = hac_mean(slopes)
+    assert inference['reason'] is None and inference['missing_slots'] == [2]
+    assert inference['mean']/scale == pytest.approx(expected['mean'], abs=1e-15)
+    assert inference['se']/scale == pytest.approx(expected['se'], abs=1e-15)
+    assert inference['positive_p'] == pytest.approx(expected['positive_p'], abs=1e-14)
 
 
 @pytest.mark.parametrize('n', [29, 30])

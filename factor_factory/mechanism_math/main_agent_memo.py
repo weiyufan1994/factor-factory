@@ -2720,6 +2720,25 @@ def _direct_code_assignment_names(value: str) -> set[str] | None:
     }
 
 
+def _v1_direct_code_scalar_assignment_names(value: str) -> set[str]:
+    """An explicit whole-component scalar assignment, not a nested keyword.
+
+    This bounded V1 declaration check intentionally does not parse Python or
+    change the older V2 symbol extractor. Comparison-only expressions and
+    multi-statement declarations cannot establish a scheduled value binding.
+    """
+    text = str(value or '')
+    if _direct_code_symbol_names(text) is None:
+        return set()
+    match = re.fullmatch(
+        r'\s*(?P<name>[a-zA-Z][a-zA-Z0-9_]*)\s*=(?!=)(?P<rhs>[^;\n\r]+)', text,
+    )
+    if match is None or not match.group('rhs').strip() or match.group('rhs').lstrip().startswith('='):
+        return set()
+    name = match.group('name').casefold()
+    return {name} if not _information_name_has_future_semantics(name) else set()
+
+
 def _v1_direct_code_scheduled_output_key(
     component: dict[str, Any], current_assignments: set[str],
 ) -> bool:
@@ -2995,9 +3014,8 @@ def _validated_v1_direct_code_measurement_program_projection_aliases(
     current_assignments: set[str] = set()
     for component in program_components:
         if isinstance(component, dict):
-            names = _direct_code_assignment_names(str(component.get('math_term_or_functional') or ''))
-            if names is not None:
-                current_assignments.update(names)
+            current_assignments.update(_v1_direct_code_scalar_assignment_names(
+                str(component.get('math_term_or_functional') or '')))
     frozen_by_id: dict[str, dict[str, Any]] = {}
     for component in program_components:
         if not isinstance(component, dict):

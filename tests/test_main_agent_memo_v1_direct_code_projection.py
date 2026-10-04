@@ -443,3 +443,25 @@ def test_v1_scheduled_key_keeps_frozen_component_and_input_bindings(monkeypatch,
     elif drift == 'copy':
         spec['canonical_spec']['mechanism_conditioned_measurement_program']['implementation']['components'][-1]['math_term_or_functional'] = '(instrument,t,a)'
     assert _validated_v1_direct_code_measurement_program_projection_aliases(memo, spec) == set()
+
+
+@pytest.mark.parametrize('declaration', [
+    'a==q', 'is_valid=(a == q)', 'mean(a=q)', 'a>=q', 'a<=q', 'a!=q',
+    '# a=q', 'a:=q', 'a= =q', 'a= ', 'q=a; a=0',
+])
+def test_v1_scheduled_value_needs_top_level_scalar_assignment(monkeypatch, declaration):
+    monkeypatch.setenv('FACTORFORGE_LOCAL_IS_ONLY', '1')
+    program = _scheduled_program()
+    program['implementation']['components'][-2]['math_term_or_functional'] = declaration
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(_memo(program), _spec(program)) == set()
+
+
+@pytest.mark.parametrize('name,declaration', [
+    ('a', 'a=mean_12(mean_5(q))'), ('a', ' a = mean_12(mean_5(q)) '),
+    ('current_score', 'current_score=abs(q)/amount'),
+])
+def test_v1_scheduled_key_accepts_other_explicit_current_scalar_names(monkeypatch, name, declaration):
+    monkeypatch.setenv('FACTORFORGE_LOCAL_IS_ONLY', '1')
+    program = _scheduled_program(f'(instrument,next_calendar_session(t),{name})')
+    program['implementation']['components'][-2]['math_term_or_functional'] = declaration
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(_memo(program), _spec(program)) == {'measured_object'}

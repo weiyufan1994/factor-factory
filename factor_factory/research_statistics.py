@@ -63,19 +63,25 @@ def newey_west_mean(values, lags: int) -> dict:
     return result
 
 
-def fama_macbeth_periods(frame, *, date_col, signal_col, return_col, controls) -> list[dict]:
+def fama_macbeth_periods(frame, *, date_col, signal_col, return_col, controls,
+                         min_observations: int | None = None, rcond=None) -> list[dict]:
     """OLS with intercept at each date; signal and controls are not standardized.
 
     Missing observations are explicitly counted. Rank-deficient/undersized
     periods carry a reason rather than an invented zero coefficient.
     """
+    if min_observations is not None and (isinstance(min_observations, bool)
+            or not isinstance(min_observations, Integral) or min_observations < 3):
+        raise ValueError('min_observations must be an integer >= 3')
+    if rcond is not None and (isinstance(rcond, bool) or not math.isfinite(rcond) or rcond <= 0 or rcond >= 1):
+        raise ValueError('rcond must be a finite relative tolerance between 0 and 1')
     result = []
     regressors = [signal_col, *controls]
     for date, group in frame.groupby(date_col, sort=True):
         clean = group[[return_col, *regressors]].dropna()
         row = {'date': str(date), 'n': len(clean), 'input_n': len(group),
                'lambda': None, 'reason': None}
-        if len(clean) <= len(regressors) + 1:
+        if len(clean) <= len(regressors) + 1 or len(clean) < (min_observations or 0):
             row['reason'] = 'cross_section_insufficient'
         else:
             x = clean[regressors].to_numpy(dtype=float)
@@ -83,7 +89,7 @@ def fama_macbeth_periods(frame, *, date_col, signal_col, return_col, controls) -
             y = clean[return_col].to_numpy(dtype=float)
             if not np.isfinite(x).all() or not np.isfinite(y).all():
                 raise ValueError('OLS inputs must be finite after explicit missing-value exclusion')
-            beta, _, rank, _ = np.linalg.lstsq(x, y, rcond=None)
+            beta, _, rank, _ = np.linalg.lstsq(x, y, rcond=rcond)
             if rank != x.shape[1]:
                 row['reason'] = 'rank_deficient'
             elif not np.isfinite(beta).all():

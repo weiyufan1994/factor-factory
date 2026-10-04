@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from copy import deepcopy
 
+import pytest
+
 from factor_factory.formula.parser import parse_formula
 from factor_factory.measurement_program import (
     MEASUREMENT_PROGRAM_VERSION_V1,
@@ -12,6 +14,7 @@ from factor_factory.measurement_program import (
 from factor_factory.mechanism_math.main_agent_memo import (
     _bound_measured_object_projection_aliases,
     _formula_source_is_fully_represented,
+    _direct_code_symbol_names,
     _validated_direct_code_measurement_program_projection_aliases,
     _validated_v1_direct_code_measurement_program_projection_aliases,
     validate_main_agent_mechanism_memo,
@@ -369,3 +372,74 @@ def test_v1_direct_code_full_public_memo_uses_measured_object_conditioned_payoff
     tail_payoff = deepcopy(memo)
     tail_payoff["math_hypothesis"]["market_outcome_projection"] = MEMO_PROJECTION + "; E[r_{i,t+40}|F_t, measured_object_{i,t}] positive"
     assert "BLOCK_MAIN_AGENT_MECHANISM_MEMO_MARKET_PROJECTION_INVALID" in validate_main_agent_mechanism_memo(tail_payoff, spec)
+
+
+def _scheduled_program(expression='(instrument,next_calendar_session(t),a)'):
+    program = _program()
+    current = deepcopy(program['implementation']['components'][-1])
+    current.update(component_id='current_scalar', math_term_or_functional='a=mean_12(mean_5(q))')
+    scheduled = deepcopy(current)
+    scheduled.update(component_id='scheduled_key', math_term_or_functional=expression,
+                     observable_or_input='ts_code, trade_date, exchange_calendar',
+                     input_fields=['ts_code', 'trade_date', 'exchange_calendar'],
+                     information_time='Formation close t; all value inputs known at t.')
+    program['implementation']['components'].extend([current, scheduled])
+    return program
+
+
+def test_v1_scheduled_row_key_accepts_current_value_and_keeps_global_guard(monkeypatch):
+    monkeypatch.setenv('FACTORFORGE_LOCAL_IS_ONLY', '1')
+    program = _scheduled_program()
+    spec, memo = _spec(program), _complete_public_memo(program)
+    before = deepcopy((spec, memo))
+    # The global symbol guard still refuses next_*; only the exact validated
+    # V1 component closure knows this is a key, not an expression reading y(t+1).
+    assert _direct_code_symbol_names('(instrument,next_calendar_session(t),a)') is None
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(memo, spec) == {'measured_object'}
+    assert validate_main_agent_mechanism_memo(memo, spec) == []
+    assert (spec, memo) == before
+    monkeypatch.delenv('FACTORFORGE_LOCAL_IS_ONLY')
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(memo, spec) == set()
+
+
+@pytest.mark.parametrize('expression', [
+    '(instrument,next_calendar_session(t+1),a)',
+    '(instrument,next_calendar_session(t),a[t+1])',
+    '(instrument,next_calendar_session(t),close(next_calendar_session(t)))',
+    'a=close(next_calendar_session(t))',
+    '(instrument,next_calendar_session(t),unknown_value)',
+    '(instrument,next_calendar_session(t),future_value)',
+    '(instrument,next_calendar_session(t),a); y=return[t+1]',
+    '(instrument,next_calendar_session(t),a)*label',
+    '(next_calendar_session(t),instrument,a)',
+    '(instrument,next_calendar_session(t),a,extra)',
+    '(instrument,next_calendar_session(t),next_calendar_session(t))',
+    '(instrument,next_calendar_session(t),__import__("os"))',
+])
+def test_v1_scheduled_key_does_not_admit_future_reads_or_unbound_values(monkeypatch, expression):
+    monkeypatch.setenv('FACTORFORGE_LOCAL_IS_ONLY', '1')
+    program = _scheduled_program(expression)
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(_memo(program), _spec(program)) == set()
+
+
+@pytest.mark.parametrize('drift', ['no_calendar', 'future_field', 'future_time', 'memo_formula', 'memo_observable', 'copy', 'value_definition'])
+def test_v1_scheduled_key_keeps_frozen_component_and_input_bindings(monkeypatch, drift):
+    monkeypatch.setenv('FACTORFORGE_LOCAL_IS_ONLY', '1')
+    program = _scheduled_program()
+    key = program['implementation']['components'][-1]
+    if drift == 'no_calendar':
+        key['input_fields'].remove('exchange_calendar')
+    elif drift == 'future_field':
+        key['input_fields'].append('future_close')
+    elif drift == 'future_time':
+        key['information_time'] = 'after next session close'
+    elif drift == 'value_definition':
+        program['implementation']['components'][-2]['math_term_or_functional'] = 'a=return[t+1]'
+    spec, memo = _spec(program), _memo(program)
+    if drift == 'memo_formula':
+        memo['formula_component_map'][-1]['formula_subexpression'] = '(instrument,t,a)'
+    elif drift == 'memo_observable':
+        memo['formula_component_map'][-1]['observable_estimator'] += ', close'
+    elif drift == 'copy':
+        spec['canonical_spec']['mechanism_conditioned_measurement_program']['implementation']['components'][-1]['math_term_or_functional'] = '(instrument,t,a)'
+    assert _validated_v1_direct_code_measurement_program_projection_aliases(memo, spec) == set()

@@ -2720,6 +2720,44 @@ def _direct_code_assignment_names(value: str) -> set[str] | None:
     }
 
 
+def _v1_direct_code_scheduled_output_key(
+    component: dict[str, Any], current_assignments: set[str],
+) -> bool:
+    """Recognize one local-IS row-key declaration, never a future value read.
+
+    Only a complete (instrument, next_calendar_session(t), current_value)
+    tuple is admitted. Its value must already be defined by an ordinary
+    current-time component and its inputs must be the explicit key/calendar
+    fields. This exception is not used by the general future-data guard, V2,
+    arbitrary function calls, formulas or market-payoff conditioning.
+    """
+    if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1':
+        return False
+    expression = str(component.get('math_term_or_functional') or '')
+    if len(expression) > 8_192:
+        return False
+    match = re.fullmatch(
+        r'\s*\(\s*(?:instrument|ts_code)\s*,\s*next_calendar_session\(\s*t\s*\)'
+        r'\s*,\s*(?P<value>[a-zA-Z][a-zA-Z0-9_]*)\s*\)\s*', expression,
+    )
+    if match is None:
+        return False
+    value = match.group('value').casefold()
+    fields = component.get('input_fields')
+    key_fields = {'ts_code', 'trade_date', 'exchange_calendar'}
+    return (
+        value in current_assignments
+        and value not in key_fields | {'instrument', 't'}
+        and not _information_name_has_future_semantics(value)
+        and isinstance(fields, list)
+        and len(fields) == len(key_fields)
+        and all(isinstance(field, str) for field in fields)
+        and set(fields) == key_fields
+        and _direct_code_symbol_names(str(component.get('observable_or_input') or '')) == key_fields
+        and not _has_future_temporal_reference(str(component.get('information_time') or ''))
+    )
+
+
 def _validated_direct_code_measurement_program_projection_aliases(
     memo: dict[str, Any],
     factor_spec: dict[str, Any],
@@ -2954,6 +2992,12 @@ def _validated_v1_direct_code_measurement_program_projection_aliases(
     program_components = implementation.get("components")
     if not isinstance(program_components, list) or not program_components:
         return set()
+    current_assignments: set[str] = set()
+    for component in program_components:
+        if isinstance(component, dict):
+            names = _direct_code_assignment_names(str(component.get('math_term_or_functional') or ''))
+            if names is not None:
+                current_assignments.update(names)
     frozen_by_id: dict[str, dict[str, Any]] = {}
     for component in program_components:
         if not isinstance(component, dict):
@@ -2966,7 +3010,8 @@ def _validated_v1_direct_code_measurement_program_projection_aliases(
             or not component_id.strip()
             or component_id in frozen_by_id
             or not observable
-            or _direct_code_symbol_names(formula) is None
+            or (_direct_code_symbol_names(formula) is None
+                and not _v1_direct_code_scheduled_output_key(component, current_assignments))
         ):
             return set()
         frozen_by_id[component_id] = component
@@ -3000,10 +3045,6 @@ def _validated_v1_direct_code_measurement_program_projection_aliases(
             != str(frozen.get("math_term_or_functional") or "")
             or str(displayed.get("observable_estimator") or "")
             != str(frozen.get("observable_or_input") or "")
-            or _direct_code_symbol_names(
-                str(displayed.get("formula_subexpression") or "")
-            )
-            is None
         ):
             return set()
     return {"measured_object"}

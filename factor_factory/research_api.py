@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 from pandas.api.types import is_bool_dtype, is_complex_dtype, is_numeric_dtype
 
-from factor_factory.research_statistics import fama_macbeth_periods, newey_west_mean
+from factor_factory.research_statistics import fama_macbeth_periods, newey_west_mean, partial_rank_ic_periods
 
 
 def _dates(values, *, name: str) -> pd.DatetimeIndex:
@@ -231,7 +231,8 @@ def _stats(values, *, prefix, unit):
 
 def evaluate_factor(factor_values: pd.DataFrame, forward_returns: pd.DataFrame | None = None, *,
                     analysis: str = 'ic', controls: pd.DataFrame | None = None,
-                    expected_index: pd.MultiIndex | None = None, newey_west_lags: int = 0) -> dict[str, Any]:
+                    expected_index: pd.MultiIndex | None = None, newey_west_lags: int = 0,
+                    min_observations: int = 100) -> dict[str, Any]:
     """Analyze caller-supplied, time-aligned decimal returns; never fetch data.
 
     IC: within-date Pearson and average-tie Spearman; mean/std/IR across dates.
@@ -239,14 +240,19 @@ def evaluate_factor(factor_values: pd.DataFrame, forward_returns: pd.DataFrame |
     both event-weighted and date-weighted means. Factor sign/size does not select
     or weight events. FMB: within-date OLS with intercept and optional controls,
     then equal-date coefficient mean and Bartlett HAC inference. No annualizing.
+    Partial Rank IC: rank both variables on complete cases, project both on
+    intercept + all controls, correlate residuals without re-ranking them.
+    min_observations applies only to partial_rank_ic; its default is 100.
     Portfolio replay has its own explicit inputs: use portfolio_api.backtest.
     """
     if analysis == 'portfolio':
         raise ValueError('Use factor_factory.portfolio_api.backtest for account replay')
-    if analysis not in {'ic', 'event_study', 'fama_macbeth'}:
+    if analysis not in {'ic', 'event_study', 'fama_macbeth', 'partial_rank_ic'}:
         raise ValueError('unknown analysis')
-    if controls is not None and analysis != 'fama_macbeth':
-        raise ValueError('controls are only supported for fama_macbeth')
+    if controls is not None and analysis not in {'fama_macbeth', 'partial_rank_ic'}:
+        raise ValueError('controls are only supported for fama_macbeth or partial_rank_ic')
+    if analysis == 'partial_rank_ic' and controls is None:
+        raise ValueError('partial_rank_ic requires explicitly supplied controls')
     factor = normalize_factor_frame(factor_values)
     coverage = _factor_coverage(factor, expected_index=expected_index)
     if coverage['unexpected_rows']:
@@ -271,7 +277,32 @@ def evaluate_factor(factor_values: pd.DataFrame, forward_returns: pd.DataFrame |
         if not control_columns or any(not isinstance(c, str) or not c.strip() or c in {'factor_value', 'forward_return', 'datetime', 'instrument'} for c in control_columns):
             raise ValueError('controls must have nonempty, distinct numeric column names')
         work = work.join(_frame(controls, control_columns), how='left', validate='one_to_one')
-    if analysis == 'fama_macbeth':
+    if analysis == 'partial_rank_ic':
+        if expected_index is not None:
+            # Preserve scheduled periods with no factor output rather than
+            # silently compressing the caller's declared evaluation calendar.
+            work = work.reindex(_index(expected_index))
+        period_frame = work.reset_index()
+        period_frame['datetime'] = period_frame['datetime'].dt.strftime('%Y-%m-%d')
+        rows = partial_rank_ic_periods(period_frame, date_col='datetime', signal_col='factor_value',
+                                      return_col='forward_return', controls=control_columns,
+                                      min_observations=min_observations)
+        result['periods'] = rows
+        result['alignment']['complete_case_rows'] = sum(row['n'] for row in rows)
+        for key in ('partial_rank_ic', 'same_support_rank_ic', 'same_support_pearson_ic'):
+            result['metrics'].update(_stats([row[key] for row in rows if row[key] is not None],
+                                           prefix=key, unit='correlation'))
+        result['method'] = {
+            'definition': 'Corr(M_Z midrank(signal), M_Z midrank(return)); Z=[intercept, controls]',
+            'controls': control_columns, 'rank_support': 'complete_cases_signal_return_all_controls',
+            'rank_ties': 'average', 'rank_controls': False, 'rerank_residuals': False,
+            'min_observations': int(min_observations), 'period_weighting': 'equal_available_periods',
+            'projection': 'SVD of centered, column-normalized equivalent design; no controls removed',
+            'numerical_relative_tolerance': 'float64_eps * max(complete_case_n, design_columns)',
+            'inference': 'not_computed',
+        }
+        result['warnings'].append('Partial Rank IC is descriptive; invalid periods remain explicit and must not be compressed for time-series inference.')
+    elif analysis == 'fama_macbeth':
         # Validate lag type even when there are no estimable cross sections.
         newey_west_mean([], newey_west_lags)
         period_frame = work.reset_index()

@@ -175,6 +175,32 @@ FMB 推断用 Bartlett Newey–West，协方差分母 T；p 值为双侧渐近�
 理论恒定系数若只在浮点精度内波动，t/SE 返回 null 与
 `zero_variation_at_float_precision`，不把舍入误差解释为显著性；判断基于系数相对尺度。
 
+### 普通 IS 的双边 partial Rank IC
+
+```python
+partial = evaluate_factor(
+    factor_values, labels, analysis="partial_rank_ic", controls=controls,
+    expected_index=membership_index, min_observations=100,
+)
+```
+
+每期先取信号、收益和全部声明控制列的完整样本 H，再计算 U=midrank(signal)、
+V=midrank(return)，Z=[截距, 原控制变量]，结果为 Corr(M_Z U, M_Z V)。
+并列取平均秩；控制变量不排名，残差不再排名。控制列居中和按列归一化仅用于数值
+稳定，保持 [1,C] 的列空间；不删除控制列，不用 ridge 或秩亏伪逆改写问题。
+这不同于仅对信号残差化后的 Rank IC，也不同于 rank(signal) 对原始 return 的偏相关。
+
+`min_observations` 只用于此分析，默认 100；不足、设计矩阵秩亏、任一残差方差为零
+均保留该期并返回 null 与 reason。数值秩和零残差判定的相对容差为
+float64 epsilon × max(完整样本数, 设计列数)，方法元数据记录具体约定。
+`expected_index` 可保留整期没有信号的日期，因而不能通过缺行压缩评估日历。
+
+结果含 `partial_rank_ic_mean/std/ir`，以及 H 上的 `same_support_rank_ic_*` 和
+`same_support_pearson_ic_*`；逐期记录输入数、完整样本数、剔除数和设计秩。
+均值/标准差/IR 为有效期间的描述统计，不年化；此入口不计算 HAC 或显著性，
+`newey_west_lags` 仍仅用于 FMB。后续时序推断必须保留缺月位置，不能删掉无效月份
+后称为连续序列。该分析无账户、OOS 释放或正式证明写入，与正式 verifier 保持独立。
+
 形成频率、标签 horizon、账户调仓频率是三件事，配置要分别说明。预先声明的 warmup
 不进入估计窗口，但保留在全因子表中；不得看完结果再裁掉不好的月份。
 

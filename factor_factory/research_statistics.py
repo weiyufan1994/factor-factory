@@ -92,3 +92,79 @@ def fama_macbeth_periods(frame, *, date_col, signal_col, return_col, controls) -
                 row['lambda'] = float(beta[1])
         result.append(row)
     return result
+
+
+def partial_rank_ic_periods(frame, *, date_col, signal_col, return_col, controls,
+                            min_observations: int = 100) -> list[dict]:
+    """Corr(M_Z midrank(signal), M_Z midrank(return)) on complete cases.
+
+    Z contains an intercept and every supplied control, without ranking controls
+    or re-ranking residuals. Column centering/scaling preserves span([1, C]) and
+    avoids a control's measurement unit deciding numerical rank. No control is
+    dropped. SVD rank and residual-zero tolerances use eps * max(N, columns).
+    Undefined periods remain explicit rows; this function performs no inference.
+    """
+    if (isinstance(min_observations, bool) or not isinstance(min_observations, Integral)
+            or min_observations < 3):
+        raise ValueError('min_observations must be an integer >= 3')
+    if not controls or len(set(controls)) != len(controls):
+        raise ValueError('partial Rank IC requires distinct, explicitly supplied controls')
+    result = []
+    for date, group in frame.groupby(date_col, sort=True):
+        clean = group[[signal_col, return_col, *controls]].dropna()
+        n, p = len(clean), len(controls) + 1
+        row = {'date': str(date), 'input_n': len(group), 'n': n,
+               'excluded_n': len(group) - n, 'design_columns': p, 'design_rank': None,
+               'partial_rank_ic': None, 'same_support_rank_ic': None,
+               'same_support_pearson_ic': None, 'reason': None}
+        values = clean.to_numpy(dtype=float)
+        if not np.isfinite(values).all():
+            raise ValueError('partial Rank IC inputs must be finite after missing-value exclusion')
+        ranks = clean[[signal_col, return_col]].rank(method='average').to_numpy(dtype=float)
+        if n >= 2 and all(clean[c].nunique() > 1 for c in (signal_col, return_col)):
+            row['same_support_rank_ic'] = float(np.corrcoef(ranks.T)[0, 1])
+            raw = values[:, :2]
+            raw = raw / np.max(np.abs(raw), axis=0)
+            raw_ic = float(np.corrcoef(raw.T)[0, 1])
+            row['same_support_pearson_ic'] = raw_ic if math.isfinite(raw_ic) else None
+        if n < min_observations or n <= p:
+            row['reason'] = 'cross_section_insufficient'
+        else:
+            c = values[:, 2:]
+            scales = np.max(np.abs(c), axis=0)
+            # A zero/constant column is collinear with the intercept, not a
+            # reason to remove that declared control and fit a different model.
+            scaled = c / np.where(scales > 0, scales, 1.)
+            centered = scaled - scaled.mean(axis=0)
+            norms = np.linalg.norm(centered, axis=0)
+            z = np.column_stack([np.ones(n) / math.sqrt(n),
+                                 centered / np.where(norms > 0, norms, 1.)])
+            tolerance = np.finfo(float).eps * max(n, p)
+            try:
+                basis, singular, _ = np.linalg.svd(z, full_matrices=False)
+            except np.linalg.LinAlgError:
+                row['reason'] = 'numerical_decomposition_failed'
+            else:
+                rank = int(np.count_nonzero(singular > tolerance * singular[0]))
+                row['design_rank'] = rank
+                if rank != p:
+                    row['reason'] = 'rank_deficient'
+                else:
+                    centered_ranks = ranks - ranks.mean(axis=0)
+                    residuals = centered_ranks - basis @ (basis.T @ centered_ranks)
+                    # Correlation includes centering; eliminate residual roundoff
+                    # in the intercept direction before measuring its variance.
+                    residuals -= residuals.mean(axis=0)
+                    residual_norms = np.linalg.norm(residuals, axis=0)
+                    original_norms = np.linalg.norm(centered_ranks, axis=0)
+                    if np.any(residual_norms <= tolerance * original_norms):
+                        row['reason'] = 'zero_residual_variance'
+                    else:
+                        unit_residuals = residuals / residual_norms
+                        value = float(np.dot(unit_residuals[:, 0], unit_residuals[:, 1]))
+                        if not math.isfinite(value):
+                            row['reason'] = 'numeric_overflow'
+                        else:
+                            row['partial_rank_ic'] = float(np.clip(value, -1., 1.))
+        result.append(row)
+    return result

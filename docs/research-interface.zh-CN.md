@@ -251,6 +251,12 @@ PYTHONPATH="$FF_INTERFACE_CHECKOUT:$FF_BASE_RUNTIME/factorforge-data-api" \
 
 ## 6. 账户模型与发布状态
 
+原有月历账户使用 `portfolio_api.backtest_calendar_month`，接收已经按下一交易日
+标记的因子输出、完整形成日 PIT 成分和明确价格/执行约束，沿用已验收的账户内核。
+共享 Step4 adapter 直接消费本次因子输出并生成日账本、月度标签诊断及标准 metrics。
+输入、时间关系、费用和审后维护版本接入方式见 [月历账户接口](calendar-month-account.md)。
+这项维护扩展不属于既有 R35p4；固定 R35p4 的研究应显式记录所用维护包和范围。
+
 ```python
 from factor_factory.portfolio_api import backtest
 

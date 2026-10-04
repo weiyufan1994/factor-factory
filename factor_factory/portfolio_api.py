@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from factor_factory.accounting import buy_fill, sell_fill
+from factor_factory.calendar_month import backtest_calendar_month
 from factor_factory.research_api import _dates, _frame, _index, _metric, factor_coverage, normalize_factor_frame
 
 

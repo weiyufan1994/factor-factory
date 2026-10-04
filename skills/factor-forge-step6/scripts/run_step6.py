@@ -1931,7 +1931,15 @@ def build_case_comparison(
         normalized['reuse_as'] = 'analogy_only'
         if scope == 'same_factor':
             mismatch_fields: list[str] = []
-            if item_factor != current_factor:
+            source_factor_claims = {
+                name: source.get('factor_id')
+                for name, source in [('top_level', item),
+                                     ('artifact_identity', item.get('artifact_identity') or {}),
+                                     ('source_identity', item.get('source_identity') or {})]
+                if isinstance(source, dict) and source.get('factor_id') not in (None, '')
+            }
+            if (not current_factor or item_factor != current_factor
+                    or any(value != current_factor for value in source_factor_claims.values())):
                 mismatch_fields.append('factor_id')
             if current_formula_hash and item_formula != current_formula_hash:
                 mismatch_fields.append('formula_hash')
@@ -1947,6 +1955,7 @@ def build_case_comparison(
                     'mismatch_fields': sorted(set(mismatch_fields)),
                     'expected_identity': current_identity,
                     'actual_identity': item_identity or item,
+                    'source_factor_id_claims': source_factor_claims,
                 })
                 continue
             normalized['reuse_as'] = 'same_factor_history_with_provenance_check'
@@ -3162,6 +3171,44 @@ def infer_research_framework(bundle: dict[str, Any], payloads: dict[str, dict[st
     }
 
 
+def project_retrieved_case_scope(
+    item: dict[str, Any], current_identity: dict[str, Any], query_factor_id: str,
+) -> dict[str, Any]:
+    """Interpret a historical source's scope relative to the current factor.
+
+    This is retrieval projection, not evidence validation. Only an unambiguous
+    different factor becomes analogy context. Same-factor versions, unknown or
+    conflicting identities retain the original scope and strict downstream gate.
+    The indexed record, its identities, ranking and source scope are preserved.
+    """
+    result = dict(item)
+    if item.get('knowledge_scope') != 'same_factor':
+        return result
+    current = current_identity.get('factor_id')
+    if not isinstance(current, str) or not current or current != current.strip() or current != query_factor_id:
+        return result
+    owners = set()
+    for identity in (item, item.get('artifact_identity') or {}, item.get('source_identity') or {}):
+        if not isinstance(identity, dict):
+            return result
+        owner = identity.get('factor_id')
+        if owner is None or owner == '':
+            continue
+        if not isinstance(owner, str) or not owner.strip() or owner != owner.strip():
+            return result
+        owners.add(owner)
+    if len(owners) != 1 or current in owners:
+        return result
+    result.update(
+        source_knowledge_scope='same_factor', knowledge_scope='similar_case',
+        retrieval_scope_resolution={
+            'source_factor_id': next(iter(owners)), 'query_factor_id': current,
+            'rule': 'different_source_factor_is_analogy_only',
+        },
+    )
+    return result
+
+
 def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]], top_k: int = 5) -> dict[str, Any]:
     run_master = bundle['factor_run_master']
     case = bundle['factor_case_master']
@@ -3342,6 +3389,8 @@ def build_retrieval_context(bundle: dict[str, Any], payloads: dict[str, dict[str
         candidates.extend(graph_candidates)
         candidates.sort(key=rank_key)
         top = candidates[:top_k]
+    current_identity = run_master.get('artifact_identity') or case.get('artifact_identity') or {}
+    top = [project_retrieved_case_scope(item, current_identity, factor_id) for item in top]
     return {
         'retrieval_index_path': str(RETRIEVAL_INDEX),
         'retrieval_index_available': RETRIEVAL_INDEX.exists(),

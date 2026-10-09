@@ -18,7 +18,7 @@ import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import pandas as pd
 import numpy as np
@@ -4751,6 +4751,669 @@ def build_failure_outputs(report_id: str, factor_id: str | None, implementation_
     return run_master, diagnostics, handoff
 
 
+class Step4Coverage(NamedTuple):
+    """Observed size, windows and signal coverage; no frames or execution state."""
+    row_count: int
+    date_count: int
+    ticker_count: int
+    actual_start: str | None
+    actual_end: str | None
+    target_window: dict[str, Any]
+    research_window: dict[str, Any]
+    input_daily_start: str | None
+    input_daily_end: str | None
+    effective_target_start: str | None
+    effective_target_end: str | None
+    coverage_complete: bool
+    formal_signal_coverage: dict[str, Any]
+
+
+def summarize_step4_coverage(
+    *, result_df, signal_daily_df, parent_factor_summary, parent_daily_summary,
+    signal_col, fsm, dpm, handoff, step4_contract, data_api_profile, force_contract_inputs,
+):
+    """Derive coverage from a frame or streamed summary using the same window rules."""
+    if parent_factor_summary is not None:
+        row_count = int(parent_factor_summary['row_count'])
+        date_count = int(parent_factor_summary['date_count'])
+        ticker_count = int(parent_factor_summary['ticker_count'])
+        actual_start = _normal_date_value(parent_factor_summary['start'])
+        actual_end = _normal_date_value(parent_factor_summary['end'])
+    else:
+        row_count = int(len(result_df))
+        date_count = int(result_df['trade_date'].nunique()) if 'trade_date' in result_df.columns else 0
+        ticker_count = int(result_df['ts_code'].nunique()) if 'ts_code' in result_df.columns else 0
+        actual_start = _normal_date_value(result_df['trade_date'].min()) if 'trade_date' in result_df.columns and row_count else None
+        actual_end = _normal_date_value(result_df['trade_date'].max()) if 'trade_date' in result_df.columns and row_count else None
+    target_window = dpm.get('sample_window', {}) or {}
+    prepared_window = (dpm.get('local_input_paths') or {}).get('sample_window_actual') or {}
+    research_window = _research_window_contract(step4_contract, dpm)
+    target_start_raw = target_window.get('start')
+    target_start = _normal_date_value(target_start_raw)
+    target_end_raw = target_window.get('end')
+    input_daily_start = (
+        _normal_date_value(parent_daily_summary['start'])
+        if parent_daily_summary is not None
+        else _normal_date_value(signal_daily_df['trade_date'].min()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
+    )
+    input_daily_end = (
+        _normal_date_value(parent_daily_summary['end'])
+        if parent_daily_summary is not None
+        else _normal_date_value(signal_daily_df['trade_date'].max()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
+    )
+    prepared_start = _normal_date_value(prepared_window.get('start'))
+    prepared_end = _normal_date_value(prepared_window.get('end'))
+    # Step3B sample snapshots may leave a short sample_window_actual in
+    # data_prep_master. Once Step4 has materialized the formal Data API
+    # full-query input, that sample window must not cap Step4 coverage.
+    # A validated ordinary local-IS delivery is the full contract input as
+    # surely as an in-process Data API materialization. ``force`` is
+    # disabled after receipt validation to avoid a redundant network fetch,
+    # so it cannot also serve as the coverage discriminator.
+    full_contract_input = is_full_contract_input_profile(
+        data_api_profile,
+        force_contract_inputs=force_contract_inputs,
+    )
+    if full_contract_input:
+        effective_target_start = input_daily_start or target_start
+        effective_target_end = input_daily_end if str(target_end_raw) == 'current' else (input_daily_end or _normal_date_value(target_end_raw))
+    else:
+        effective_target_start = prepared_start or input_daily_start or target_start
+        if str(target_end_raw) == 'current':
+            effective_target_end = input_daily_end
+        else:
+            effective_target_end = prepared_end or _normal_date_value(target_end_raw)
+    coverage_complete = (actual_start == effective_target_start and actual_end == effective_target_end)
+    sparse_signal_allowed = bool(
+        step4_contract.get('sparse_signal_allowed')
+        or dpm.get('sparse_signal_allowed')
+        or handoff.get('sparse_signal_allowed')
+    )
+    canonical_spec = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
+    formula_ir = canonical_spec.get('formula_ir') if isinstance(canonical_spec.get('formula_ir'), dict) else None
+    formula_max_lookback = max_formula_ir_lookback(formula_ir)
+    formal_signal_coverage = (
+        build_formal_signal_coverage_profile_from_stream_summary(
+            summary=parent_factor_summary,
+            signal_col=signal_col,
+            actual_start=actual_start,
+            actual_end=actual_end,
+            effective_target_start=effective_target_start,
+            effective_target_end=effective_target_end,
+            sparse_signal_allowed=sparse_signal_allowed,
+            formula_max_lookback=formula_max_lookback,
+        )
+        if parent_factor_summary is not None
+        else build_formal_signal_coverage_profile(
+            result_df=result_df,
+            signal_col=signal_col,
+            actual_start=actual_start,
+            actual_end=actual_end,
+            effective_target_start=effective_target_start,
+            effective_target_end=effective_target_end,
+            sparse_signal_allowed=sparse_signal_allowed,
+            formula_max_lookback=formula_max_lookback,
+        )
+    )
+    return Step4Coverage(
+        row_count=row_count,
+        date_count=date_count,
+        ticker_count=ticker_count,
+        actual_start=actual_start,
+        actual_end=actual_end,
+        target_window=target_window,
+        research_window=research_window,
+        input_daily_start=input_daily_start,
+        input_daily_end=input_daily_end,
+        effective_target_start=effective_target_start,
+        effective_target_end=effective_target_end,
+        coverage_complete=coverage_complete,
+        formal_signal_coverage=formal_signal_coverage,
+    )
+
+
+def build_step4_completed_run_master(
+    *, meta, base_identity, input_paths, output_paths, coverage, evaluation_plan,
+    backend_runs, warnings, failure_reason, diagnostics_path, handoff_path,
+):
+    """Project completed execution metadata into the existing run-master schema."""
+    run_master = {
+        'report_id': meta['report_id'],
+        'factor_id': meta['factor_id'],
+        'artifact_identity': derive_identity(base_identity, 'factor_run_master'),
+        'run_status': meta['run_status_candidate'],
+        'implementation_path': meta['implementation_path'],
+        'output_paths': output_paths,
+        'sample_window': meta['target_window'],
+        'runtime_notes': warnings,
+        'diagnostic_summary': {'row_count': meta['row_count'], 'date_count': meta['date_count'], 'ticker_count': meta['ticker_count']},
+        'signal_column': meta['signal_column'],
+        'evaluation_plan': evaluation_plan,
+        'evaluation_results': {'backend_runs': backend_runs},
+        'backend_timing_profile': meta['backend_timing_profile'],
+        'shared_evaluation_context': meta['shared_evaluation_context'],
+        'evo_transfer_diagnostic_contract': meta['evo_transfer_diagnostic_contract'],
+        'evo_child_execution': meta['evo_child_execution'],
+        'implementation_mode_decision': meta['implementation_mode_decision'],
+        'failure_reason': failure_reason,
+        'started_at_utc': meta['started_at_utc'],
+        'finished_at_utc': utc_now(),
+        'input_paths': {k: str(v) for k, v in input_paths.items()},
+        'input_io_profile': meta['input_io_profile'],
+        'window_coverage': {
+            'target_start': meta['target_window'].get('start'),
+            'target_end': meta['target_window'].get('end'),
+            'effective_target_start': coverage.effective_target_start,
+            'effective_target_end': coverage.effective_target_end,
+            'input_daily_start': coverage.input_daily_start,
+            'input_daily_end': coverage.input_daily_end,
+            'actual_start': coverage.actual_start,
+            'actual_end': coverage.actual_end,
+            'coverage_complete': coverage.coverage_complete,
+        },
+        'formal_signal_coverage': meta['formal_signal_coverage'],
+        'validation_pointer': str(diagnostics_path),
+        'handoff_to_step5_path': str(handoff_path),
+    }
+    return run_master
+
+
+def build_step4_completed_diagnostics(
+    *, meta, input_paths, output_paths, coverage, evaluation_plan, backend_runs,
+    fsm, dpm, handoff, null_ratio, duplicate_ratio, sort_order_ok, issues,
+):
+    """Build output/quality diagnostics without computing factors or dispatching backends."""
+    diagnostics = {
+        'report_id': meta['report_id'],
+        'factor_id': meta['factor_id'],
+        'run_status': meta['run_status_candidate'],
+        'diagnostic_generated_at_utc': utc_now(),
+        'evaluation_plan': evaluation_plan,
+        'evaluation_results': {'backend_runs': backend_runs},
+        'implementation_mode_decision': meta['implementation_mode_decision'],
+        'input_validation': {
+            'exists_check': {k: v.exists() for k, v in input_paths.items()},
+            'input_io_profile': meta['input_io_profile'],
+            'step4_factor_io_profile': meta['step4_factor_io_profile'],
+            'step4_factor_csv_policy_observed': meta['step4_factor_csv_policy_observed'],
+            'backend_timing_profile': meta['backend_timing_profile'],
+            'shared_evaluation_context': meta['shared_evaluation_context'],
+            'schema_check': {'frozen_schema_execution': True},
+            'consistency_check': {
+                'report_id_consistent': True,
+                'factor_id_consistent': True
+            },
+            'placeholder_check': {
+                'factor_spec_master_has_placeholder': contains_placeholder(fsm),
+                'data_prep_master_has_placeholder': contains_placeholder(dpm),
+                'handoff_to_step4_has_placeholder': contains_placeholder(handoff)
+            }
+        },
+        'execution_trace': {
+            'implementation_path': meta['implementation_path'],
+            'commands': ["python3 skills/factor-forge-step4/scripts/run_step4.py --report-id {}".format(meta["report_id"])],
+            'runtime_seconds': None,
+            'exception_type': None,
+            'exception_message': None
+        },
+        'output_validation': {
+            'output_exists': True,
+            'output_paths': output_paths,
+            'file_sizes': file_sizes_for_paths(output_paths),
+            'row_count': meta['row_count'],
+            'date_count': meta['date_count'],
+            'ticker_count': meta['ticker_count'],
+            'signal_column': meta['signal_column'],
+            'formal_signal_coverage': meta['formal_signal_coverage'],
+        },
+        'quality_checks': {
+            'window_complete': coverage.coverage_complete,
+            'null_ratio': null_ratio,
+            'formal_signal_coverage': meta['formal_signal_coverage'],
+            'duplicate_ratio': duplicate_ratio,
+            'key_uniqueness': {'ts_code_trade_date_unique': duplicate_ratio.get('ts_code_trade_date', 0.0) == 0.0},
+            'sort_order_ok': sort_order_ok
+        },
+        'issues': issues,
+        'failure_context': {
+            'failed_stage': None,
+            'failure_reason': None,
+            'retryable': False
+        },
+        'recommendation': {
+            'can_handoff_to_step5': meta['run_status_candidate'] in {'success', 'partial'},
+            'recommended_status': meta['run_status_candidate'],
+            'next_action': (
+                'Proceed to Step 5 using declared evaluation scope.'
+                if meta['run_status_candidate'] in {'success', 'partial'}
+                else 'Fix formal signal coverage and rerun Step 4 before Step 5/6.'
+            )
+        }
+    }
+    return diagnostics
+
+
+def build_completed_step5_handoff(
+    *, meta, base_identity, output_paths, coverage, evaluation_plan, backend_runs,
+    warnings, failure_reason, run_master_path, diagnostics_path,
+):
+    """Keep the existing Step5 envelope, including partial and failed coverage states."""
+    handoff_out = {
+        'report_id': meta['report_id'],
+        'factor_id': meta['factor_id'],
+        'artifact_identity': derive_identity(base_identity, 'handoff_to_step5'),
+        'run_status': meta['run_status_candidate'],
+        'factor_run_master_path': str(run_master_path),
+        'diagnostics_path': str(diagnostics_path),
+        'output_paths': output_paths,
+        'sample_window_target': meta['target_window'],
+        'sample_window_actual': {'start': coverage.actual_start, 'end': coverage.actual_end},
+        'coverage_ratio': 1.0 if coverage.coverage_complete else None,
+        'row_count': meta['row_count'],
+        'date_count': meta['date_count'],
+        'ticker_count': meta['ticker_count'],
+        'signal_column': meta['signal_column'],
+        'evaluation_plan': evaluation_plan,
+        'evaluation_results': {'backend_runs': backend_runs},
+        'backend_timing_profile': meta['backend_timing_profile'],
+        'shared_evaluation_context': meta['shared_evaluation_context'],
+        'evo_transfer_diagnostic_contract': meta['evo_transfer_diagnostic_contract'],
+        'evo_child_execution': meta['evo_child_execution'],
+        'implementation_mode_decision': meta['implementation_mode_decision'],
+        'key_warnings': warnings,
+        'failure_reason': failure_reason,
+        'can_enter_step5': meta['run_status_candidate'] in {'success', 'partial'},
+        'recommended_step5_scope': (
+            'full'
+            if meta['run_status_candidate'] == 'success'
+            else 'partial_scope_only'
+            if meta['run_status_candidate'] == 'partial'
+            else None
+        ),
+        'notes_for_step5': (
+            ['partial result: evaluate only covered window/instruments']
+            if meta['run_status_candidate'] == 'partial'
+            else ['full result ready for evaluation']
+            if meta['run_status_candidate'] == 'success'
+            else ['Step4 formal signal coverage failed; do not evaluate or promote.']
+        )
+    }
+    return handoff_out
+
+
+def write_completed_step4_results(
+    *, meta, base_identity, input_paths, output_paths, coverage, evaluation_plan,
+    backend_runs, warnings, failure_reason, fsm, dpm, handoff,
+    null_ratio, duplicate_ratio, sort_order_ok, issues,
+):
+    """Write the three existing result objects after all compute and evaluation work."""
+    run_master_path = OBJ / 'factor_run_master' / ("factor_run_master__{}.json".format(meta["report_id"]))
+    diag_path = OBJ / 'validation' / ("factor_run_diagnostics__{}.json".format(meta["report_id"]))
+    handoff_path = OBJ / 'handoff' / ("handoff_to_step5__{}.json".format(meta["report_id"]))
+
+    run_master = build_step4_completed_run_master(
+        meta=meta, base_identity=base_identity, input_paths=input_paths,
+        output_paths=output_paths, coverage=coverage, evaluation_plan=evaluation_plan,
+        backend_runs=backend_runs, warnings=warnings, failure_reason=failure_reason,
+        diagnostics_path=diag_path, handoff_path=handoff_path,
+    )
+    diagnostics = build_step4_completed_diagnostics(
+        meta=meta, input_paths=input_paths, output_paths=output_paths,
+        coverage=coverage, evaluation_plan=evaluation_plan, backend_runs=backend_runs,
+        fsm=fsm, dpm=dpm, handoff=handoff, null_ratio=null_ratio,
+        duplicate_ratio=duplicate_ratio, sort_order_ok=sort_order_ok, issues=issues,
+    )
+    handoff_out = build_completed_step5_handoff(
+        meta=meta, base_identity=base_identity, output_paths=output_paths,
+        coverage=coverage, evaluation_plan=evaluation_plan, backend_runs=backend_runs,
+        warnings=warnings, failure_reason=failure_reason,
+        run_master_path=run_master_path, diagnostics_path=diag_path,
+    )
+
+    acceptance_summary = build_acceptance_summary(
+        report_id=meta['report_id'],
+        factor_id=meta['factor_id'],
+        run_status=meta['run_status_candidate'],
+        output_paths=output_paths,
+        backend_runs=backend_runs,
+        backend_timing_profile=meta['backend_timing_profile'],
+        step4_factor_io_profile=meta['step4_factor_io_profile'],
+        input_io_profile=meta['input_io_profile'],
+    )
+    run_master = add_formal_acceptance_envelope(
+        run_master,
+        identity=run_master['artifact_identity'],
+        run_status=meta['run_status_candidate'],
+        acceptance_summary=acceptance_summary,
+    )
+    handoff_out = add_formal_acceptance_envelope(
+        handoff_out,
+        identity=handoff_out['artifact_identity'],
+        run_status=meta['run_status_candidate'],
+        acceptance_summary=acceptance_summary,
+    )
+
+    write_json(run_master_path, run_master)
+    write_json(diag_path, diagnostics)
+    write_json(handoff_path, handoff_out)
+
+
+def compute_declared_minute_factor(
+    module, *, signal_daily_df, minute_streaming_query, step4_contract, dpm, report_id, run_dir,
+):
+    """Dispatch the declared minute observation route without changing its kernels."""
+    minute_streaming_profile = intraday_flow_preagg_profile = None
+    minute_derived_state_profile = minute_derived_factor_profile = None
+    flow_requirement = _minute_flow_state_requirement(step4_contract, dpm)
+    minute_dates = _daily_trade_dates_for_minute_query(signal_daily_df, minute_streaming_query)
+    if flow_requirement:
+        flow_dataset_id = str(flow_requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1)
+        if flow_dataset_id != MINUTE_DERIVED_FLOW_STATE_V1:
+            result_df, minute_derived_state_profile, minute_derived_factor_profile = (
+                compute_factor_from_data_api_minute_derived_state_batches(
+                    module,
+                    daily_df=signal_daily_df,
+                    requirement=flow_requirement,
+                    minute_query=minute_streaming_query,
+                )
+            )
+        else:
+            load_started = time.perf_counter()
+            flow_state_df, minute_derived_state_profile = _load_required_minute_flow_state(
+                requirement=flow_requirement,
+                daily_df=signal_daily_df,
+                minute_query=minute_streaming_query,
+            )
+            minute_derived_state_profile['phase_seconds'] = {
+                'load_derived_state': minute_derived_state_profile.get('load_seconds') or (time.perf_counter() - load_started),
+            }
+            result_df, minute_derived_factor_profile = compute_factor_from_minute_derived_state(
+                module,
+                daily_df=signal_daily_df,
+                flow_state_df=flow_state_df,
+                dataset_id=flow_dataset_id,
+            )
+    elif _generic_minute_full_window_forbidden(minute_dates):
+        raise SystemExit(
+            'BLOCK_STEP4_MINUTE_GENERIC_STREAMING_FULL_WINDOW_FORBIDDEN: '
+            f'generic minute streaming is forbidden for {len(minute_dates)} formal dates without '
+            f'{MINUTE_DERIVED_FLOW_STATE_V1}; run scripts/build_minute_derived_datamart.py or declare a derived-state contract.'
+        )
+    elif _supports_sp3_intraday_flow_fast_path(module):
+        result_df, intraday_flow_preagg_profile = compute_factor_intraday_flow_daily_preagg_contract(
+            daily_df=signal_daily_df,
+            minute_query=minute_streaming_query,
+            report_id=report_id,
+            run_dir=run_dir,
+        )
+    else:
+        result_df, minute_streaming_profile = compute_factor_streaming_minute_contract(
+            module,
+            daily_df=signal_daily_df,
+            minute_query=minute_streaming_query,
+            report_id=report_id,
+        )
+    return (result_df, minute_streaming_profile, intraday_flow_preagg_profile,
+            minute_derived_state_profile, minute_derived_factor_profile)
+
+
+def build_step4_input_io_profile(
+    *, local_inputs, additional_paths, implementation_inputs, data_api_profile,
+    daily_file, signal_daily_file, evaluation_daily_file, minute_streaming_query,
+    derived_state_root, prepared_derived_state, parent_diagnostics_projection,
+    parent_diagnostics_projection_profiles, state_datamart_reuse,
+):
+    """Describe the already selected inputs; no retrieval, cache mutation or factor work."""
+    input_io_profile = {
+        'additional_input_paths': {name: str(path) for name, path in additional_paths.items()},
+        'implementation_inputs': implementation_inputs,
+        'source': 'local_snapshot' if data_api_profile is None else 'factorforge_data_api_full_query',
+        'daily_selected_format': 'parquet' if daily_file.suffix.lower() == '.parquet' else 'csv',
+        'daily_selected_path': str(daily_file),
+        'formula_input_dataset': local_inputs.get('formula_input_dataset') or 'clean_daily_bar',
+        'signal_daily_path': str(signal_daily_file),
+        'evaluation_daily_path': str(evaluation_daily_file),
+        'daily_parquet_path': str(WORKSPACE / local_inputs['daily_df_parquet']) if local_inputs.get('daily_df_parquet') and not Path(local_inputs['daily_df_parquet']).is_absolute() else local_inputs.get('daily_df_parquet'),
+        'daily_csv_path': str(WORKSPACE / local_inputs['daily_df_csv']) if local_inputs.get('daily_df_csv') and not Path(local_inputs['daily_df_csv']).is_absolute() else local_inputs.get('daily_df_csv'),
+        'data_api_profile': data_api_profile,
+        'minute_streaming_enabled': bool(minute_streaming_query),
+        'prepared_derived_state_root': (
+            str(derived_state_root) if prepared_derived_state else None
+        ),
+        'prepared_derived_state_controller': bool(prepared_derived_state),
+        'parent_diagnostics_projection': {
+            'enabled': bool(parent_diagnostics_projection),
+            'profiles': parent_diagnostics_projection_profiles,
+            'full_factor_parquet_preserved': bool(parent_diagnostics_projection),
+        },
+        'state_datamart_reuse': state_datamart_reuse,
+    }
+    if isinstance(data_api_profile, dict):
+        result_metadata = data_api_profile.get('result_metadata') if isinstance(data_api_profile.get('result_metadata'), dict) else {}
+        daily_basic_meta = result_metadata.get('daily_basic') if isinstance(result_metadata.get('daily_basic'), dict) else {}
+        daily_basic_perf = daily_basic_meta.get('performance_profile') if isinstance(daily_basic_meta.get('performance_profile'), dict) else {}
+        backtest_base_profile = (
+            data_api_profile.get('backtest_base_reuse_profile')
+            if isinstance(data_api_profile.get('backtest_base_reuse_profile'), dict)
+            else result_metadata.get('backtest_base_daily_controls_v1')
+        )
+        if isinstance(daily_basic_perf, dict) and daily_basic_perf:
+            input_io_profile['daily_basic_reuse_profile'] = daily_basic_perf
+            input_io_profile['daily_basic_selected_format'] = daily_basic_perf.get('daily_basic_selected_format')
+            input_io_profile['daily_basic_cache_hit'] = daily_basic_perf.get('daily_basic_cache_hit')
+            input_io_profile['daily_basic_cache_path'] = daily_basic_perf.get('daily_basic_cache_path')
+            input_io_profile['daily_basic_rows'] = daily_basic_perf.get('daily_basic_rows')
+            input_io_profile['daily_basic_dates'] = daily_basic_perf.get('daily_basic_dates')
+            input_io_profile['daily_basic_tickers'] = daily_basic_perf.get('daily_basic_tickers')
+            input_io_profile['daily_basic_load_seconds'] = daily_basic_perf.get('daily_basic_load_seconds')
+        if isinstance(backtest_base_profile, dict) and backtest_base_profile:
+            input_io_profile['backtest_base_reuse_profile'] = backtest_base_profile
+            input_io_profile['backtest_base_reuse_hit'] = backtest_base_profile.get('backtest_base_reuse_hit')
+            input_io_profile['backtest_base_cache_path'] = backtest_base_profile.get('backtest_base_cache_path')
+    return input_io_profile
+
+
+def resolve_step4_diagnostic_contract(
+    fsm, handoff, *, report_id, expected_host_trust_manifest_sha256,
+):
+    """Validate an explicitly declared child diagnostic; ordinary research returns None."""
+    evo_diagnostic_contract = fsm.get('evo_transfer_diagnostic_contract')
+    handoff_evo_contract = handoff.get('evo_transfer_diagnostic_contract')
+    if evo_diagnostic_contract is not None or handoff_evo_contract is not None:
+        if not isinstance(evo_diagnostic_contract, dict) or handoff_evo_contract != evo_diagnostic_contract:
+            raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_DIAGNOSTIC_CONTRACT_PROJECTION')
+        parent_report_id = str(evo_diagnostic_contract.get('parent_report_id') or '')
+        if not expected_host_trust_manifest_sha256:
+            raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_EXTERNAL_HOST_TRUST_PIN_REQUIRED')
+        diagnostic_reasons = validate_evo_transfer_diagnostic_contract(
+            evo_diagnostic_contract,
+            workspace_root=FACTORFORGE,
+            parent_report_id=parent_report_id,
+            child_report_id=report_id,
+            expected_host_trust_manifest_sha256=(
+                expected_host_trust_manifest_sha256
+            ),
+        )
+        if diagnostic_reasons:
+            raise ValueError(';'.join(diagnostic_reasons))
+    else:
+        evo_diagnostic_contract = None
+    return evo_diagnostic_contract
+
+
+def resolve_step4_input_selection(
+    *, report_id, dpm, handoff, run_dir,
+):
+    """Select declared local/API inputs and modes before physical materialization."""
+    local_inputs = handoff.get('local_input_paths') or dpm.get('local_input_paths') or {}
+    step4_contract = _step4_data_contract(dpm, handoff)
+    validate_pre_release_step4_data_access(dpm, handoff)
+    evo_pre_release = isinstance(dpm.get('research_windows'), dict)
+    if evo_pre_release:
+        local_inputs, data_api_profile = validate_evo_pre_release_data_receipt(
+            report_id=report_id,
+            dpm=dpm,
+            handoff=handoff,
+            run_dir=run_dir,
+        )
+    else:
+        data_api_profile = None
+    local_is_delivery_receipt = (
+        handoff.get('local_is_input_delivery_receipt')
+        or dpm.get('local_is_input_delivery_receipt')
+    )
+    if local_is_delivery_receipt:
+        if evo_pre_release:
+            raise SystemExit(
+                'BLOCK_STEP4_LOCAL_IS_DELIVERY_RECEIPT_INVALID: evo_pre_release_forbidden'
+            )
+        data_api_profile = validate_local_is_delivery_receipt(
+            receipt_path=local_is_delivery_receipt,
+            contract=step4_contract,
+            local_inputs=local_inputs,
+        )
+    force_contract_inputs = (
+        False
+        if evo_pre_release or data_api_profile is not None
+        else bool(
+            (step4_contract.get('full_queries') or {})
+            if isinstance(step4_contract, dict)
+            else False
+        )
+    )
+    prepared_derived_state = (
+        str(local_inputs.get('input_mode') or '') == 'derived_state_with_daily'
+    )
+    return (local_inputs, step4_contract, data_api_profile,
+            evo_pre_release, force_contract_inputs, prepared_derived_state)
+
+
+def build_step4_web_evaluation_contract(fsm, evo_diagnostic_contract):
+    """Copy declared diagnostic trials into the selected evaluation contract."""
+    web_evaluation_contract = (
+        fsm.get('evaluation_contract')
+        if isinstance(fsm.get('evaluation_contract'), dict)
+        and fsm.get('evaluation_contract', {}).get('version')
+        == WEB_EVALUATION_CONTRACT_VERSION
+        else None
+    )
+    if evo_diagnostic_contract is not None:
+        if web_evaluation_contract is None:
+            raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_WEB_EVALUATION_CONTRACT_REQUIRED')
+        web_evaluation_contract = json.loads(json.dumps(web_evaluation_contract))
+        addendum_ref = evo_diagnostic_contract.get('execution_addendum_ref')
+        diagnostic_trials: list[dict[str, Any]] = []
+        if isinstance(addendum_ref, dict):
+            addendum_path = Path(str(addendum_ref.get('path') or '')).expanduser()
+            if not addendum_path.is_absolute():
+                addendum_path = FACTORFORGE / addendum_path
+            addendum = load_json(addendum_path)
+            diagnostic_trials = [
+                {
+                    'trial_id': test['test_id'],
+                    'formula_or_law': test['formula_or_law'],
+                    'signal_column': test['signal_column'],
+                }
+                for test in (addendum.get('execution_tests') or [])
+                if isinstance(test, dict)
+                and test.get('implementation_mode') == 'FORMULA_DIAGNOSTIC'
+            ]
+        existing_diagnostics = list(web_evaluation_contract.get('diagnostic_trials') or [])
+        existing_ids = {
+            str(item.get('trial_id') or '')
+            for item in existing_diagnostics
+            if isinstance(item, dict)
+        }
+        if any(item['trial_id'] in existing_ids for item in diagnostic_trials):
+            raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_DIAGNOSTIC_TRIAL_COLLISION')
+        web_evaluation_contract['diagnostic_trials'] = [
+            *existing_diagnostics,
+            *diagnostic_trials,
+        ]
+    return web_evaluation_contract
+
+
+def summarize_step4_output_quality(
+    result_df, *, parent_factor_summary, signal_col, row_count,
+):
+    """Measure nulls, duplicates and key ordering before large frames are released."""
+    if parent_factor_summary is not None:
+        null_ratio = {
+            signal_col: float(1.0 - (int(parent_factor_summary['non_null']) / row_count))
+        } if row_count else {}
+        duplicate_ratio = {
+            'ts_code_trade_date': parent_factor_summary.get('duplicate_ratio')
+        }
+        sort_order_ok = bool(parent_factor_summary.get('key_order_ok'))
+    else:
+        null_ratio = {}
+        for col in [signal_col]:
+            if col in result_df.columns and row_count:
+                null_ratio[col] = float(result_df[col].isna().mean())
+        duplicate_ratio = {}
+        if {'ts_code', 'trade_date'}.issubset(result_df.columns):
+            duplicate_ratio['ts_code_trade_date'] = float(result_df.duplicated(['ts_code', 'trade_date']).mean())
+        sort_order_ok = True
+        if {'ts_code', 'trade_date'}.issubset(result_df.columns):
+            sort_order_ok = result_df[['ts_code', 'trade_date']].reset_index(drop=True).equals(
+                result_df.sort_values(['ts_code', 'trade_date'])[['ts_code', 'trade_date']].reset_index(drop=True)
+            )
+    return null_ratio, duplicate_ratio, sort_order_ok
+
+
+def build_recomputed_factor_io_profile(
+    *, minute_streaming_query, minute_streaming_profile, intraday_flow_preagg_profile,
+    minute_derived_state_profile, minute_derived_factor_profile, existing_factor_source,
+    parquet_existed_before_step4, step3b_cache_source, parquet_path, existing_factor_reuse_gate,
+):
+    """Describe a completed recomputation, preserving the route and reuse explanation."""
+    step4_factor_io_profile = {
+        'version': 'factorforge_step4_factor_io_profile_v1',
+        'source': (
+            'step4_minute_derived_flow_state_recompute'
+            if minute_derived_state_profile else
+            'step4_intraday_flow_daily_preagg_recompute'
+            if intraday_flow_preagg_profile else
+            ('step4_minute_streaming_recompute' if minute_streaming_query else 'step4_recompute_fallback')
+        ),
+        'prior_factor_parquet_source': existing_factor_source.get('source') if parquet_existed_before_step4 else None,
+        'step3b_compute_cache_source': step3b_cache_source or None,
+        'selected_factor_format': 'computed',
+        'selected_factor_path': str(parquet_path),
+        'recomputed_factor': True,
+        'parquet_existed_before_step4': bool(parquet_existed_before_step4),
+        'parquet_written_by_step4': True,
+        'reuse_gate': (
+            (step3b_cache_source or {}).get('reuse_gate')
+            or existing_factor_reuse_gate
+            or {
+                'version': 'factorforge_reuse_gate_v1',
+                'decision': 'recompute_required',
+                'matched_fields': [],
+                'mismatched_fields': [],
+                'missing_fields': [],
+                'source_artifact': str(parquet_path) if parquet_existed_before_step4 else None,
+                'reason': 'no_reusable_identity_matched',
+            }
+        ),
+    }
+    if intraday_flow_preagg_profile:
+        step4_factor_io_profile['intraday_flow_daily_preagg_profile'] = intraday_flow_preagg_profile
+    if minute_derived_state_profile:
+        step4_factor_io_profile['minute_derived_state_profile'] = minute_derived_state_profile
+    if minute_derived_factor_profile:
+        step4_factor_io_profile['minute_derived_factor_profile'] = minute_derived_factor_profile
+        step4_factor_io_profile['performance_phase_profile'] = {
+            'load_derived_state_seconds': float((minute_derived_state_profile or {}).get('load_seconds') or 0.0),
+            'factor_compute_seconds': float(minute_derived_factor_profile.get('factor_compute_seconds') or 0.0),
+            'evaluation_seconds': None,
+            'write_outputs_seconds': None,
+        }
+    if minute_streaming_profile:
+        step4_factor_io_profile['minute_streaming_profile'] = minute_streaming_profile
+    return step4_factor_io_profile
+
+
 def main() -> None:
     global FACTORFORGE, WORKSPACE, OBJ, RUNS, _RUNTIME_MANIFEST
     ap = argparse.ArgumentParser()
@@ -4862,27 +5525,10 @@ def main() -> None:
             raise SystemExit(
                 f'{BLOCK_STATE_RESOLUTION_MISSING}: {state_resolution_path}'
             )
-        evo_diagnostic_contract = fsm.get('evo_transfer_diagnostic_contract')
-        handoff_evo_contract = handoff.get('evo_transfer_diagnostic_contract')
-        if evo_diagnostic_contract is not None or handoff_evo_contract is not None:
-            if not isinstance(evo_diagnostic_contract, dict) or handoff_evo_contract != evo_diagnostic_contract:
-                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_DIAGNOSTIC_CONTRACT_PROJECTION')
-            parent_report_id = str(evo_diagnostic_contract.get('parent_report_id') or '')
-            if not args.expected_host_trust_manifest_sha256:
-                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_EXTERNAL_HOST_TRUST_PIN_REQUIRED')
-            diagnostic_reasons = validate_evo_transfer_diagnostic_contract(
-                evo_diagnostic_contract,
-                workspace_root=FACTORFORGE,
-                parent_report_id=parent_report_id,
-                child_report_id=report_id,
-                expected_host_trust_manifest_sha256=(
-                    args.expected_host_trust_manifest_sha256
-                ),
-            )
-            if diagnostic_reasons:
-                raise ValueError(';'.join(diagnostic_reasons))
-        else:
-            evo_diagnostic_contract = None
+        evo_diagnostic_contract = resolve_step4_diagnostic_contract(
+            fsm, handoff, report_id=report_id,
+            expected_host_trust_manifest_sha256=args.expected_host_trust_manifest_sha256,
+        )
         base_identity = handoff.get('artifact_identity') or fsm.get('artifact_identity') or {}
         implementation_mode_decision = (
             handoff.get('implementation_mode_decision')
@@ -4928,44 +5574,11 @@ def main() -> None:
         # Frozen-schema execution: Step4 consumes either legacy normalized local
         # snapshots or the Step3 Data API contract. It must not guess raw paths or
         # build clean layers itself.
-        local_inputs = handoff.get('local_input_paths') or dpm.get('local_input_paths') or {}
-        step4_contract = _step4_data_contract(dpm, handoff)
-        validate_pre_release_step4_data_access(dpm, handoff)
-        evo_pre_release = isinstance(dpm.get('research_windows'), dict)
-        if evo_pre_release:
-            local_inputs, data_api_profile = validate_evo_pre_release_data_receipt(
-                report_id=report_id,
-                dpm=dpm,
-                handoff=handoff,
-                run_dir=run_dir,
-            )
-        else:
-            data_api_profile = None
-        local_is_delivery_receipt = (
-            handoff.get('local_is_input_delivery_receipt')
-            or dpm.get('local_is_input_delivery_receipt')
-        )
-        if local_is_delivery_receipt:
-            if evo_pre_release:
-                raise SystemExit(
-                    'BLOCK_STEP4_LOCAL_IS_DELIVERY_RECEIPT_INVALID: evo_pre_release_forbidden'
-                )
-            data_api_profile = validate_local_is_delivery_receipt(
-                receipt_path=local_is_delivery_receipt,
-                contract=step4_contract,
-                local_inputs=local_inputs,
-            )
-        force_contract_inputs = (
-            False
-            if evo_pre_release or data_api_profile is not None
-            else bool(
-                (step4_contract.get('full_queries') or {})
-                if isinstance(step4_contract, dict)
-                else False
-            )
-        )
-        prepared_derived_state = (
-            str(local_inputs.get('input_mode') or '') == 'derived_state_with_daily'
+        (
+            local_inputs, step4_contract, data_api_profile,
+            evo_pre_release, force_contract_inputs, prepared_derived_state,
+        ) = resolve_step4_input_selection(
+            report_id=report_id, dpm=dpm, handoff=handoff, run_dir=run_dir,
         )
         from factor_factory.prepared_daily_inputs import is_prepared_daily, validate_full_scope
         prepared_daily = is_prepared_daily(local_inputs)
@@ -5266,52 +5879,16 @@ def main() -> None:
                 'daily_input_path': str(daily_file),
                 'output_path': str(parquet_path),
             }
-        input_io_profile = {
-            'additional_input_paths': {name: str(path) for name, path in additional_paths.items()},
-            'implementation_inputs': implementation_inputs,
-            'source': 'local_snapshot' if data_api_profile is None else 'factorforge_data_api_full_query',
-            'daily_selected_format': 'parquet' if daily_file.suffix.lower() == '.parquet' else 'csv',
-            'daily_selected_path': str(daily_file),
-            'formula_input_dataset': local_inputs.get('formula_input_dataset') or 'clean_daily_bar',
-            'signal_daily_path': str(signal_daily_file),
-            'evaluation_daily_path': str(evaluation_daily_file),
-            'daily_parquet_path': str(WORKSPACE / local_inputs['daily_df_parquet']) if local_inputs.get('daily_df_parquet') and not Path(local_inputs['daily_df_parquet']).is_absolute() else local_inputs.get('daily_df_parquet'),
-            'daily_csv_path': str(WORKSPACE / local_inputs['daily_df_csv']) if local_inputs.get('daily_df_csv') and not Path(local_inputs['daily_df_csv']).is_absolute() else local_inputs.get('daily_df_csv'),
-            'data_api_profile': data_api_profile,
-            'minute_streaming_enabled': bool(minute_streaming_query),
-            'prepared_derived_state_root': (
-                str(derived_state_root) if prepared_derived_state else None
-            ),
-            'prepared_derived_state_controller': bool(prepared_derived_state),
-            'parent_diagnostics_projection': {
-                'enabled': bool(parent_diagnostics_projection),
-                'profiles': parent_diagnostics_projection_profiles,
-                'full_factor_parquet_preserved': bool(parent_diagnostics_projection),
-            },
-            'state_datamart_reuse': state_datamart_reuse,
-        }
-        if isinstance(data_api_profile, dict):
-            result_metadata = data_api_profile.get('result_metadata') if isinstance(data_api_profile.get('result_metadata'), dict) else {}
-            daily_basic_meta = result_metadata.get('daily_basic') if isinstance(result_metadata.get('daily_basic'), dict) else {}
-            daily_basic_perf = daily_basic_meta.get('performance_profile') if isinstance(daily_basic_meta.get('performance_profile'), dict) else {}
-            backtest_base_profile = (
-                data_api_profile.get('backtest_base_reuse_profile')
-                if isinstance(data_api_profile.get('backtest_base_reuse_profile'), dict)
-                else result_metadata.get('backtest_base_daily_controls_v1')
-            )
-            if isinstance(daily_basic_perf, dict) and daily_basic_perf:
-                input_io_profile['daily_basic_reuse_profile'] = daily_basic_perf
-                input_io_profile['daily_basic_selected_format'] = daily_basic_perf.get('daily_basic_selected_format')
-                input_io_profile['daily_basic_cache_hit'] = daily_basic_perf.get('daily_basic_cache_hit')
-                input_io_profile['daily_basic_cache_path'] = daily_basic_perf.get('daily_basic_cache_path')
-                input_io_profile['daily_basic_rows'] = daily_basic_perf.get('daily_basic_rows')
-                input_io_profile['daily_basic_dates'] = daily_basic_perf.get('daily_basic_dates')
-                input_io_profile['daily_basic_tickers'] = daily_basic_perf.get('daily_basic_tickers')
-                input_io_profile['daily_basic_load_seconds'] = daily_basic_perf.get('daily_basic_load_seconds')
-            if isinstance(backtest_base_profile, dict) and backtest_base_profile:
-                input_io_profile['backtest_base_reuse_profile'] = backtest_base_profile
-                input_io_profile['backtest_base_reuse_hit'] = backtest_base_profile.get('backtest_base_reuse_hit')
-                input_io_profile['backtest_base_cache_path'] = backtest_base_profile.get('backtest_base_cache_path')
+        input_io_profile = build_step4_input_io_profile(
+            local_inputs=local_inputs, additional_paths=additional_paths,
+            implementation_inputs=implementation_inputs, data_api_profile=data_api_profile,
+            daily_file=daily_file, signal_daily_file=signal_daily_file,
+            evaluation_daily_file=evaluation_daily_file, minute_streaming_query=minute_streaming_query,
+            derived_state_root=derived_state_root, prepared_derived_state=prepared_derived_state,
+            parent_diagnostics_projection=parent_diagnostics_projection,
+            parent_diagnostics_projection_profiles=parent_diagnostics_projection_profiles,
+            state_datamart_reuse=state_datamart_reuse,
+        )
         step3b_cache_source = {}
         if (
             not prepared_derived_state
@@ -5397,55 +5974,14 @@ def main() -> None:
             minute_derived_factor_profile = None
             if minute_streaming_query:
                 try:
-                    flow_requirement = _minute_flow_state_requirement(step4_contract, dpm)
-                    minute_dates = _daily_trade_dates_for_minute_query(signal_daily_df, minute_streaming_query)
-                    if flow_requirement:
-                        flow_dataset_id = str(flow_requirement.get('dataset_id') or MINUTE_DERIVED_FLOW_STATE_V1)
-                        if flow_dataset_id != MINUTE_DERIVED_FLOW_STATE_V1:
-                            result_df, minute_derived_state_profile, minute_derived_factor_profile = (
-                                compute_factor_from_data_api_minute_derived_state_batches(
-                                    module,
-                                    daily_df=signal_daily_df,
-                                    requirement=flow_requirement,
-                                    minute_query=minute_streaming_query,
-                                )
-                            )
-                        else:
-                            load_started = time.perf_counter()
-                            flow_state_df, minute_derived_state_profile = _load_required_minute_flow_state(
-                                requirement=flow_requirement,
-                                daily_df=signal_daily_df,
-                                minute_query=minute_streaming_query,
-                            )
-                            minute_derived_state_profile['phase_seconds'] = {
-                                'load_derived_state': minute_derived_state_profile.get('load_seconds') or (time.perf_counter() - load_started),
-                            }
-                            result_df, minute_derived_factor_profile = compute_factor_from_minute_derived_state(
-                                module,
-                                daily_df=signal_daily_df,
-                                flow_state_df=flow_state_df,
-                                dataset_id=flow_dataset_id,
-                            )
-                    elif _generic_minute_full_window_forbidden(minute_dates):
-                        raise SystemExit(
-                            'BLOCK_STEP4_MINUTE_GENERIC_STREAMING_FULL_WINDOW_FORBIDDEN: '
-                            f'generic minute streaming is forbidden for {len(minute_dates)} formal dates without '
-                            f'{MINUTE_DERIVED_FLOW_STATE_V1}; run scripts/build_minute_derived_datamart.py or declare a derived-state contract.'
-                        )
-                    elif _supports_sp3_intraday_flow_fast_path(module):
-                        result_df, intraday_flow_preagg_profile = compute_factor_intraday_flow_daily_preagg_contract(
-                            daily_df=signal_daily_df,
-                            minute_query=minute_streaming_query,
-                            report_id=report_id,
-                            run_dir=run_dir,
-                        )
-                    else:
-                        result_df, minute_streaming_profile = compute_factor_streaming_minute_contract(
-                            module,
-                            daily_df=signal_daily_df,
-                            minute_query=minute_streaming_query,
-                            report_id=report_id,
-                        )
+                    (
+                        result_df, minute_streaming_profile, intraday_flow_preagg_profile,
+                        minute_derived_state_profile, minute_derived_factor_profile,
+                    ) = compute_declared_minute_factor(
+                        module, signal_daily_df=signal_daily_df,
+                        minute_streaming_query=minute_streaming_query,
+                        step4_contract=step4_contract, dpm=dpm, report_id=report_id, run_dir=run_dir,
+                    )
                 except SystemExit as exc:
                     token = str(exc).split(':', 1)[0]
                     issues.append({
@@ -5485,50 +6021,15 @@ def main() -> None:
                 )
             if evo_pre_release:
                 end_agent_execution_isolation()
-            step4_factor_io_profile = {
-                'version': 'factorforge_step4_factor_io_profile_v1',
-                'source': (
-                    'step4_minute_derived_flow_state_recompute'
-                    if minute_derived_state_profile else
-                    'step4_intraday_flow_daily_preagg_recompute'
-                    if intraday_flow_preagg_profile else
-                    ('step4_minute_streaming_recompute' if minute_streaming_query else 'step4_recompute_fallback')
-                ),
-                'prior_factor_parquet_source': existing_factor_source.get('source') if parquet_existed_before_step4 else None,
-                'step3b_compute_cache_source': step3b_cache_source or None,
-                'selected_factor_format': 'computed',
-                'selected_factor_path': str(parquet_path),
-                'recomputed_factor': True,
-                'parquet_existed_before_step4': bool(parquet_existed_before_step4),
-                'parquet_written_by_step4': True,
-                'reuse_gate': (
-                    (step3b_cache_source or {}).get('reuse_gate')
-                    or existing_factor_reuse_gate
-                    or {
-                        'version': 'factorforge_reuse_gate_v1',
-                        'decision': 'recompute_required',
-                        'matched_fields': [],
-                        'mismatched_fields': [],
-                        'missing_fields': [],
-                        'source_artifact': str(parquet_path) if parquet_existed_before_step4 else None,
-                        'reason': 'no_reusable_identity_matched',
-                    }
-                ),
-            }
-            if intraday_flow_preagg_profile:
-                step4_factor_io_profile['intraday_flow_daily_preagg_profile'] = intraday_flow_preagg_profile
-            if minute_derived_state_profile:
-                step4_factor_io_profile['minute_derived_state_profile'] = minute_derived_state_profile
-            if minute_derived_factor_profile:
-                step4_factor_io_profile['minute_derived_factor_profile'] = minute_derived_factor_profile
-                step4_factor_io_profile['performance_phase_profile'] = {
-                    'load_derived_state_seconds': float((minute_derived_state_profile or {}).get('load_seconds') or 0.0),
-                    'factor_compute_seconds': float(minute_derived_factor_profile.get('factor_compute_seconds') or 0.0),
-                    'evaluation_seconds': None,
-                    'write_outputs_seconds': None,
-                }
-            if minute_streaming_profile:
-                step4_factor_io_profile['minute_streaming_profile'] = minute_streaming_profile
+            step4_factor_io_profile = build_recomputed_factor_io_profile(
+                minute_streaming_query=minute_streaming_query, minute_streaming_profile=minute_streaming_profile,
+                intraday_flow_preagg_profile=intraday_flow_preagg_profile,
+                minute_derived_state_profile=minute_derived_state_profile,
+                minute_derived_factor_profile=minute_derived_factor_profile,
+                existing_factor_source=existing_factor_source, parquet_existed_before_step4=parquet_existed_before_step4,
+                step3b_cache_source=step3b_cache_source, parquet_path=parquet_path,
+                existing_factor_reuse_gate=existing_factor_reuse_gate,
+            )
 
         if (
             (parent_factor_summary is not None and int(parent_factor_summary.get('row_count') or 0) == 0)
@@ -5587,141 +6088,26 @@ def main() -> None:
                 else 'step3b_csv_already_available'
             )
 
-        if parent_factor_summary is not None:
-            row_count = int(parent_factor_summary['row_count'])
-            date_count = int(parent_factor_summary['date_count'])
-            ticker_count = int(parent_factor_summary['ticker_count'])
-            actual_start = _normal_date_value(parent_factor_summary['start'])
-            actual_end = _normal_date_value(parent_factor_summary['end'])
-        else:
-            row_count = int(len(result_df))
-            date_count = int(result_df['trade_date'].nunique()) if 'trade_date' in result_df.columns else 0
-            ticker_count = int(result_df['ts_code'].nunique()) if 'ts_code' in result_df.columns else 0
-            actual_start = _normal_date_value(result_df['trade_date'].min()) if 'trade_date' in result_df.columns and row_count else None
-            actual_end = _normal_date_value(result_df['trade_date'].max()) if 'trade_date' in result_df.columns and row_count else None
-        target_window = dpm.get('sample_window', {}) or {}
-        prepared_window = (dpm.get('local_input_paths') or {}).get('sample_window_actual') or {}
-        research_window = _research_window_contract(step4_contract, dpm)
-        target_start_raw = target_window.get('start')
-        target_start = _normal_date_value(target_start_raw)
-        target_end_raw = target_window.get('end')
-        input_daily_start = (
-            _normal_date_value(parent_daily_summary['start'])
-            if parent_daily_summary is not None
-            else _normal_date_value(signal_daily_df['trade_date'].min()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
-        )
-        input_daily_end = (
-            _normal_date_value(parent_daily_summary['end'])
-            if parent_daily_summary is not None
-            else _normal_date_value(signal_daily_df['trade_date'].max()) if 'trade_date' in signal_daily_df.columns and len(signal_daily_df) else None
-        )
-        prepared_start = _normal_date_value(prepared_window.get('start'))
-        prepared_end = _normal_date_value(prepared_window.get('end'))
-        # Step3B sample snapshots may leave a short sample_window_actual in
-        # data_prep_master. Once Step4 has materialized the formal Data API
-        # full-query input, that sample window must not cap Step4 coverage.
-        # A validated ordinary local-IS delivery is the full contract input as
-        # surely as an in-process Data API materialization. ``force`` is
-        # disabled after receipt validation to avoid a redundant network fetch,
-        # so it cannot also serve as the coverage discriminator.
-        full_contract_input = is_full_contract_input_profile(
-            data_api_profile,
+        coverage = summarize_step4_coverage(
+            result_df=result_df, signal_daily_df=signal_daily_df,
+            parent_factor_summary=parent_factor_summary, parent_daily_summary=parent_daily_summary,
+            signal_col=signal_col, fsm=fsm, dpm=dpm, handoff=handoff,
+            step4_contract=step4_contract, data_api_profile=data_api_profile,
             force_contract_inputs=force_contract_inputs,
         )
-        if full_contract_input:
-            effective_target_start = input_daily_start or target_start
-            effective_target_end = input_daily_end if str(target_end_raw) == 'current' else (input_daily_end or _normal_date_value(target_end_raw))
-        else:
-            effective_target_start = prepared_start or input_daily_start or target_start
-            if str(target_end_raw) == 'current':
-                effective_target_end = input_daily_end
-            else:
-                effective_target_end = prepared_end or _normal_date_value(target_end_raw)
-        target_end = effective_target_end
-        coverage_complete = (actual_start == effective_target_start and actual_end == effective_target_end)
-        run_status = 'success' if coverage_complete else 'partial'
+        run_status = 'success' if coverage.coverage_complete else 'partial'
         failure_reason = None
-        sparse_signal_allowed = bool(
-            step4_contract.get('sparse_signal_allowed')
-            or dpm.get('sparse_signal_allowed')
-            or handoff.get('sparse_signal_allowed')
-        )
-        canonical_spec = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}
-        formula_ir = canonical_spec.get('formula_ir') if isinstance(canonical_spec.get('formula_ir'), dict) else None
-        formula_max_lookback = max_formula_ir_lookback(formula_ir)
-        formal_signal_coverage = (
-            build_formal_signal_coverage_profile_from_stream_summary(
-                summary=parent_factor_summary,
-                signal_col=signal_col,
-                actual_start=actual_start,
-                actual_end=actual_end,
-                effective_target_start=effective_target_start,
-                effective_target_end=effective_target_end,
-                sparse_signal_allowed=sparse_signal_allowed,
-                formula_max_lookback=formula_max_lookback,
-            )
-            if parent_factor_summary is not None
-            else build_formal_signal_coverage_profile(
-                result_df=result_df,
-                signal_col=signal_col,
-                actual_start=actual_start,
-                actual_end=actual_end,
-                effective_target_start=effective_target_start,
-                effective_target_end=effective_target_end,
-                sparse_signal_allowed=sparse_signal_allowed,
-                formula_max_lookback=formula_max_lookback,
-            )
-        )
-        if formal_signal_coverage.get('coverage_gate_verdict') == 'BLOCK':
+        if coverage.formal_signal_coverage.get('coverage_gate_verdict') == 'BLOCK':
             token = 'BLOCK_STEP4_FORMAL_SIGNAL_NON_NULL_COVERAGE_LOW'
             issues.append({
                 'severity': 'error',
                 'code': token,
                 'message': 'formal Step4 factor values have insufficient non-null signal coverage for promotion-gate evidence',
-                'evidence': formal_signal_coverage,
+                'evidence': coverage.formal_signal_coverage,
             })
             run_status = 'failed'
             failure_reason = token
-        web_evaluation_contract = (
-            fsm.get('evaluation_contract')
-            if isinstance(fsm.get('evaluation_contract'), dict)
-            and fsm.get('evaluation_contract', {}).get('version')
-            == WEB_EVALUATION_CONTRACT_VERSION
-            else None
-        )
-        if evo_diagnostic_contract is not None:
-            if web_evaluation_contract is None:
-                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_WEB_EVALUATION_CONTRACT_REQUIRED')
-            web_evaluation_contract = json.loads(json.dumps(web_evaluation_contract))
-            addendum_ref = evo_diagnostic_contract.get('execution_addendum_ref')
-            diagnostic_trials: list[dict[str, Any]] = []
-            if isinstance(addendum_ref, dict):
-                addendum_path = Path(str(addendum_ref.get('path') or '')).expanduser()
-                if not addendum_path.is_absolute():
-                    addendum_path = FACTORFORGE / addendum_path
-                addendum = load_json(addendum_path)
-                diagnostic_trials = [
-                    {
-                        'trial_id': test['test_id'],
-                        'formula_or_law': test['formula_or_law'],
-                        'signal_column': test['signal_column'],
-                    }
-                    for test in (addendum.get('execution_tests') or [])
-                    if isinstance(test, dict)
-                    and test.get('implementation_mode') == 'FORMULA_DIAGNOSTIC'
-                ]
-            existing_diagnostics = list(web_evaluation_contract.get('diagnostic_trials') or [])
-            existing_ids = {
-                str(item.get('trial_id') or '')
-                for item in existing_diagnostics
-                if isinstance(item, dict)
-            }
-            if any(item['trial_id'] in existing_ids for item in diagnostic_trials):
-                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_DIAGNOSTIC_TRIAL_COLLISION')
-            web_evaluation_contract['diagnostic_trials'] = [
-                *existing_diagnostics,
-                *diagnostic_trials,
-            ]
+        web_evaluation_contract = build_step4_web_evaluation_contract(fsm, evo_diagnostic_contract)
         shared_context_version = (
             'factorforge_shared_evaluation_context_v2'
             if web_evaluation_contract is not None
@@ -5749,8 +6135,8 @@ def main() -> None:
                 signal_col=signal_col,
                 factor_parquet_path=parquet_path,
                 daily_input_path=evaluation_daily_file,
-                target_window=target_window,
-                effective_target_window={'start': effective_target_start, 'end': effective_target_end},
+                target_window=coverage.target_window,
+                effective_target_window={'start': coverage.effective_target_start, 'end': coverage.effective_target_end},
                 evaluation_contract=web_evaluation_contract,
                 signal_daily_df=signal_daily_df,
                 signal_daily_input_path=signal_daily_file,
@@ -5789,27 +6175,10 @@ def main() -> None:
                 raise ValueError(';'.join(exc.reasons)) from exc
         # Compute small output diagnostics before releasing the parent's full
         # factor frame. Custom backend processes load the persisted parquet.
-        if parent_factor_summary is not None:
-            null_ratio = {
-                signal_col: float(1.0 - (int(parent_factor_summary['non_null']) / row_count))
-            } if row_count else {}
-            duplicate_ratio = {
-                'ts_code_trade_date': parent_factor_summary.get('duplicate_ratio')
-            }
-            sort_order_ok = bool(parent_factor_summary.get('key_order_ok'))
-        else:
-            null_ratio = {}
-            for col in [signal_col]:
-                if col in result_df.columns and row_count:
-                    null_ratio[col] = float(result_df[col].isna().mean())
-            duplicate_ratio = {}
-            if {'ts_code', 'trade_date'}.issubset(result_df.columns):
-                duplicate_ratio['ts_code_trade_date'] = float(result_df.duplicated(['ts_code', 'trade_date']).mean())
-            sort_order_ok = True
-            if {'ts_code', 'trade_date'}.issubset(result_df.columns):
-                sort_order_ok = result_df[['ts_code', 'trade_date']].reset_index(drop=True).equals(
-                    result_df.sort_values(['ts_code', 'trade_date'])[['ts_code', 'trade_date']].reset_index(drop=True)
-                )
+        null_ratio, duplicate_ratio, sort_order_ok = summarize_step4_output_quality(
+            result_df, parent_factor_summary=parent_factor_summary,
+            signal_col=signal_col, row_count=coverage.row_count,
+        )
         daily_df, signal_daily_df, minute_df, parent_evaluation_frames_released = (
             release_parent_evaluation_frames_for_custom_primary(
                 custom_primary,
@@ -5851,17 +6220,17 @@ def main() -> None:
             'implementation_path': str(impl_path),
             'started_at_utc': start_utc,
             'finished_at_utc': utc_now(),
-            'row_count': row_count,
-            'date_count': date_count,
-            'ticker_count': ticker_count,
+            'row_count': coverage.row_count,
+            'date_count': coverage.date_count,
+            'ticker_count': coverage.ticker_count,
             'signal_column': signal_col,
-            'actual_window': {'start': actual_start, 'end': actual_end},
-            'target_window': target_window,
-            'effective_target_window': {'start': effective_target_start, 'end': effective_target_end},
+            'actual_window': {'start': coverage.actual_start, 'end': coverage.actual_end},
+            'target_window': coverage.target_window,
+            'effective_target_window': {'start': coverage.effective_target_start, 'end': coverage.effective_target_end},
             'run_status_candidate': run_status,
             'input_io_profile': input_io_profile,
             'step4_factor_io_profile': step4_factor_io_profile,
-            'formal_signal_coverage': formal_signal_coverage,
+            'formal_signal_coverage': coverage.formal_signal_coverage,
             'step4_formal_factor_identity': expected_reuse_identity,
             'step4_factor_csv_policy_observed': factor_csv_policy_observed,
             'state_datamart_reuse': state_datamart_reuse,
@@ -5869,192 +6238,19 @@ def main() -> None:
             'evo_transfer_diagnostic_contract': evo_diagnostic_contract,
             'evo_child_execution': evo_child_execution,
             'backend_timing_profile': backend_timing_profile,
-            'research_window_contract': research_window,
+            'research_window_contract': coverage.research_window,
         }
         meta = merge_run_metadata(existing_meta, step4_owned_meta)
         write_json(meta_path, meta)
         step4_output_paths = output_paths_for_policy(parquet_path, csv_path, sample_csv_path, meta_path, factor_csv_policy_observed)
 
-        run_master_path = OBJ / 'factor_run_master' / f'factor_run_master__{report_id}.json'
-        diag_path = OBJ / 'validation' / f'factor_run_diagnostics__{report_id}.json'
-        handoff_path = OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json'
-
-        run_master = {
-            'report_id': report_id,
-            'factor_id': factor_id,
-            'artifact_identity': derive_identity(base_identity, 'factor_run_master'),
-            'run_status': run_status,
-            'implementation_path': str(impl_path),
-            'output_paths': step4_output_paths,
-            'sample_window': target_window,
-            'runtime_notes': warnings,
-            'diagnostic_summary': {'row_count': row_count, 'date_count': date_count, 'ticker_count': ticker_count},
-            'signal_column': signal_col,
-            'evaluation_plan': evaluation_plan,
-            'evaluation_results': {'backend_runs': backend_runs},
-            'backend_timing_profile': backend_timing_profile,
-            'shared_evaluation_context': shared_context_profile,
-            'evo_transfer_diagnostic_contract': evo_diagnostic_contract,
-            'evo_child_execution': evo_child_execution,
-            'implementation_mode_decision': implementation_mode_decision,
-            'failure_reason': failure_reason,
-            'started_at_utc': start_utc,
-            'finished_at_utc': utc_now(),
-            'input_paths': {k: str(v) for k, v in input_paths.items()},
-            'input_io_profile': input_io_profile,
-            'window_coverage': {
-                'target_start': target_window.get('start'),
-                'target_end': target_window.get('end'),
-                'effective_target_start': effective_target_start,
-                'effective_target_end': effective_target_end,
-                'input_daily_start': input_daily_start,
-                'input_daily_end': input_daily_end,
-                'actual_start': actual_start,
-                'actual_end': actual_end,
-                'coverage_complete': coverage_complete,
-            },
-            'formal_signal_coverage': formal_signal_coverage,
-            'validation_pointer': str(diag_path),
-            'handoff_to_step5_path': str(handoff_path),
-        }
-
-        diagnostics = {
-            'report_id': report_id,
-            'factor_id': factor_id,
-            'run_status': run_status,
-            'diagnostic_generated_at_utc': utc_now(),
-            'evaluation_plan': evaluation_plan,
-            'evaluation_results': {'backend_runs': backend_runs},
-            'implementation_mode_decision': implementation_mode_decision,
-            'input_validation': {
-                'exists_check': {k: v.exists() for k, v in input_paths.items()},
-                'input_io_profile': input_io_profile,
-                'step4_factor_io_profile': step4_factor_io_profile,
-                'step4_factor_csv_policy_observed': factor_csv_policy_observed,
-                'backend_timing_profile': backend_timing_profile,
-                'shared_evaluation_context': shared_context_profile,
-                'schema_check': {'frozen_schema_execution': True},
-                'consistency_check': {
-                    'report_id_consistent': True,
-                    'factor_id_consistent': True
-                },
-                'placeholder_check': {
-                    'factor_spec_master_has_placeholder': contains_placeholder(fsm),
-                    'data_prep_master_has_placeholder': contains_placeholder(dpm),
-                    'handoff_to_step4_has_placeholder': contains_placeholder(handoff)
-                }
-            },
-            'execution_trace': {
-                'implementation_path': str(impl_path),
-                'commands': [f'python3 skills/factor-forge-step4/scripts/run_step4.py --report-id {report_id}'],
-                'runtime_seconds': None,
-                'exception_type': None,
-                'exception_message': None
-            },
-            'output_validation': {
-                'output_exists': True,
-                'output_paths': step4_output_paths,
-                'file_sizes': file_sizes_for_paths(step4_output_paths),
-                'row_count': row_count,
-                'date_count': date_count,
-                'ticker_count': ticker_count,
-                'signal_column': signal_col,
-                'formal_signal_coverage': formal_signal_coverage,
-            },
-            'quality_checks': {
-                'window_complete': coverage_complete,
-                'null_ratio': null_ratio,
-                'formal_signal_coverage': formal_signal_coverage,
-                'duplicate_ratio': duplicate_ratio,
-                'key_uniqueness': {'ts_code_trade_date_unique': duplicate_ratio.get('ts_code_trade_date', 0.0) == 0.0},
-                'sort_order_ok': sort_order_ok
-            },
-            'issues': issues,
-            'failure_context': {
-                'failed_stage': None,
-                'failure_reason': None,
-                'retryable': False
-            },
-            'recommendation': {
-                'can_handoff_to_step5': run_status in {'success', 'partial'},
-                'recommended_status': run_status,
-                'next_action': (
-                    'Proceed to Step 5 using declared evaluation scope.'
-                    if run_status in {'success', 'partial'}
-                    else 'Fix formal signal coverage and rerun Step 4 before Step 5/6.'
-                )
-            }
-        }
-
-        # COMMENT_POLICY: execution_handoff
-        # Step 4 emits a stable handoff envelope for Step 5 to avoid implicit coupling.
-        handoff_out = {
-            'report_id': report_id,
-            'factor_id': factor_id,
-            'artifact_identity': derive_identity(base_identity, 'handoff_to_step5'),
-            'run_status': run_status,
-            'factor_run_master_path': str(run_master_path),
-            'diagnostics_path': str(diag_path),
-            'output_paths': step4_output_paths,
-            'sample_window_target': target_window,
-            'sample_window_actual': {'start': actual_start, 'end': actual_end},
-            'coverage_ratio': 1.0 if coverage_complete else None,
-            'row_count': row_count,
-            'date_count': date_count,
-            'ticker_count': ticker_count,
-            'signal_column': signal_col,
-            'evaluation_plan': evaluation_plan,
-            'evaluation_results': {'backend_runs': backend_runs},
-            'backend_timing_profile': backend_timing_profile,
-            'shared_evaluation_context': shared_context_profile,
-            'evo_transfer_diagnostic_contract': evo_diagnostic_contract,
-            'evo_child_execution': evo_child_execution,
-            'implementation_mode_decision': implementation_mode_decision,
-            'key_warnings': warnings,
-            'failure_reason': failure_reason,
-            'can_enter_step5': run_status in {'success', 'partial'},
-            'recommended_step5_scope': (
-                'full'
-                if run_status == 'success'
-                else 'partial_scope_only'
-                if run_status == 'partial'
-                else None
-            ),
-            'notes_for_step5': (
-                ['partial result: evaluate only covered window/instruments']
-                if run_status == 'partial'
-                else ['full result ready for evaluation']
-                if run_status == 'success'
-                else ['Step4 formal signal coverage failed; do not evaluate or promote.']
-            )
-        }
-
-        acceptance_summary = build_acceptance_summary(
-            report_id=report_id,
-            factor_id=factor_id,
-            run_status=run_status,
-            output_paths=step4_output_paths,
-            backend_runs=backend_runs,
-            backend_timing_profile=backend_timing_profile,
-            step4_factor_io_profile=step4_factor_io_profile,
-            input_io_profile=input_io_profile,
+        write_completed_step4_results(
+            meta=step4_owned_meta, base_identity=base_identity, input_paths=input_paths,
+            output_paths=step4_output_paths, coverage=coverage, evaluation_plan=evaluation_plan,
+            backend_runs=backend_runs, warnings=warnings, failure_reason=failure_reason,
+            fsm=fsm, dpm=dpm, handoff=handoff, null_ratio=null_ratio,
+            duplicate_ratio=duplicate_ratio, sort_order_ok=sort_order_ok, issues=issues,
         )
-        run_master = add_formal_acceptance_envelope(
-            run_master,
-            identity=run_master['artifact_identity'],
-            run_status=run_status,
-            acceptance_summary=acceptance_summary,
-        )
-        handoff_out = add_formal_acceptance_envelope(
-            handoff_out,
-            identity=handoff_out['artifact_identity'],
-            run_status=run_status,
-            acceptance_summary=acceptance_summary,
-        )
-
-        write_json(run_master_path, run_master)
-        write_json(diag_path, diagnostics)
-        write_json(handoff_path, handoff_out)
     except Exception as e:
         issues.append({'severity': 'error', 'code': 'UNHANDLED_EXCEPTION', 'message': str(e), 'evidence': {'traceback': traceback.format_exc()[-4000:]}})
         run_master, diagnostics, handoff_out = build_failure_outputs(report_id, factor_id, implementation_path, dpm.get('sample_window', {}) if dpm else {}, run_dir, input_paths, issues, warnings, type(e).__name__, 'unhandled_exception', start_utc)

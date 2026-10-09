@@ -9,6 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
+from factor_factory.console import web_research_plan as web_plan
+from factor_factory.console import evo_child_assurance as assurance_service
+
 import factor_factory.console.evo_child_assurance as child_assurance
 from factor_factory.console.evo_child_assurance import (
     REVIEW_VERSION,
@@ -24,7 +27,7 @@ from tests.test_factorforge_evo_child_authoring import (
     _fixture,
     _run,
 )
-from scripts import run_factorforge_ultimate as ultimate
+from factor_factory.ultimate_loop import runner as ultimate
 
 
 def _review(verdict: str = "PASS") -> dict:
@@ -149,12 +152,12 @@ def test_ultimate_revision_child_gate_is_truthful_not_parent_seven_role(
     assurance = tmp_path / "assurance.json"
     assurance.write_text("{}", encoding="utf-8")
     monkeypatch.setattr(
-        ultimate,
+        web_plan,
         "resolve_report_scoped_web_research_plan",
         lambda *_args, **_kwargs: {"parent_report_id": PARENT},
     )
     monkeypatch.setattr(
-        ultimate,
+        assurance_service,
         "validate_evo_child_assurance",
         lambda **_kwargs: {
             "assurance_ref": {"path": "assurance.json", "sha256": "a" * 64}

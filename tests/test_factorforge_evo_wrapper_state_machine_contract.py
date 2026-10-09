@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from factor_factory.research_evidence import sha256_file
-from scripts import run_factorforge_ultimate as wrapper
+from factor_factory.ultimate_loop import runner as wrapper
 
 
 def _write(path: Path, payload: dict) -> None:

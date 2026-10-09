@@ -19,7 +19,7 @@ from factor_factory.workspace_experience_export import export_workspace_knowledg
 from scripts.build_factorforge_retrieval_index import (
     CorpusBuildError, active_research_notes, refresh_retrieval_index,
 )
-import scripts.run_factorforge_ultimate as ultimate
+import factor_factory.ultimate_loop.runner as ultimate
 
 REPO = Path(__file__).resolve().parents[1]
 QUERY = 'liquidity shock residual inventory'

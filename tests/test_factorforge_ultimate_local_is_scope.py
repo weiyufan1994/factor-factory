@@ -12,7 +12,8 @@ from factor_factory.research_workspace import (
     workspace_manifest_path,
     write_workspace_manifest,
 )
-from scripts import run_factorforge_ultimate as ultimate
+from factor_factory.ultimate_loop import runner as ultimate
+from factor_factory.ultimate_loop import local as local_execution
 from factor_factory.code_review_handoff import CodeReviewHandoff
 from datetime import datetime, timezone
 import hashlib
@@ -101,7 +102,7 @@ def _install_local_runtime_stubs(
         "resolve_research_organization_runtime_gate",
         lambda **_kwargs: {"status": "off", "formal_independence_verified": False},
     )
-    monkeypatch.setattr(ultimate, "web_factor_proof_oos_recovery_state", _normal_recovery)
+    monkeypatch.setattr(local_execution, "web_factor_proof_oos_recovery_state", _normal_recovery)
     monkeypatch.setattr(
         ultimate,
         "run_state_reuse_gate",
@@ -578,7 +579,7 @@ def test_local_is_rejects_existing_oos_recovery(
     workspace = _workspace(tmp_path)
     _install_local_runtime_stubs(monkeypatch)
     monkeypatch.setattr(
-        ultimate,
+        local_execution,
         "web_factor_proof_oos_recovery_state",
         lambda *_args, **_kwargs: {
             "recovery_required": True,
@@ -649,7 +650,7 @@ def test_complete_oos_finalization_is_not_local_research(tmp_path, monkeypatch, 
     workspace = _workspace(tmp_path)
     calls = _install_local_runtime_stubs(monkeypatch)
     monkeypatch.setattr(
-        ultimate, "web_factor_proof_oos_recovery_state",
+        local_execution, "web_factor_proof_oos_recovery_state",
         lambda *_args, **_kwargs: {**_normal_recovery(), "finalization_receipt_present": True},
     )
     assert ultimate._run_formal_ultimate(_args(monkeypatch, workspace, "--local-is-only")) == 1

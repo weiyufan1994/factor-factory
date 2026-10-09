@@ -128,7 +128,7 @@ def test_episode_only_workspace_and_empty_project_can_be_read_back(tmp_path):
 
 def test_completed_step6_cli_repairs_indexes_without_mutating_proof(tmp_path, monkeypatch):
     import json
-    import scripts.run_factorforge_ultimate as ultimate
+    import factor_factory.ultimate_loop.runner as ultimate
     from tests.test_factorforge_ultimate_knowledge_refresh import _proof as complete, _write_record
     workspace, repo = tmp_path/'workspace', tmp_path/'repo'
     repo.mkdir()

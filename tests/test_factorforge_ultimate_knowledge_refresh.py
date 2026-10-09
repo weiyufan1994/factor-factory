@@ -9,8 +9,8 @@ from pathlib import Path
 import pytest
 
 from factor_factory.knowledge_reference import resolve_runtime_retrieval_index
-import scripts.run_factorforge_ultimate as ultimate
-from scripts.run_factorforge_ultimate import run_post_step6_knowledge_refresh_nonblocking
+import factor_factory.ultimate_loop.runner as ultimate
+from factor_factory.ultimate_loop.runner import run_post_step6_knowledge_refresh_nonblocking
 
 
 def _record(report_id: str, *, bad: bool = False) -> dict:
@@ -267,7 +267,7 @@ def test_runtime_resolver_isolated_priority_and_explicit_override(tmp_path: Path
 
 
 def test_wrapper_hook_is_post_proof_maintenance_not_a_formal_command() -> None:
-    source = (Path(__file__).parents[1] / "scripts/run_factorforge_ultimate.py").read_text(encoding="utf-8")
+    source = (Path(__file__).parents[1] / "factor_factory/ultimate_loop/runner.py").read_text(encoding="utf-8")
     tree = ast.parse(source)
     helper = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "run_post_step6_knowledge_refresh_nonblocking")
     assert not any(

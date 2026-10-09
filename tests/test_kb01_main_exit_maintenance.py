@@ -14,6 +14,10 @@ from types import SimpleNamespace
 
 import pytest
 
+from factor_factory.console import web_research_plan as web_plan
+from factor_factory.console import web_factor_proof as web_proof
+from factor_factory.ultimate_loop import hosted as hosted_execution
+
 CANDIDATE = Path(__file__).resolve().parents[1]
 SOURCE = Path(os.environ.get('FACTORFORGE_KB01_REVIEW_SOURCE_ROOT', str(CANDIDATE))).expanduser().resolve()
 
@@ -26,7 +30,7 @@ def _load(name, path):
     return module
 
 
-ultimate = _load('kb01_candidate_ultimate', CANDIDATE / 'scripts/run_factorforge_ultimate.py')
+ultimate = _load('kb01_candidate_ultimate', CANDIDATE / 'factor_factory/ultimate_loop/runner.py')
 fixtures = _load('kb01_source_fixtures', SOURCE / 'tests/test_factorforge_ultimate_local_is_scope.py')
 records = _load('kb01_source_records', SOURCE / 'tests/test_factorforge_ultimate_knowledge_refresh.py')
 
@@ -250,12 +254,12 @@ def test_main_hosted_derivation_synthesis_exits_remain_unchanged(runtime, monkey
     marker = runtime.workspace / 'identity/data_catalog_summary.json'
     marker.parent.mkdir(exist_ok=True)
     marker.write_text('{}')
-    monkeypatch.setattr(ultimate, 'resolve_workspace_approved_catalog', lambda *a, **k: (marker, 'synthetic'))
-    monkeypatch.setattr(ultimate, 'resolve_report_scoped_web_research_plan', lambda *a, **k: {
+    monkeypatch.setattr(web_plan, "resolve_workspace_approved_catalog", lambda *a, **k: (marker, 'synthetic'))
+    monkeypatch.setattr(hosted_execution, "resolve_report_scoped_web_research_plan", lambda *a, **k: {
         'plan_path': str(marker), 'plan': {}, 'is_evo_child': False})
-    monkeypatch.setattr(ultimate, 'validate_materialized_web_research', lambda *a, **k: {'synthetic': 'test'})
-    monkeypatch.setattr(ultimate, 'resolve_web_evo_execution_gate', lambda **k: {'enabled': False})
-    monkeypatch.setattr(ultimate, 'required_web_resume_start_step', lambda *a, **k: '6')
+    monkeypatch.setattr(hosted_execution, "validate_materialized_web_research", lambda *a, **k: {'synthetic': 'test'})
+    monkeypatch.setattr(hosted_execution, "resolve_web_evo_execution_gate", lambda **k: {'enabled': False})
+    monkeypatch.setattr(hosted_execution, "required_web_resume_start_step", lambda *a, **k: '6')
     monkeypatch.setattr(ultimate, 'resolve_research_organization_runtime_gate', lambda **k: {
         'status': 'off', 'formal_independence_verified': True})
     council = runtime.workspace / 'objects/research_iteration_master/revision_council' / fixtures.REPORT_ID

@@ -24,8 +24,8 @@ from factor_factory.research_conjecture import (
 from factor_factory.research_evidence import sha256_file
 from factor_factory.research_obligation_verifier import stable_hash
 from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
-from scripts.run_factorforge_ultimate import enforce_evo_post_oos_no_revision
-from scripts.run_factorforge_ultimate import _evo_pre_oos_executor_block_token
+from factor_factory.ultimate_loop.runner import enforce_evo_post_oos_no_revision
+from factor_factory.ultimate_loop.runner import _evo_pre_oos_executor_block_token
 
 
 REPORT_ID = "WEB_EVO_IS_TEST"

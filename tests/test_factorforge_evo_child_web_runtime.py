@@ -32,7 +32,7 @@ from factor_factory.research_workspace import (
 )
 from scripts import materialize_factorforge_web_evo_is_checkpoint as checkpoint_cli
 from scripts import finalize_factorforge_web_factor_proof as finalizer_cli
-from scripts import run_factorforge_ultimate as ultimate_wrapper
+from factor_factory.ultimate_loop import runner as ultimate_wrapper
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]

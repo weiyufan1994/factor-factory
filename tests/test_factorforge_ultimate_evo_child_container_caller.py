@@ -5,7 +5,9 @@ from pathlib import Path
 
 import pytest
 
-from scripts import run_factorforge_ultimate as ultimate
+from factor_factory.console import evo_child_container as container
+
+from factor_factory.ultimate_loop import runner as ultimate
 
 
 def test_public_command_proof_redacts_host_private_control_values() -> None:
@@ -197,7 +199,7 @@ def test_closed_caller_routes_exact_stage_and_projects_termination_ref(
             command=command,
         )
 
-    monkeypatch.setattr(ultimate, "run_evo_child_agent_stage", run)
+    monkeypatch.setattr(container, "run_evo_child_agent_stage", run)
     result, termination_ref = ultimate.run_evo_child_container_command(
         admission_path="/host/private/admission.json",
         name=name,
@@ -242,7 +244,7 @@ def test_closed_caller_propagates_nonzero_without_calling_it_scientific_reject(
 ) -> None:
     command = [ultimate.sys.executable, "skills/run_step4.py", "--report-id", "CHILD"]
     monkeypatch.setattr(
-        ultimate,
+        container,
         "run_evo_child_agent_stage",
         lambda *_args, **_kwargs: _execution(
             repo_root=tmp_path,
@@ -284,7 +286,7 @@ def test_closed_caller_rejects_tampered_execution_projection(
     execution = _execution(repo_root=tmp_path)
     execution.update(mutation)
     monkeypatch.setattr(
-        ultimate,
+        container,
         "run_evo_child_agent_stage",
         lambda *_args, **_kwargs: execution,
     )
@@ -307,7 +309,7 @@ def test_closed_caller_rejects_non_object_runner_result(
     malformed: object,
 ) -> None:
     monkeypatch.setattr(
-        ultimate,
+        container,
         "run_evo_child_agent_stage",
         lambda *_args, **_kwargs: malformed,
     )
@@ -337,7 +339,8 @@ def test_only_four_agent_stages_are_eligible_and_no_seatbelt_caller_remains() ->
     assert "'/usr/bin/sandbox-exec'" not in source
     assert "agent_execution_sandbox_profile =" not in source
     assert "validate_evo_child_sandbox_admission" not in source
-    assert "--agent-execution-container-admission" in source
+    from factor_factory.ultimate_loop.cli import build_parser
+    assert "--agent-execution-container-admission" in build_parser(show_all=True).format_help()
     assert {
         "materialize_evo_pre_release_data",
         "finalize_web_factor_proof",
@@ -469,10 +472,10 @@ def test_missing_or_tampered_admission_blocks_with_fixed_nonprivate_token(
 
     private_detail = "/private/trust/tampered-admission.json"
     monkeypatch.setattr(
-        ultimate,
+        container,
         "validate_evo_child_container_admission",
         lambda **_kwargs: (_ for _ in ()).throw(
-            ultimate.EvoChildContainerError([private_detail])
+            container.EvoChildContainerError([private_detail])
         ),
     )
     with pytest.raises(RuntimeError) as caught:
@@ -492,7 +495,7 @@ def test_admission_resolver_passes_only_captured_host_control_to_validator(
     captured: dict = {}
     validated = _admission_resolution()
     monkeypatch.setattr(
-        ultimate,
+        container,
         "validate_evo_child_container_admission",
         lambda **kwargs: captured.update(kwargs) or validated,
     )
@@ -530,7 +533,7 @@ def test_admission_resolver_rejects_malformed_validator_projection(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        ultimate,
+        container,
         "validate_evo_child_container_admission",
         lambda **_kwargs: {"verdict": "PASS", "private": "/private/state"},
     )

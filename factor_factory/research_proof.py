@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from factor_factory.research_evidence import (
+    factor_proof_certificate_path,
     resolve_workspace_evidence_path,
     sha256_file,
     validate_evidence_reference,
@@ -120,13 +121,6 @@ def _minimum_periods(payload: dict[str, Any]) -> int:
     return MINIMUM_FORMAL_DAILY_PERIODS
 
 
-def factor_proof_certificate_path(workspace_root: Path, report_id: str) -> Path:
-    return (
-        workspace_root
-        / "objects"
-        / "research_protocol"
-        / f"factor_proof_certificate__{report_id}.json"
-    )
 
 
 def _validate_evidence_bindings(

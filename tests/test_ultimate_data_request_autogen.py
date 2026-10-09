@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from scripts.run_factorforge_ultimate import (
+from factor_factory.ultimate_loop.runner import (
     data_request_candidate_from_failure,
     is_transient_data_transport_failure,
     write_data_request_candidate,

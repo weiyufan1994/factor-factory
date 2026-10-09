@@ -31,7 +31,7 @@ from factor_factory.research_workspace import (
     workspace_manifest_path,
     write_workspace_manifest,
 )
-from scripts import run_factorforge_ultimate as ultimate
+from factor_factory.ultimate_loop import runner as ultimate
 from scripts import build_factorforge_epistemic_shadow_request as request_builder
 
 
@@ -1388,7 +1388,7 @@ def test_ultimate_shadow_never_overrides_failed_formal_rc(
 
 
 def test_shadow_names_never_enter_formal_command_or_host_loop_forwarding() -> None:
-    ultimate_source = (REPO_ROOT / "scripts" / "run_factorforge_ultimate.py").read_text(
+    ultimate_source = (REPO_ROOT / "factor_factory/ultimate_loop/runner.py").read_text(
         encoding="utf-8"
     )
     command_block = ultimate_source.split(

@@ -10,6 +10,132 @@ from typing import Any
 SHA256_RE = re.compile(r"^(?:sha256:)?[0-9a-f]{64}$")
 
 
+def factor_proof_certificate_path(workspace_root: Path, report_id: str) -> Path:
+    return (
+        workspace_root
+        / "objects"
+        / "research_protocol"
+        / f"factor_proof_certificate__{report_id}.json"
+    )
+
+
+def read_json_object(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected JSON object: {path}")
+    return payload
+
+
+def web_factor_proof_paths(root: Path, report_id: str) -> dict[str, Path]:
+    protocol = root / "objects" / "research_protocol"
+    return {
+        "search_ledger": protocol / f"search_trial_ledger__{report_id}.json",
+        "spec": protocol / f"metric_verifier_spec__{report_id}.json",
+        "bound_spec": protocol / f"metric_verifier_bound_spec__{report_id}.json",
+        "threshold": protocol / f"threshold_registration__{report_id}.json",
+        "release": protocol / f"oos_release_manifest__{report_id}.json",
+        "panel": protocol / f"factor_proof_panel__{report_id}.parquet",
+        "certificate": factor_proof_certificate_path(root, report_id),
+        "verifier": protocol / f"factor_proof_verifier_report__{report_id}.json",
+        "preregistration": protocol / f"web_factor_proof_preregistration__{report_id}.json",
+        "finalization": protocol / f"web_factor_proof_finalization__{report_id}.json",
+        "evo_is_panel": protocol / f"evo_purged_is_panel__{report_id}.parquet",
+        "evo_is_diagnostics": protocol / f"evo_purged_is_diagnostics__{report_id}.json",
+    }
+
+
+def _component_obligation_paths(
+    root: Path,
+    report_id: str,
+    component_id: str,
+) -> dict[str, Path]:
+    protocol = root / "objects" / "research_protocol"
+    suffix = f"{report_id}__{component_id}"
+    return {
+        "spec": protocol / f"component_obligation_spec__{suffix}.json",
+        "threshold": protocol
+        / f"component_obligation_threshold__{suffix}.json",
+        "release": protocol / f"component_oos_release__{suffix}.json",
+    }
+
+
+def _legacy_oos_workspace_temps(output: Path) -> list[Path]:
+    """Find crash residue from the former workspace-local panel staging path."""
+
+    parent = output.parent
+    if not parent.is_dir():
+        return []
+    prefix = f".{output.name}."
+    return sorted(
+        (
+            candidate
+            for candidate in parent.iterdir()
+            if candidate.name.startswith(prefix) and candidate.name.endswith(".tmp")
+        ),
+        key=lambda item: item.name,
+    )
+
+
+def _evo_oos_artifacts(root: Path, report_id: str) -> list[Path]:
+    paths = web_factor_proof_paths(root, report_id)
+    protocol = root / "objects" / "research_protocol"
+    candidates = [
+        paths["bound_spec"],
+        paths["release"],
+        paths["panel"],
+        paths["certificate"],
+        paths["verifier"],
+        paths["finalization"],
+        protocol / f"metric_verifier_bundle__{report_id}.json",
+    ]
+    candidates.extend(_legacy_oos_workspace_temps(paths["panel"]))
+    preregistration = paths["preregistration"]
+    if preregistration.is_file() and not preregistration.is_symlink():
+        receipt = read_json_object(preregistration)
+        for item in receipt.get("component_obligation_preregistrations") or []:
+            if not isinstance(item, dict):
+                continue
+            component_id = str(item.get("component_id") or "")
+            if component_id:
+                candidates.append(
+                    _component_obligation_paths(root, report_id, component_id)[
+                        "release"
+                    ]
+                )
+    return list(dict.fromkeys(candidates))
+
+
+def web_factor_proof_oos_recovery_state(
+    workspace_root: Path,
+    report_id: str,
+) -> dict[str, Any]:
+    """Detect an OOS publication that forbids returning to Agent phases.
+
+    Existence is deliberately sufficient. A corrupt, symlinked, or only
+    partially written artifact is still an information-release boundary and
+    may only be handled by the trusted finalizer/terminal path.
+    """
+
+    root = Path(workspace_root).expanduser().resolve(strict=True)
+    artifacts = [
+        path
+        for path in _evo_oos_artifacts(root, report_id)
+        if path.exists() or path.is_symlink()
+    ]
+    paths = web_factor_proof_paths(root, report_id)
+    return {
+        "recovery_required": bool(artifacts),
+        "allowed_execution": (
+            "HOST_FINALIZER_OR_TERMINAL_ONLY" if artifacts else "NORMAL"
+        ),
+        "artifact_refs": [str(path.relative_to(root)) for path in artifacts],
+        "finalization_receipt_present": (
+            paths["finalization"].exists()
+            or paths["finalization"].is_symlink()
+        ),
+    }
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:

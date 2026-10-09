@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 from typing import Any
 
@@ -13,6 +13,33 @@ BLOCK_DRY_RUN_NOT_FORMAL = "BLOCK_FACTORFORGE_LOOP_DRY_RUN_NOT_FORMAL"
 BLOCK_WRAPPER_PROOF_NOT_FORMAL = (
     "BLOCK_FACTORFORGE_LOOP_WRAPPER_PROOF_NOT_FORMAL"
 )
+
+
+@dataclass(frozen=True)
+class ExecutionMode:
+    """Resolved mode for one pass, not a workspace or an authorization source."""
+
+    web_materialization: dict[str, str] | None = None
+    web_resume_start_step: str | None = None
+    web_plan: dict[str, Any] | None = None
+    web_plan_path: Path | None = None
+    web_oos_release_token_hash: str | None = None
+    web_allocation: dict[str, Any] | None = None
+    web_is_evo_child: bool = False
+    web_evo_gate: dict[str, Any] | None = None
+    web_validate_step4_finalizer_recovery: bool = False
+    web_command_recovery: dict[str, Any] | None = None
+    web_oos_recovery: dict[str, Any] = field(default_factory=lambda: {
+        'recovery_required': False, 'allowed_execution': 'NORMAL',
+        'artifact_refs': [], 'finalization_receipt_present': False,
+    })
+    agent_execution_container_resolution: dict[str, Any] | None = None
+    web_evo_action: str = 'LEGACY_WEB_EXECUTION'
+    web_secure_child_oos: bool = False
+    web_completed_finalization_replay: bool = False
+    web_evo_wait_only: bool = False
+    web_evo_checkpoint_pass: bool = False
+    web_evo_oos_release_pass: bool = False
 
 
 @dataclass(frozen=True)

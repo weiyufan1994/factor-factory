@@ -55,7 +55,7 @@ from factor_factory.oos_exposure_incident import (
     ensure_empty_oos_exposure_private_registry,
 )
 from factor_factory.research_workspace import build_workspace_manifest, write_workspace_manifest
-from scripts import run_factorforge_ultimate as ultimate_wrapper
+from factor_factory.ultimate_loop import runner as ultimate_wrapper
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

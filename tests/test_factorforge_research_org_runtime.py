@@ -53,7 +53,7 @@ from factor_factory.research_workspace import (
     build_workspace_manifest,
     write_workspace_manifest,
 )
-from scripts.run_factorforge_ultimate import (
+from factor_factory.ultimate_loop.runner import (
     resolve_research_organization_runtime_gate,
 )
 

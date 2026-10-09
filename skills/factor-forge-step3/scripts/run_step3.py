@@ -46,14 +46,11 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from factor_factory.data_access import (
-    CleanDailyLayerPaths,
-    clean_daily_layer_ready,
-    inspect_trade_date_csv_root,
+    LocalTusharePaths,
     list_open_trade_dates,
     minute_derived_flow_state_requirement,
     normalize_trade_date_series,
     research_window_contract,
-    resolve_clean_daily_layer_paths,
     resolve_local_tushare_paths,
 )
 from factor_factory.data_api import default_catalog_path, fetch_data_api_dataset, resolve_data_api_dataset
@@ -94,8 +91,6 @@ _RUNTIME_MANIFEST = None
 OBJ = FF / 'objects'
 RUNS = FF / 'runs'
 REAL_PRICE_VOLUME_BASE = WORKSPACE / 'tmp' / 'price_volume_run_2016'
-LOCAL_TUSHARE = resolve_local_tushare_paths()
-CLEAN_DAILY_LAYER = resolve_clean_daily_layer_paths()
 CSV_POLICY_VALUES = {'full_csv', 'sample_csv', 'no_csv'}
 CSV_SAMPLE_MAX_ROWS = 10_000
 SORT_CONTRACT_VERSION = 'factorforge_sort_contract_v1'
@@ -255,7 +250,7 @@ def data_api_dataset_registered(dataset_id: str) -> tuple[bool, str | None]:
 
 def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str | None]:
     """Apply the orchestrator-owned runtime manifest before any Step3 path writes."""
-    global FF, WORKSPACE, OBJ, RUNS, REAL_PRICE_VOLUME_BASE, CLEAN_DAILY_LAYER, _RUNTIME_MANIFEST
+    global FF, WORKSPACE, OBJ, RUNS, REAL_PRICE_VOLUME_BASE, _RUNTIME_MANIFEST
     _RUNTIME_MANIFEST = load_runtime_manifest(manifest_path) if manifest_path else None
     if not manifest_path:
         return None, None
@@ -266,15 +261,6 @@ def apply_runtime_manifest(manifest_path: str | None) -> tuple[dict | None, str 
     RUNS = FF / 'runs'
     REAL_PRICE_VOLUME_BASE = WORKSPACE / 'tmp' / 'price_volume_run_2016'
     os.environ['FACTORFORGE_ROOT'] = str(FF)
-    if manifest.get('clean_data_root'):
-        clean_root = Path(manifest['clean_data_root'])
-        CLEAN_DAILY_LAYER = CleanDailyLayerPaths(
-            root=clean_root,
-            daily_parquet=clean_root / 'daily_clean.parquet',
-            metadata_json=clean_root / 'daily_clean.meta.json',
-        )
-    elif os.getenv('FACTORFORGE_CLEAN_DAILY_DIR'):
-        CLEAN_DAILY_LAYER = resolve_clean_daily_layer_paths()
     return manifest, manifest_report_id(manifest)
 
 
@@ -294,7 +280,7 @@ def maybe_reexec_from_step3_template_copy(report_id: str | None, manifest_path: 
 
 
 def enforce_direct_step_policy(manifest_path: str | None = None) -> None:
-    global FF, WORKSPACE, OBJ, RUNS, REAL_PRICE_VOLUME_BASE, CLEAN_DAILY_LAYER
+    global FF, WORKSPACE, OBJ, RUNS, REAL_PRICE_VOLUME_BASE
     if os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1':
         return
     if os.getenv('FACTORFORGE_ALLOW_DIRECT_STEP') != '1':
@@ -1688,6 +1674,8 @@ def materialize_shared_daily_slice(
     proof_control_fields: list[str] | None = None,
     requires_exchange_calendar: bool = False,
     primary_daily_dataset_id: str = 'clean_daily_bar',
+    *,
+    calendar_paths: LocalTusharePaths | None = None,
 ) -> dict:
     del symbols
     local_dir = RUNS / report_id / 'step3a_local_inputs'
@@ -1865,13 +1853,16 @@ def materialize_shared_daily_slice(
     exchange_calendar_payload = {}
     if requires_exchange_calendar:
         try:
+            # Data API-only samples need no legacy local-data configuration.
+            # Resolve once here so the reader and source identity use one input.
+            resolved_calendar_paths = calendar_paths or resolve_local_tushare_paths()
             calendar_dates = list_open_trade_dates(
                 start=query_window['start'],
                 end=query_window['end'],
                 exchange='SSE',
-                paths=LOCAL_TUSHARE,
+                paths=resolved_calendar_paths,
             )
-        except (FileNotFoundError, OSError, ValueError) as exc:
+        except (OSError, ValueError, RuntimeError) as exc:
             return {
                 'snapshot_note': f'Authoritative exchange calendar could not be materialized: {exc}',
                 'snapshot_source': 'missing_exchange_calendar',
@@ -1898,7 +1889,7 @@ def materialize_shared_daily_slice(
         calendar_df = pd.DataFrame({'trade_date': calendar_dates})
         calendar_path = local_dir / f'exchange_calendar__{report_id}.parquet'
         calendar_df.to_parquet(calendar_path, index=False)
-        source_path = Path(LOCAL_TUSHARE.trade_cal_csv)
+        source_path = Path(resolved_calendar_paths.trade_cal_csv)
         exchange_calendar_payload = {
             'exchange_calendar_parquet': str(calendar_path.relative_to(WORKSPACE)),
             'exchange_calendar_contract': {
@@ -2236,156 +2227,6 @@ def build_local_price_volume_snapshots(
         'step4_full_window': full_query_window,
         'daily_filter_policy': daily_resolution.get('daily_filter_policy'),
         'daily_filter_summary': daily_resolution.get('coverage') or {},
-    }
-
-    minute_meta = next((meta for meta in (inspect_minute_root(p) for p in candidate_minute_roots()) if meta), None)
-    real_minute_root = minute_meta['path'] if minute_meta else REAL_PRICE_VOLUME_BASE / 'stk_mins_1min'
-    if minute_meta and not clean_daily_layer_ready(CLEAN_DAILY_LAYER) and not synthetic_fallback_allowed(report_id):
-        return {
-            'snapshot_note': (
-                f'Real local minute source found at {real_minute_root}, but the shared clean daily layer is missing under '
-                f'{CLEAN_DAILY_LAYER.root}; run scripts/build_clean_daily_layer.py before Step 3A.'
-            ),
-            'snapshot_source': 'missing_clean_daily_layer',
-        }
-    # Preferred path: real local data package for realistic integration evidence.
-    if clean_daily_layer_ready(CLEAN_DAILY_LAYER) and minute_meta and minute_meta.get('format') == 'legacy_partitioned_parquet':
-        minute_parts = sorted(real_minute_root.glob('trade_date=*/part-*.parquet'))
-        if minute_parts:
-            minute_df = pd.concat([pd.read_parquet(p) for p in minute_parts], ignore_index=True)
-            tickers = sorted(minute_df['ts_code'].dropna().unique().tolist())
-
-            minute_parquet = local_dir / f'minute_input__{report_id}.parquet'
-            if minute_parquet.exists() or minute_parquet.is_symlink():
-                minute_parquet.unlink()
-            minute_df.to_parquet(minute_parquet, index=False)
-            daily_slice = materialize_shared_daily_slice(
-                report_id,
-                sample_window,
-                symbols=tickers,
-                required_fields=required_fields,
-                formula_ir=formula_ir,
-                proof_control_fields=proof_control_fields,
-            )
-            sample_actual = {
-                'start': str(minute_df['trade_date'].min()),
-                'end': str(minute_df['trade_date'].max())
-            }
-            return {
-                'minute_df_parquet': str(minute_parquet.relative_to(WORKSPACE)),
-                **daily_slice,
-                'input_mode': 'price_volume_minute',
-                'sample_window_actual': sample_actual,
-                'snapshot_note': (
-                    f'Real local minute snapshot sourced from {real_minute_root}; daily leg is sliced from shared clean '
-                    f'daily layer at {CLEAN_DAILY_LAYER.daily_parquet}.'
-                ),
-                'snapshot_source': 'shared_clean_daily_layer',
-            }
-
-    if clean_daily_layer_ready(CLEAN_DAILY_LAYER) and minute_meta and minute_meta.get('trade_date_count', 0) < 5:
-        return {
-            'snapshot_note': (
-                f'Real local minute source found at {real_minute_root}, but only '
-                f'{minute_meta.get("trade_date_count", 0)} trading day(s) are available; '
-                'insufficient for formula-declared price-volume rolling-window reconstruction.'
-            ),
-            'snapshot_source': 'real_local_insufficient',
-        }
-
-    if not synthetic_fallback_allowed(report_id):
-        return {
-            'snapshot_note': (
-                'No sufficient real local minute history discovered; synthetic fallback is disabled for non-sample reports.'
-            ),
-            'snapshot_source': 'missing_real_local_data',
-        }
-
-    # Fallback path: deterministic tiny synthetic dataset for reproducible CI/local smoke runs.
-    trade_dates = pd.bdate_range(start='2016-01-04', end='2016-03-29')
-    tickers = ['000001.SZ', '000002.SZ', '000004.SZ']
-
-    minute_rows = []
-    for date in trade_dates:
-        d = date.strftime('%Y%m%d')
-        for ticker_i, ticker in enumerate(tickers):
-            base = 10 + ticker_i
-            for minute_i in range(30):
-                hh = 9 + (30 + minute_i) // 60
-                mm = (30 + minute_i) % 60
-                trade_time = f'{d} {hh:02d}:{mm:02d}:00'
-                close = base + minute_i * 0.01 + (ticker_i * 0.02)
-                vol = 1000 + minute_i * 10 + ticker_i * 20
-                amount = close * vol
-                minute_rows.append({
-                    'ts_code': ticker,
-                    'trade_date': d,
-                    'trade_time': trade_time,
-                    'bar_time': trade_time[-8:],
-                    'minute_index': minute_i,
-                    'open': close - 0.01,
-                    'close': close,
-                    'high': close + 0.02,
-                    'low': close - 0.02,
-                    'vol': vol,
-                    'amount': amount,
-                })
-    minute_df = pd.DataFrame(minute_rows)
-
-    daily_rows = []
-    for date in trade_dates:
-        d = date.strftime('%Y%m%d')
-        for ticker_i, ticker in enumerate(tickers):
-            close = 10 + ticker_i + date.day * 0.01
-            daily_rows.append({
-                'ts_code': ticker,
-                'trade_date': d,
-                'open': close - 0.1,
-                'high': close + 0.2,
-                'low': close - 0.2,
-                'close': close,
-                'pre_close': close - 0.05,
-                'change': 0.05,
-                'pct_chg': 0.5 + ticker_i * 0.1,
-                'vol': 100000 + ticker_i * 1000,
-                'amount': close * (100000 + ticker_i * 1000),
-            })
-    daily_df = pd.DataFrame(daily_rows).sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
-    daily_df, derived_field_contract = enrich_report_local_daily_fields(
-        daily_df,
-        required_fields or [],
-        formula_ir=formula_ir,
-    )
-
-    policy = resolve_csv_policy(csv_output_policy)
-    minute_csv = local_dir / f'minute_input__{report_id}.csv'
-    daily_csv = local_dir / f'daily_input__{report_id}.csv'
-    daily_sample_csv = local_dir / f'daily_input_sample__{report_id}.csv'
-    daily_parquet = local_dir / f'daily_input__{report_id}.parquet'
-    minute_df.to_csv(minute_csv, index=False)
-    daily_df.to_parquet(daily_parquet, index=False)
-    audit_payload = materialize_daily_audit_csv(
-        daily_df,
-        report_id=report_id,
-        full_csv_path=daily_csv,
-        sample_csv_path=daily_sample_csv,
-        policy=policy,
-    )
-
-    sample_actual = {
-        'start': str(minute_df['trade_date'].min()),
-        'end': str(minute_df['trade_date'].max())
-    }
-    return {
-        'minute_df_csv': str(minute_csv.relative_to(WORKSPACE)),
-        'daily_df_parquet': str(daily_parquet.relative_to(WORKSPACE)),
-        'preferred_daily_format': 'parquet',
-        **audit_payload,
-        'input_mode': 'price_volume_minute',
-        'sample_window_actual': sample_actual,
-        'snapshot_note': 'Synthetic fallback snapshot; use only when real local data layer is unavailable.',
-        'snapshot_source': 'synthetic_fallback',
-        'derived_field_contract': derived_field_contract,
     }
 
 
@@ -2872,7 +2713,6 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
             'net_mf_amount': 'net_mf_amount',
         })
 
-    daily_basic_meta = inspect_trade_date_csv_root(LOCAL_TUSHARE.daily_basic_dir)
     if need_daily_basic:
         data_sources.append({
             'name': 'tushare_daily_basic_incremental',
@@ -2881,18 +2721,7 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
             'fields': ['ts_code', 'trade_date', 'turnover_rate', 'turnover_rate_f', 'volume_ratio', 'pe', 'pe_ttm', 'pb', 'ps', 'ps_ttm', 'dv_ratio', 'dv_ttm', 'total_share', 'float_share', 'free_share', 'total_mv', 'circ_mv'],
             'normalized_dataset': 'daily_basic'
         })
-        if daily_basic_meta:
-            coverage.append({
-                'name': 'daily_basic_local_cache',
-                'status': 'pass',
-                'detail': f'daily_basic local cache detected at {daily_basic_meta["path"]} with {daily_basic_meta["trade_date_count"]} trade_date partitions'
-            })
-        else:
-            coverage.append({
-                'name': 'daily_basic_incremental',
-                'status': 'pass',
-                'detail': 'daily_basic_incremental is treated as the canonical valuation/basic layer and should be synced locally after the backfill completes'
-            })
+        notes.append('Required daily_basic fields are resolved by the selected Data API sample query; an unrelated local CSV cache is not coverage evidence.')
         field_mapping.update({
             'daily_turnover_rate': 'turnover_rate',
             'daily_turnover_rate_f': 'turnover_rate_f',

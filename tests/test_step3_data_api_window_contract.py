@@ -13,6 +13,17 @@ from factor_factory.data_access.paths import LocalTusharePaths
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.fixture(autouse=True)
+def reject_unrequested_local_resolution(monkeypatch):
+    """API fixtures are sufficient unless a test explicitly supplies a calendar."""
+    import factor_factory.data_access as data_access
+
+    def unexpected_resolution(*args, **kwargs):
+        raise AssertionError('API route attempted to resolve unrelated local data')
+
+    monkeypatch.setattr(data_access, 'resolve_local_tushare_paths', unexpected_resolution)
+
+
 def _load_run_step3():
     path = REPO_ROOT / "skills/factor-forge-step3/scripts/run_step3.py"
     spec = importlib.util.spec_from_file_location("run_step3_window_contract_under_test", path)
@@ -385,22 +396,23 @@ def test_direct_code_calendar_role_is_not_treated_as_daily_field():
     assert all(not field.startswith('exchange_calendar.') for field in fields)
 
 
-def test_step3a_materializes_declared_calendar_and_uses_full_market(monkeypatch, tmp_path):
+@pytest.mark.parametrize('calendar_binding', ['explicit', 'resolve-at-use', 'unconfigured'])
+def test_step3a_uses_declared_calendar_or_reports_missing_config(monkeypatch, tmp_path, calendar_binding):
     run_step3 = _load_run_step3()
     monkeypatch.setattr(run_step3, 'RUNS', tmp_path / 'runs')
     monkeypatch.setattr(run_step3, 'WORKSPACE', tmp_path)
-    trade_cal = tmp_path / 'trade_cal.csv'
-    trade_cal.write_text('exchange,cal_date,is_open\nSSE,20260105,1\n', encoding='utf-8')
-    monkeypatch.setattr(
-        run_step3,
-        'LOCAL_TUSHARE',
-        type('Paths', (), {'trade_cal_csv': trade_cal})(),
-    )
-    monkeypatch.setattr(
-        run_step3,
-        'list_open_trade_dates',
-        lambda **_kwargs: ['20260105'],
-    )
+    paths = _calendar_paths(tmp_path, bound_exchange='SSE')
+    trade_cal = paths.trade_cal_csv
+    calendar_resolutions = []
+
+    def resolve_calendar():
+        calendar_resolutions.append(trade_cal)
+        if calendar_binding == 'unconfigured':
+            raise RuntimeError('FACTORFORGE_LOCAL_DATA_ROOT must be set when running as root')
+        return paths
+
+    if calendar_binding != 'explicit':
+        monkeypatch.setattr(run_step3, 'resolve_local_tushare_paths', resolve_calendar)
     monkeypatch.setattr(
         run_step3,
         'materialize_daily_audit_csv',
@@ -432,7 +444,15 @@ def test_step3a_materializes_declared_calendar_and_uses_full_market(monkeypatch,
         {'start': '2026-01-05', 'end': '2026-01-05'},
         required_fields=['ts_code', 'trade_date', 'pct_chg', 'amount'],
         requires_exchange_calendar=True,
+        calendar_paths=paths if calendar_binding == 'explicit' else None,
     )
+
+    assert calendar_resolutions == ([] if calendar_binding == 'explicit' else [trade_cal])
+    if calendar_binding == 'unconfigured':
+        assert result['snapshot_source'] == 'missing_exchange_calendar'
+        assert 'FACTORFORGE_LOCAL_DATA_ROOT' in result['snapshot_note']
+        assert 'exchange_calendar_parquet' not in result
+        return
 
     assert result['snapshot_source'] == 'data_api_clean_daily_bar'
     assert Path(tmp_path / result['exchange_calendar_parquet']).exists()

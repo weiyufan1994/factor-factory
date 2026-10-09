@@ -19,15 +19,6 @@ from .paths import (
 
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_FACTORFORGE_ROOT = (
-    Path(os.getenv('FACTORFORGE_ROOT'))
-    if os.getenv('FACTORFORGE_ROOT')
-    else (
-        LEGACY_WORKSPACE / 'factorforge'
-        if path_exists_accessibly(LEGACY_WORKSPACE / 'factorforge')
-        else REPO_ROOT
-    )
-).expanduser()
 
 
 @dataclass(frozen=True)
@@ -39,10 +30,16 @@ class CleanDailyLayerPaths:
 
 
 def default_clean_daily_layer_root() -> Path:
+    """Resolve the current run's configuration only when the layer is used."""
     explicit = os.getenv('FACTORFORGE_CLEAN_DAILY_DIR')
     if explicit:
         return Path(explicit).expanduser()
-    return DEFAULT_FACTORFORGE_ROOT / 'data' / 'clean'
+    runtime_root = os.getenv('FACTORFORGE_ROOT')
+    if runtime_root:
+        return Path(runtime_root).expanduser() / 'data' / 'clean'
+    legacy_root = LEGACY_WORKSPACE / 'factorforge'
+    root = legacy_root if path_exists_accessibly(legacy_root) else REPO_ROOT
+    return root / 'data' / 'clean'
 
 
 def resolve_clean_daily_layer_paths() -> CleanDailyLayerPaths:

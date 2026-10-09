@@ -197,6 +197,11 @@ def compute_factor(daily_df, minute_df=None, *, exchange_calendar, formation_mem
     handoff.write_text(json.dumps({'mechanism_conditioned_measurement_program': program}))
     stage3a = load_stage(3, 'run_step3.py')
     bind_manifest(stage3a, ff)
+
+    def unexpected_local_resolution():
+        raise AssertionError('prepared inputs attempted to resolve unrelated local market data')
+
+    monkeypatch.setattr(stage3a, 'resolve_local_tushare_paths', unexpected_local_resolution)
     prep, qcfg, impl = stage3a.build_step3a('NAMED_ROLES', csv_output_policy='no_csv', prepared_local_inputs=payload)
     assert prep['local_input_paths'] == payload
     validator = load_stage(3, 'validate_step3.py')

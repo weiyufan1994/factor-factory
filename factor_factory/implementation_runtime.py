@@ -12,6 +12,7 @@ import importlib.util
 import inspect
 import keyword
 from pathlib import Path
+from stat import S_ISDIR, S_ISREG
 import sys
 from threading import RLock
 import tokenize
@@ -124,9 +125,21 @@ def workspace_imports(workspace: Path, *, modules: dict | None = None):
     """
     workspace = workspace.resolve()
     protected = {'factor_factory', 'factorforge_data_api', 'skills'} | set(sys.stdlib_module_names)
-    roots = {p.stem if p.is_file() else p.name for p in workspace.iterdir()
-             if (p.is_dir() or p.suffix == '.py') and (p.stem if p.is_file() else p.name).isidentifier()}
-    roots -= protected
+    roots = set()
+    for path in workspace.iterdir():
+        is_python_file = path.suffix == '.py'
+        name = path.stem if is_python_file else path.name
+        if not name.isidentifier() or name in protected:
+            continue
+        # Check names before filesystem access: unrelated projects are not
+        # import candidates. stat() preserves permission errors across Python
+        # versions, unlike is_file()/is_dir() on Python 3.14.
+        try:
+            mode = path.stat().st_mode
+        except FileNotFoundError:
+            continue
+        if (is_python_file and S_ISREG(mode)) or (not is_python_file and S_ISDIR(mode)):
+            roots.add(name)
     belongs = lambda name: name.split('.', 1)[0] in roots
     active = dict(modules or {})
     with _IMPORT_LOCK:

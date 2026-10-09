@@ -153,8 +153,8 @@ main agent must:
 3. if independent execution is required and unavailable, record that limitation
    and BLOCK the affected review; sequential self-analysis may be advisory only
    and cannot satisfy distinct-agent or blind-session requirements;
-4. write one `status=final`, `producer=real_agent` result JSON per required
-   task to the exact `expected_result_path`;
+4. collect each actual assigned context's `status=final`, `producer=real_agent`
+   result at the task's `expected_result_path`;
 5. include public derivation records, `economic_hypothesis_review`,
    `math_mechanism_derivation`, `model_to_formula_translation`,
    formula-specific critique, payer derivation critique, falsification tests,
@@ -169,8 +169,9 @@ main agent must:
 
 The main agent must not fabricate Council output by using `local_mock`, copying
 old scaffold proposals, or writing generic result templates. It may only write
-Council results that it or its delegated subagents actually researched from the
-task packets. If valid Council results cannot be produced, BLOCK with a precise
+results actually returned by the assigned independent contexts. Its own analysis
+remains author analysis, not an independent task result. If valid Council results
+cannot be produced, BLOCK with a precise
 reason instead of asking the user to drive the next command.
 
 A unanimous Council terminal rejection closes a web research task only through

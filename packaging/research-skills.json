@@ -1,0 +1,273 @@
+{
+  "description": "Development-only Skill selection and reading scenarios. Counts measure guidance bytes, not research quality or runtime permission.",
+  "baseline_ref": "3f1e916b61ec5b1d8f3b73d89209c782b6e928ce",
+  "default": [
+    "factor-forge-ultimate",
+    "factor-forge-step1",
+    "factor-forge-step2",
+    "factor-forge-step3",
+    "factor-forge-step4",
+    "factor-forge-step5",
+    "factor-forge-step6",
+    "factor-forge-data-liaison",
+    "factor-forge-domain-price-volume",
+    "factor-forge-domain-fundamental",
+    "math-derivation-tutor"
+  ],
+  "optional": [
+    "factor-forge-miner",
+    "factor-forge-researcher-memory"
+  ],
+  "compatibility": [
+    "factor-forge-researcher",
+    "factor-forge-research-brain",
+    "factor-forge-step6-researcher"
+  ],
+  "ordinary_context": "Same report-led ordinary local IS study, simple daily direct-code estimator and existing authorized inputs. Source, code and market data are not guidance. No hosted/OOS operations. Later scenarios reuse earlier stage knowledge; no claim that actual independent reading has occurred.",
+  "reading_sets": {
+    "entry": {
+      "before": [
+        "skills/factor-forge-ultimate/SKILL.md",
+        "skills/factor-forge-ultimate/references/current-operating-contract.md"
+      ],
+      "after": [
+        "skills/factor-forge-ultimate/SKILL.md",
+        "skills/factor-forge-ultimate/references/current-operating-contract.md"
+      ]
+    },
+    "content": {
+      "before": [
+        "skills/factor-forge-ultimate/references/compatibility-constraints.md"
+      ],
+      "after": [
+        "skills/factor-forge-ultimate/references/compatibility-constraints.md"
+      ]
+    },
+    "source": {
+      "before": [
+        "skills/factor-forge-step1/SKILL.md",
+        "skills/factor-forge-step1/references/schema.md",
+        "skills/factor-forge-step1/references/prompts.md",
+        "skills/factor-forge-ultimate/references/epistemic-advisory-operating-delta-v1.md"
+      ],
+      "after": [
+        "skills/factor-forge-step1/SKILL.md",
+        "skills/factor-forge-step1/references/schema.md",
+        "skills/factor-forge-step1/references/local-intake.md",
+        "skills/factor-forge-ultimate/references/epistemic-advisory-operating-delta-v1.md"
+      ]
+    },
+    "math": {
+      "before": [
+        "docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md"
+      ],
+      "after": [
+        "docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md"
+      ]
+    },
+    "protocol": {
+      "before": [
+        "skills/factor-forge-ultimate/references/research-protocol.md",
+        "docs/contracts/factorforge-research-conjecture-protocol-v1.zh-CN.md"
+      ],
+      "after": [
+        "skills/factor-forge-ultimate/references/research-protocol.md",
+        "docs/contracts/factorforge-research-conjecture-protocol-v1.zh-CN.md"
+      ]
+    },
+    "step2": {
+      "before": [
+        "skills/factor-forge-step2/SKILL.md",
+        "skills/factor-forge-step2/references/schema.md",
+        "skills/factor-forge-step2/references/local-pdf-inputs.md",
+        "skills/factor-forge-step2/references/implementation-contracts.md",
+        "docs/contracts/step2-contract.md"
+      ],
+      "after": [
+        "skills/factor-forge-step2/SKILL.md",
+        "skills/factor-forge-step2/references/schema.md",
+        "skills/factor-forge-step2/references/local-pdf-inputs.md",
+        "skills/factor-forge-step2/references/implementation-contracts.md",
+        "docs/contracts/step2-contract.md"
+      ]
+    },
+    "step3": {
+      "before": [
+        "skills/factor-forge-step2/SKILL.md",
+        "skills/factor-forge-step3/SKILL.md",
+        "skills/factor-forge-step3/references/input-contract.md",
+        "skills/factor-forge-step3/references/output-contract.md",
+        "skills/factor-forge-step3/references/step3a-data-api-contract.md",
+        "skills/factor-forge-step3/references/implementation-routes.md",
+        "skills/factor-forge-ultimate/references/local-code-review.md"
+      ],
+      "after": [
+        "skills/factor-forge-step2/SKILL.md",
+        "skills/factor-forge-step3/SKILL.md",
+        "skills/factor-forge-step3/references/input-contract.md",
+        "skills/factor-forge-step3/references/output-contract.md",
+        "skills/factor-forge-step3/references/step3a-data-api-contract.md",
+        "skills/factor-forge-step3/references/implementation-routes.md",
+        "skills/factor-forge-ultimate/references/local-code-review.md"
+      ]
+    },
+    "human": {
+      "before": [
+        "skills/factor-forge-ultimate/references/human-reproducibility.md"
+      ],
+      "after": [
+        "skills/factor-forge-ultimate/references/human-reproducibility.md"
+      ]
+    },
+    "execution": {
+      "before": [
+        "skills/factor-forge-step4/SKILL.md",
+        "skills/factor-forge-step4/references/input-contract.md",
+        "skills/factor-forge-step4/references/output-contract.md",
+        "skills/factor-forge-step5/SKILL.md",
+        "skills/factor-forge-step5/references/input-contract.md",
+        "skills/factor-forge-step5/references/output-contract.md"
+      ],
+      "after": [
+        "skills/factor-forge-step4/SKILL.md",
+        "skills/factor-forge-step4/references/input-contract.md",
+        "skills/factor-forge-step4/references/output-contract.md",
+        "skills/factor-forge-step5/SKILL.md",
+        "skills/factor-forge-step5/references/input-contract.md",
+        "skills/factor-forge-step5/references/output-contract.md"
+      ]
+    },
+    "knowledge": {
+      "before": [
+        "skills/factor-forge-ultimate/references/knowledge-maintenance.md"
+      ],
+      "after": [
+        "skills/factor-forge-ultimate/references/knowledge-maintenance.md"
+      ]
+    },
+    "continuity": {
+      "before": [
+        "skills/factor-forge-researcher/SKILL.md",
+        "skills/factor-forge-researcher/references/research-journal-schema.md"
+      ],
+      "after": [
+        "skills/factor-forge-ultimate/references/research-journal.md",
+        "skills/factor-forge-ultimate/references/research-journal-schema.md"
+      ]
+    },
+    "judgment": {
+      "before": [
+        "skills/factor-forge-step6/SKILL.md",
+        "skills/factor-forge-step6/references/current-operating-contract.md",
+        "skills/factor-forge-step6/references/output-contract.md",
+        "skills/factor-forge-research-brain/SKILL.md",
+        "skills/factor-forge-research-brain/references/current-research-contract.md",
+        "docs/operations/factorforge-math-research-discipline.zh-CN.md"
+      ],
+      "after": [
+        "skills/factor-forge-step6/SKILL.md",
+        "skills/factor-forge-step6/references/current-operating-contract.md",
+        "skills/factor-forge-step6/references/output-contract.md",
+        "skills/factor-forge-step6/references/evidence-interpretation.md"
+      ]
+    },
+    "independent": {
+      "before": [
+        "skills/factor-forge-step6-researcher/SKILL.md",
+        "skills/factor-forge-step6-researcher/references/researcher-memo-schema.md"
+      ],
+      "after": [
+        "skills/factor-forge-step6/references/independent-review.md",
+        "skills/factor-forge-step6/references/researcher-memo-schema.md"
+      ]
+    },
+    "revision": {
+      "before": [
+        "skills/factor-forge-ultimate/references/council-orchestration.md",
+        "skills/factor-forge-step6/references/council-and-revision.md",
+        "skills/factor-forge-step6/references/prompts.md",
+        "skills/factor-forge-ultimate/references/self-improving-research.md",
+        "skills/math-derivation-tutor/SKILL.md"
+      ],
+      "after": [
+        "skills/factor-forge-ultimate/references/council-orchestration.md",
+        "skills/factor-forge-step6/references/council-and-revision.md",
+        "skills/factor-forge-step6/references/prompts.md",
+        "skills/factor-forge-ultimate/references/self-improving-research.md",
+        "skills/math-derivation-tutor/SKILL.md"
+      ]
+    }
+  },
+  "reading_scenarios": [
+    {
+      "id": "step1_source",
+      "description": "Read and land a new PDF source through the phase-isolated advisory route.",
+      "sets": [
+        "entry",
+        "content",
+        "source",
+        "math",
+        "protocol",
+        "knowledge"
+      ]
+    },
+    {
+      "id": "step2_model",
+      "description": "Author the specification from independent readings and freeze its measurement.",
+      "sets": [
+        "entry",
+        "content",
+        "step2",
+        "math",
+        "protocol",
+        "knowledge"
+      ]
+    },
+    {
+      "id": "step3_code_review",
+      "description": "Implement simple daily direct code and hand off actual code for Step2 review.",
+      "sets": [
+        "entry",
+        "step3",
+        "human",
+        "continuity"
+      ]
+    },
+    {
+      "id": "step4_5_execution",
+      "description": "Run the reviewed standard evaluation and archive evidence; no optional Qlib or formal OOS.",
+      "sets": [
+        "entry",
+        "execution",
+        "human"
+      ]
+    },
+    {
+      "id": "step6_stop",
+      "description": "Review a completed ordinary IS attempt and justify a stop without a new branch.",
+      "sets": [
+        "entry",
+        "content",
+        "judgment",
+        "independent",
+        "continuity",
+        "knowledge"
+      ]
+    },
+    {
+      "id": "step6_revision",
+      "description": "Consider a substantive response-structure revision with Council and a focused mathematical audit.",
+      "sets": [
+        "entry",
+        "content",
+        "judgment",
+        "independent",
+        "continuity",
+        "knowledge",
+        "math",
+        "protocol",
+        "revision"
+      ]
+    }
+  ]
+}

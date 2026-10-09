@@ -1,153 +1,57 @@
 ---
 name: factor-forge-step5
-description: Step 5 of the Factor Forge pipeline — evaluation, archival, and knowledge writeback. Consumes factor_run_master, computes evaluation summary, archives artifacts, and writes the final factor_case_master for future retrieval and reuse.
+description: Check and organize factor evaluation evidence, preserve results and limitations, and hand off a reproducible case for research judgment and learning.
 ---
 
-# Factor Forge Step 5 Skill
+# Factor Forge Step5
 
-## What This Skill Does
+Step5 checks actual Step4 evidence and records the case. Step6 owns the economic
+judgment and revision. Execute through the study's pinned Ultimate entry.
 
-Step 5 closes the loop.
-It takes the executed factor run, evaluates what happened, archives the result, and writes back reusable knowledge.
+## Check and preserve
 
-Step 5 preserves the exact upstream
-`mechanism_conditioned_measurement_program` from Step 2 and records a compact
-reference to its selected mathematical object, estimand, observation map and
-market-outcome projection in `math_discipline_review`. It must not redo
-mechanism inference or use mathematical explanation as a substitute for Step4/5
-long-side evidence, provenance, or prewrite gates. Legacy
-`mechanism_math_contract` objects are carried only when already present.
+- Consume the manifest-selected run, spec, data preparation and handoff.
+  Validate identity, required backend artifacts, finite/consistent metrics and
+  factor-value quality before claiming a usable case.
+- Preserve the upstream measurement program, research window and existing math
+  metadata exactly. Conflicting definitions are errors; missing information
+  stays missing. Mathematical explanation does not substitute for execution.
+- Separate signal/event diagnostics from account evidence, and valid observations
+  from incomplete or bug-affected outputs. Quality status is not a profit verdict.
+- Record the evidence that can be reused, its limits and Step6's next questions.
+  Genuine failure or no new lesson is more useful than invented learning.
 
-## Research Discipline
+Read [inputs](references/input-contract.md) and [outputs](references/output-contract.md)
+when writing the case. The implementation is `factor_factory.step5`; historical
+module names forward to that same library.
 
-Verify and deliver the [human-reproducible handoff](../factor-forge-ultimate/references/human-reproducibility.md):
-annotated executed factor class/helpers, a runnable command, full standard factor
-values plus head/tail/date slices, and the same standardized metrics produced by
-Step4. Preserve units, sample sizes, timing and unavailable reasons. Do not replace
-these with a PASS count, regenerate metrics in prose, or call a statistics-only
-result an account backtest. Missing handoff content is an incomplete delivery.
+Verify the [human-reproducible handoff](../factor-forge-ultimate/references/human-reproducibility.md):
+annotated executed class/helpers, command, full standard values and sample slices,
+the same standardized metrics, and relevant plots. Preserve units, sample counts,
+timing and unavailable reasons. A statistics-only result is not an account test.
 
-Step 5 is not just file archiving. It must compress Step4 evidence into a reusable case:
-- which evidence is strong enough to reuse,
-- which evidence is weak or should not be over-interpreted,
-- where the factor seems to work or fail by regime, universe, turnover, or cost,
-- what Step6 should inspect before deciding promote / iterate / reject,
-- what future agents should learn from this case even if it failed.
-- whether Step4 evidence itself is malformed, missing required artifacts, or implausible enough to indicate an execution/evaluator bug.
+## Return real defects to their owners
 
-Lessons should not be generic status lines. They should be useful retrieval hooks for later factor research.
+A blocking Step4 quality result makes the case failed and preserves the concrete
+finding. Return suspected code/spec/data defects through Ultimate to Step4 and
+Step2/3; re-review and retest repairs before recomputing affected results.
 
-## Inputs
+Illegal information time blocks use. An unconfirmed timing classification is
+a warning to resolve with actual code/PIT evidence, not proof of leakage or safety.
+For existing cases affected by the old prose-substring classifier, use the scoped
+maintenance procedure in [output notes](references/output-contract.md), not a new
+interpretation of historical research.
 
-- `factorforge/objects/factor_run_master/factor_run_master__{report_id}.json`
-- `factorforge/objects/factor_spec_master/factor_spec_master__{report_id}.json`
-- `factorforge/objects/data_prep_master/data_prep_master__{report_id}.json`
-- `factorforge/objects/handoff/handoff_to_step5__{report_id}.json`
+## Close and hand off
 
-## Outputs
-
-- `factorforge/objects/factor_case_master/factor_case_master__{report_id}.json`
-- `factorforge/objects/validation/factor_evaluation__{report_id}.json`
-- `factorforge/objects/handoff/handoff_to_step6__{report_id}.json`
-- archive directory:
-  - `factorforge/archive/{report_id}/`
-
-## factor_case_master schema
-
-```json
-{
-  "report_id": "string",
-  "factor_id": "string",
-  "final_status": "validated|partial|failed",
-  "evaluation_summary": {
-    "artifact_ready": true,
-    "row_count": 0,
-    "date_count": 0,
-    "ticker_count": 0
-  },
-  "math_discipline_review": {
-    "information_set_legality": "explicit_lag_or_delay_documented|requires_researcher_confirmation_no_forward_leakage|illegal_potential_forward_reference",
-    "spec_stability": {},
-    "signal_vs_portfolio_gap": "string",
-    "overfit_risk": ["string"]
-  },
-  "lessons": ["string"],
-  "archive_paths": ["string"],
-  "next_actions": ["string"]
-}
-```
-
-## Core rules
-
-1. Step 5 does not fake evaluation if Step 4 failed.
-2. Archive whatever is real: success artifact, partial artifact, or failure artifact.
-3. Write lessons and next actions explicitly.
-4. Final status must match real outputs.
-5. Step 5 must emit `math_discipline_review` so Step6 can judge information-set legality, spec stability, signal/portfolio gaps, and overfit risk before promotion.
-6. `information_set_legality=illegal*` is a hard BLOCK. `requires_researcher_confirmation_no_forward_leakage` is a WARN that Step6 must resolve before official promotion.
-   The producer checks canonical formula/operator forward references and explicit
-   negative shifts separately from explanatory prose. A future-data mention in
-   prose, including a prohibition, requires independent confirmation; it proves
-   neither leakage nor safety. Classification is not a code/PIT audit. Existing
-   cases affected by the legacy substring rule may use the reviewed
-   `scripts/repair_step5_information_set.py` maintenance command: preserve original
-   bytes, bind all input hashes, change only the case/handoff information-set
-   metadata to unconfirmed, and run an actual native validator under a new
-   explicit Step5 continuation. Keep maintenance identity distinct from the
-   original writer; Step6 still consumes independent timing/mutation evidence.
-7. Step 5 must run a Step4 quality gate before archive/close. If required Step4 metrics/plots are missing, non-finite, internally inconsistent, or obviously implausible, Step5 must set `final_status=failed`, record the suspected defect, and return it through Ultimate to Step4 and Step2/3 for classification. An implementation repair needs Step2 re-review and new Step3 tests before an affected Step4 rerun; do not immediately rerun or pass invalid evidence to Step6.
-
-## Execution chain
-
-```bash
-# Ordinary local IS, from the study's pinned checkout:
+```sh
 python3 scripts/run_factorforge_ultimate.py --local-is-only \
-  --report-id <report_id> --factor-workspace <factor_workspace> \
+  --report-id <report_id> --factor-workspace <workspace> \
   --start-step 5 --end-step 5
 ```
 
-Direct `run_step5.py` / `validate_step5.py` commands are developer-debug only and are blocked for formal writes by default. Official agent-led runs must use `scripts/run_factorforge_ultimate.py` so Step5 consumes exactly the Step4 outputs declared by the orchestrator and emits an `ultimate_run_report__<report_id>.json` proof.
-
-## Repository alignment note
-
-Current repository reproducibility docs for Step 5 live at:
-- `docs/contracts/step5-contract.md`
-- `docs/reproducibility/step5-gap-card.md`
-- `scripts/run_step5_sample.sh`
-
-Treat those files as the authoritative current repo-level reproducibility notes when deciding whether Step 5 is merely skill-visible or Bernard/Mac reproducible-level.
-
-## Acceptance
-
-- `factor_case_master` exists
-- `final_status` is one of `validated|partial|failed`
-- evaluation file exists
-- archive directory exists
-- archive paths listed are real
-- no placeholders remain
-- `math_discipline_review.information_set_legality` exists and is not illegal
-- `math_discipline_review.spec_stability`, `signal_vs_portfolio_gap`, and `overfit_risk` exist
-- validator output uses `PASS|WARN|BLOCK`
-- `step4_quality_gate` exists in both `factor_evaluation` and `factor_case_master`
-- a blocking Step4 quality gate forces `final_status=failed`
-## Implementation and Factor Isolation Discipline
-
-- Every formal factor artifact must carry `artifact_identity`.
-- Every formal run must carry `manifest_identity`.
-- `implementation_mode` is restricted to `operator`, `direct_code`, or `hybrid`.
-- Artifacts must not be reused across mode, factor, report, branch, or run unless identity/hash lineage matches explicitly.
-- Formal execution must consume manifest-specified paths only; do not pick files by `glob`, mtime, or "latest" guesses.
-- If `report_id`, `factor_id`, `source_type`, `implementation_mode`, `branch_id`, `spec_hash`, or formula/code/hybrid hash does not match, BLOCK.
-- Direct generated implementation files belong to one factor identity; shared helpers may be reused, factor-specific generated code may not be silently copied.
-
-## Correctness Over Completion
-
-Step5 must reject invalid or stale evidence. Case records must preserve strict `artifact_identity`, evidence identity, branch/run provenance, and long-only risk-adjusted evidence before any validated conclusion.
-
-## Provenance Strengthening
-
-- No provenance, no archive: `factor_case_master` must carry `artifact_identity`, `evidence_identity`, `implementation_mode_decision`, `source_evidence_refs`, and `evidence_quality`.
-- No evidence identity, no case close: validated Step5 requires strict identity match to `factor_run_master`, successful Step4 backend evidence, self-quant long-side evidence, and mode-decision provenance.
-- Similar-case evidence is not same-factor evidence. Step5 may preserve analogies, but it must not treat another factor/report/branch/run as this case's evidence.
-- Downstream Step6 promotion is allowed only when Step5 records `identity_chain_verified=true` and long-only risk-adjusted metrics are present.
-- The provenance gate runs before `archive_artifacts()`. If identity/evidence/mode-decision quality is incomplete, Step5 may write only a failed case plus `objects/validation/step5_prewrite_block__<report_id>.json`; it must not archive or hand off a validated-looking case.
+Case status is `validated|partial|failed`; validation is `PASS|WARN|BLOCK`.
+Archive and handoff follow the existing prewrite checks. An identity/evidence
+failure can produce a failed case and block record, not a validated-looking
+archive. Continue Step6 with the exact evidence and its remaining limits.
+Local experience is a maintenance candidate, not automatic canonical publication.

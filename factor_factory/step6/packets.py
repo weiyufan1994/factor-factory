@@ -87,7 +87,7 @@ def build_researcher_packet(rid: str, *, workspace_root: Path | str | None = Non
             'Compare IC/group diagnostics with native portfolio/account evidence.',
             'Open important png artifacts if present, especially NAV, benchmark-vs-strategy, turnover, quantile NAV/counts.',
             'Retrieve similar prior cases before final decision if retrieval index exists.',
-            'Write researcher_memo JSON using the schema in factor-forge-step6-researcher/references/researcher-memo-schema.md.',
+            'Write researcher_memo JSON using skills/factor-forge-step6/references/researcher-memo-schema.md.',
         ],
         'producer': 'factor-forge-step6-researcher.build_researcher_packet',
     }

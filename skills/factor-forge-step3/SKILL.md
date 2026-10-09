@@ -1,6 +1,6 @@
 ---
 name: factor-forge-step3
-description: Bind Factor Forge specifications to governed data and implementation. Step3A resolves data/state contracts; Step3B produces code and bounded sample proof, then returns it for Step2 review before Step4.
+description: Implement a factor class using existing data interfaces, deliver standard factor values and annotated code, and prepare tests for independent review before evaluation.
 ---
 
 # Factor Forge Step3

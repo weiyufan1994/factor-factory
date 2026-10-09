@@ -626,11 +626,13 @@ not merge, attach, import results, or call real agent APIs.
 user-handoff states. If the main-agent memo is missing, the runtime main agent
 must answer the questionnaire, validate the memo, and resume. If agentic
 Council results are missing, the runtime main agent must read the task packets,
-delegate independent roles to available subagents or perform them sequentially
-itself, write `status=final` / `producer=real_agent` result JSON files to the
-exact expected paths, run collection validation and finalize, then continue the
+delegate independent roles to distinct available contexts and collect their
+actual `status=final` / `producer=real_agent` results at the expected paths,
+run collection validation and finalize, then continue the
 official loop. Do not ask the user to manually advance the next command unless
 valid Council output cannot be produced in the current runtime.
+Unavailable independent execution remains a review gap; author-only role
+analysis cannot replace it.
 When the loop legitimately pauses at
 `awaiting_main_agent_mechanism_memo`, `awaiting_agent_results`,
 `awaiting_main_agent_council_synthesis`, or `awaiting_next_derivation`, it must

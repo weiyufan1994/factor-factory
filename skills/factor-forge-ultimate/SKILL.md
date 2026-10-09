@@ -1,150 +1,89 @@
 ---
 name: factor-forge-ultimate
-description: Run or resume Factor Forge research through Step1–6, coordinating source understanding, mathematical specification, implementation review, evidence and research judgment. Use as the research entry for reports, formulas and new hypotheses.
+description: Conduct or resume factor research from a report, formula or economic hypothesis, coordinating understanding, mathematical derivation, implementation, evaluation and iteration.
 ---
 
 # Factor Forge Ultimate
 
-Ultimate owns the research question and coordinates the Step skills. A report or
-named idea can enter directly; Miner is an optional candidate factory. Use this
-checkout's `scripts/run_factorforge_ultimate.py`, retaining an existing study's
-pinned checkout and workspace.
+Own the research question and use the active Step skill. Work in the study's
+declared workspace and pinned checkout; resume from its actual artifacts.
+Use this checkout's `scripts/run_factorforge_ultimate.py` for execution.
 
-## Research responsibility
+## Research loop
 
-- For `report_replication`, recover the author's construction before suggesting
-  changes: components, sign, windows, aggregation order, normalization and
-  weights. Separate source statements, necessary reconstruction assumptions and
-  independent ideas. Mathematical analysis may expose an unknown payoff link;
-  it does not authorize replacing the source estimator.
-- `source_extension` is a separately identified estimator. A new
-  `independent_hypothesis` needs no invented paper baseline. Report completion
-  against the requested subject; a successful extension does not complete a
-  requested replication.
-- Preserve open inquiry: economic hypotheses, mathematical mechanisms,
-  analogies, rival explanations and unknowns are research, not form completion.
-  A novel object, algorithm or empty knowledge search is allowed. Select tools
-  from the question; neither an operator catalog nor a stochastic/valuation
-  template defines the available ideas. Separate exploratory associations from
-  the claims, information boundaries and discriminating tests frozen for evaluation.
-- Let researchers judge source fidelity, model choice, material disagreement and
-  evidence. Scripts enforce identity, ordering, data timing and reproducibility;
-  a score, populated schema or validator PASS cannot settle those judgments.
-  Current field/count restrictions still apply at formal landing; consult
-  [compatibility constraints](references/compatibility-constraints.md) when
-  authoring or when a reasonable research path conflicts with a validator.
+1. **Understand the source.** Read the original methods and save a short
+   source-only understanding before consulting historical cases or method
+   suggestions. Separate author statements, necessary reconstruction assumptions
+   and independent ideas. Disclose prior exposure instead of claiming a blind read.
+2. **Formalize in Step2.** Let the economic hypothesis determine the mathematical
+   object, assumptions, observable estimator and pre-result predictions.
+   For replication retain the author's construction; an extension is a separately
+   identified study. A new hypothesis needs no invented paper baseline.
+3. **Implement in Step3.** Resolve existing data through the Data API, choose
+   operator/direct-code/hybrid to fit the mathematics, and deliver the standard
+   factor class and table with readable, annotated code.
+4. **Review before testing.** Stop at Step3B. A distinct Step2 researcher reviews
+   the actual code and helpers; Step3 fixes findings, Step2 re-reviews, then Step3
+   runs deterministic/parity tests on that version. Resume at Step4 without
+   regenerating approved code.
+5. **Evaluate and reflect.** Step4 produces factor values and selected evaluations;
+   Step5 checks and preserves evidence; Step6 compares predictions with results
+   and decides to retain, revise, reject, leave unresolved or stop.
+6. **Continue purposefully.** A changed mechanism, estimand or response structure
+   returns to Step2 for fresh mathematical induction before code or efficacy
+   evaluation. An unchanged-spec implementation defect returns to Step3 review.
 
-## Read for the current task
+Use the simplest sufficient argument, not a fixed quota of tools or ideas.
+Economic reasoning, rival explanations, mathematical exploration and revery
+remain open-ended. Scripts check reproducibility and consistency; they do not
+prove a mechanism or replace research judgment. No useful new idea is a valid result.
 
-Read the main Skill for each active stage, not all Step skills in advance. The
-following references are conditional; they do not recursively require the whole
-reference directory. Repository paths start at the selected checkout.
+## Read only for the current action
 
-| Current task | Read before that action |
+| Action | Read |
 |---|---|
-| Local execution, segmentation or recovery | [Current operating contract](references/current-operating-contract.md) |
-| New source/hypothesis intake or eligible post-Step5 advisory | [Source-first advisory](references/epistemic-advisory-operating-delta-v1.md) |
-| Author/freeze state, conjecture or approach registry | [Research protocol](references/research-protocol.md) |
-| Prepare/recheck the Step4 code-review checkpoint | [Local code review](references/local-code-review.md) |
-| Implement, inspect or deliver Step3–5 code/values/results | [Human reproducibility](references/human-reproducibility.md) |
-| Active Step6 judgment | Step6 Skill; research-brain for evidence interpretation; researcher journal Skill when creating/updating its dossier |
-| Actual revision/Council checkpoint | [Council orchestration](references/council-orchestration.md) and Step6's Council reference |
-| Completion/interruption or maintenance repair | [Knowledge maintenance](references/knowledge-maintenance.md) |
-| Existing hosted organization/Console/Web route | [Hosted organization](references/hosted-organization.md) |
-| Frozen EVO V2 lifecycle, incident or child recovery | [EVO lifecycle](references/evo-lifecycle.md) |
-| Formal certificate/OOS release/promotion | [Factor proof](references/factor-proof.md) |
-| Authorized hosted child loop or worker/canary | [Hosted loop](references/hosted-loop.md) or [worker/canary](references/worker-and-canary.md), respectively |
-| Historical schema/compatibility reproduction | [Legacy operations](references/legacy-operations-reference.md); current mode contract takes precedence |
+| Execute or resume ordinary IS | [Execution](references/current-operating-contract.md) |
+| Land a new study or interpret a pinned version | [Content/version rules](references/compatibility-constraints.md) |
+| Freeze state, conjecture and approaches | [Research protocol](references/research-protocol.md) |
+| Step3B review/test handoff | [Code review](references/local-code-review.md) |
+| Deliver Step3–5 code, values and results | [Human reproducibility](references/human-reproducibility.md) |
+| Keep continuity or hand off interrupted work | [Research journal](references/research-journal.md) |
+| Interpret Step4/5 or decide the next step | [Step6](../factor-forge-step6/SKILL.md) |
+| New response structure or GP/MCTS use | [Self-improving research](references/self-improving-research.md) |
+| Use prior knowledge, deposit lessons or close a round | [Knowledge maintenance](references/knowledge-maintenance.md); for the phase-isolated advisory adapter, [advisory operation](references/epistemic-advisory-operating-delta-v1.md) |
+| Actual Council checkpoint | [Council orchestration](references/council-orchestration.md) |
+| Explicit hosted, EVO, OOS or formal promotion task | The matching [hosted](references/hosted-organization.md), [EVO](references/evo-lifecycle.md) or [proof](references/factor-proof.md) reference |
 
-For mathematical formalization, Step2 routes to the measurement-program
-contract. For catalog or state delivery dependencies, use data-liaison. Use
-researcher-memory only for the hosted role-memory route. These pairings do not
-activate unrelated operations.
+These are conditional routes, not a recursive reading list. Use data-liaison
+for an unresolved catalog/field dependency and math-derivation-tutor for a
+focused derivation audit. Neither is an automatic extra ceremony.
 
-## Coordinate the work
+## Execution and responsibility
 
-1. Identify the subject, requested scope, active workspace/manifest and evidence
-   already available. Resume completed work; do not restart the study by habit.
-2. Read the actual source in full, including the author's own methods, and save
-   a brief source-only understanding before opening supplementary historical
-   cases or method references. Such references are prior knowledge even when
-   the user/coordinator supplies their file paths; they are not original source.
-   For an ordinary draft this is a short note, not a new receipt, hash, approval
-   or full formal freeze artifact. If already exposed, disclose it rather than
-   backfilling a source-only/blind note. Formal advisory still uses the existing
-   source-only freeze and validation contract: Ultimate prepares and validates
-   the attempt; the user does not configure RAG lanes or paths. Consume only
-   validator-emitted advisory bytes. Corrective reconstruction is not fresh
-   blind/A0 research.
-3. Step1 understands the source/hypothesis; Step2 freezes the mathematical and
-   measurement specification. Step3A binds data; Step3B writes the actual code,
-   helpers, numerical assumptions and proposed deterministic tests.
-4. Stop the execution segment at Step3B. An independent Step2 researcher reviews
-   the actual code and helpers against the source/spec. Step3 fixes; Step2
-   re-reviews. Step3 then runs acceptance/parity tests on that reviewed version.
-   Resume at Step4 without regenerating Step3B or reusing stale approval.
-5. Step4 produces formal execution/diagnostics; Step5 checks and archives usable
-   evidence; Step6 interprets it and chooses reject, bounded further work,
-   unresolved judgment or promotion only within the available authority.
+Ordinary IS uses `--local-is-only` and the existing research window. It needs
+no Host identity. Its pre-result records and reviewed-code checkpoint remain
+necessary. The execution reference gives the exact commands and resume points.
+OOS and official promotion are separate operations, not ordinary IS completion.
 
-For ordinary local IS use `--local-is-only`. The wrapper checks existing
-pre-result research records before local Step3/3B/4/5 even when Step6 is absent,
-and checks the version-bound review and subsequent tests before Step4. Missing
-or stale records return to the responsible researcher; never backfill blind
-records after results. Local IS does not require Host deployment or confer OOS
-or promotion authority.
+Inspect current deliveries, API fields and calendar/valuation conventions
+before escalating a data gap. Ask the data owner only for the missing dependency.
+Keep an appropriate research approximation explicit.
 
-The Step2 reviewer must be distinct from the implementer. If the original
-researcher is unavailable, a replacement first reconstructs source/spec and
-assumptions. Use roles and models proportionate to difficulty, cost and
-availability, honoring explicit user choices; no provider or `max` default.
-Do not invent independent execution when a tool/model call fails.
+A suspected Step4/5 defect returns through Ultimate to Step2 and Step3.
+Preserve affected evidence; resolve whether the issue is code, specification,
+data or an empirical outcome, then re-review and retest the repair. Weak IC or
+returns alone do not establish a bug. Independently valid diagnostics can still
+be interpreted while an account result remains incomplete.
 
-## Feedback, continuation and stopping
+Use the existing journal to record the current owner, actual messages/results,
+findings and next useful action. Continue internal checkpoints within scope;
+a prepared task or wrapper status is not actual agent dispatch. Required
+independent work needs a distinct context. If unavailable, preserve author
+analysis and the explicit review gap. Sequential self-analysis is not independence.
 
-Keep the next useful research question moving within the authorized scope.
-Before escalating a data gap, inspect existing deliveries, API fields, calendar
-semantics and standard valuation conventions; request only the unresolved
-dependency. An approximation must be explicit and appropriate to the estimand,
-not silently treated as observed execution. Do not expand an isolated gap into
-a new data platform by default.
-
-When one output is blocked, retain independently valid diagnostics and let the
-researcher discuss their limits in the existing journal/memo. This does not
-override a failed validator, create a formal Step6 handoff, or certify a partial
-account as tradable performance. Continue unaffected reasoning and route the
-concrete repair to its owner; report which completion claims remain unavailable.
-
-A suspected Step4/5 defect returns promptly through the existing agent/task
-channel to Step2 and Step3. Pause affected work and retain unusable evidence.
-Step3 reproduces/fixes; Step2 distinguishes implementation mismatch, specification
-or data problems, and genuine empirical outcomes. Semantic changes are explicit
-research revisions. Resume only after re-review and new deterministic/parity
-checks, from the history/state needed for correctness and within existing scope.
-Weak IC or return alone is not a bug and never licenses parameter rescue.
-
-Ultimate owns routine internal continuation; a script checkpoint is not an
-instruction to make the user relay messages. Use the existing journal/handoff
-for current owner, materials, concrete findings and resume point. Only an actual
-channel invocation and returned result establishes dispatch/review. The current
-wrapper does not itself send agent tasks or guarantee background/cross-session
-resumption. If a required channel or independent reviewer is unavailable, retain
-the exact blocker and stop the affected work honestly.
-
-Stop at the requested terminal outcome, an explicit pause, an unresolved
-material decision, an exhausted authorized budget or a genuine blocker.
-New hypothesis/child execution follows the active revision-approval contract;
-ordinary code fixes and re-review remain internal to the authorized work.
-Keep economic decision, native protocol status, wrapper execution, independent
-review, OOS and promotion claims separate in every completion report.
-
-## Self-improving research actions
-
-For a new response structure or when Step4/5 evidence changes the next research
-action, read [self-improving research](references/self-improving-research.md).
-Each new structure requires its responsible researcher to complete a
-mechanism-first math induction before formal efficacy evaluation. Hybrid policy
-advice is local evidence only: it cannot execute work, substitute for Step2/3
-review, or make a research conclusion. The repository candidate
-`math-derivation-tutor` is an optional focused audit, not an independent review
-or a required extra model call.
+Stop at the requested outcome, an explicit pause, exhausted budget, a material
+unresolved decision or a genuine blocker. Preserve failed branches and supported
+lessons before starting another; new child execution follows the active approval
+path. Report research judgment, executed stages, independent review and formal
+acceptance separately. Use roles/models proportionate to the work and the
+user's choices; there is no highest-effort or provider default.

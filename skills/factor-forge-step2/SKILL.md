@@ -1,6 +1,6 @@
 ---
 name: factor-forge-step2
-description: Formalize a Factor Forge source or hypothesis into a canonical mathematical and measurement specification, reconcile independent readings, and review Step3 code against that specification before Step4.
+description: Translate an economic hypothesis into a mathematical model, observable estimator and testable predictions, then review implementation against the specification.
 ---
 
 # Factor Forge Step2

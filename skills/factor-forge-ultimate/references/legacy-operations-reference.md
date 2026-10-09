@@ -1076,10 +1076,10 @@ main agent must:
 
 1. read the dispatch manifest and all task packets;
 2. dispatch independent Council roles to available subagents when possible;
-3. if subagents are unavailable, perform the Council roles sequentially itself
-   as real research work, not as a deterministic scaffold;
-4. write one `status=final`, `producer=real_agent` result JSON per required
-   task to the exact `expected_result_path`;
+3. if the required independent context is unavailable, preserve author analysis
+   and the explicit review gap; sequential self-analysis is not independent;
+4. collect each actual independent researcher's `status=final`,
+   `producer=real_agent` result at the task's `expected_result_path`;
 5. include public derivation records, `economic_hypothesis_review`,
    `math_mechanism_derivation`, `model_to_formula_translation`,
    formula-specific critique, payer derivation critique, falsification tests,

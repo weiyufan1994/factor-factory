@@ -3,6 +3,9 @@ from __future__ import annotations
 from copy import deepcopy
 import hashlib
 import json
+from functools import lru_cache
+from pathlib import Path
+import runpy
 
 import pytest
 
@@ -20,6 +23,26 @@ from factor_factory.mechanism_math.main_agent_memo import (
     formula_specific_derivation_from_main_agent_memo,
     validate_main_agent_mechanism_memo,
 )
+
+
+@lru_cache(maxsize=1)
+def _frozen_transient_recognizer():
+    path = Path(__file__).parent / 'fixtures/transient_impact_before_cleanup.py'
+    return runpy.run_path(str(path))['_has_explicit_transient_impact_model']
+
+
+@pytest.fixture(autouse=True)
+def _transient_refactor_parity(monkeypatch):
+    """Every existing positive/negative derivation test also checks old/new identity."""
+    from factor_factory.mechanism_math import formula_specific
+    native = formula_specific._has_explicit_transient_impact_model
+
+    def checked(*args, **kwargs):
+        actual = native(*args, **kwargs)
+        assert actual == _frozen_transient_recognizer()(*args, **kwargs)
+        return actual
+
+    monkeypatch.setattr(formula_specific, '_has_explicit_transient_impact_model', checked)
 
 
 @pytest.mark.parametrize('formula', ['1000*amount', '250*amount', 'amount/250',

@@ -4,6 +4,13 @@ import hashlib
 import json
 from typing import Any, Iterable
 
+from factor_factory.research_profiles import (
+    ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE,
+    INVALID_RESEARCH_COMPATIBILITY_PROFILE_BINDING,
+    flexible_local_profile,
+    research_compatibility_profile_from_spec,
+)
+
 from factor_factory.mechanism_math.equation_quality import (
     VALID_DEMOTION_TRIGGERS,
     VALID_EVIDENCE_TIERS,
@@ -30,9 +37,6 @@ MATH_AUTHORITY = "economic_hypothesis_and_math_mechanism"
 MODEL_CANDIDATE_ROLES = frozenset(
     {"primary", "mechanism_alternative", "null_alias"}
 )
-ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE = (
-    "factorforge_ordinary_local_is_flexible_v1"
-)
 AUTHORITY_ORDER_V1 = [
     "economic_hypothesis",
     "open_math_tool_selection",
@@ -58,31 +62,6 @@ AUTHORITY_ORDER = AUTHORITY_ORDER_V1
 BLOCK_MEASUREMENT_PROGRAM_INVALID = (
     "BLOCK_FACTORFORGE_MEASUREMENT_PROGRAM_INVALID"
 )
-INVALID_RESEARCH_COMPATIBILITY_PROFILE_BINDING = (
-    "__invalid_research_compatibility_profile_binding__"
-)
-
-
-def research_compatibility_profile_from_spec(spec: Any) -> str | None:
-    """Return only the profile consistently bound on the current Step2 spec."""
-    if not isinstance(spec, dict):
-        return None
-    contract = spec.get("research_contract")
-    contract_has_profile = (
-        isinstance(contract, dict) and "research_compatibility_profile" in contract
-    )
-    top_has_profile = "research_compatibility_profile" in spec
-    contract_profile = (
-        contract.get("research_compatibility_profile")
-        if isinstance(contract, dict)
-        else None
-    )
-    if top_has_profile and (
-        not contract_has_profile
-        or spec.get("research_compatibility_profile") != contract_profile
-    ):
-        return INVALID_RESEARCH_COMPATIBILITY_PROFILE_BINDING
-    return contract_profile if contract_has_profile else None
 PUBLIC_DERIVATION_FIELDS = frozenset(
     {
         "record_type",
@@ -855,8 +834,7 @@ def validate_measurement_program(
 ) -> list[str]:
     reasons: list[str] = []
     flexible_local = (
-        compatibility_profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
-        and scope == "local_is_only"
+        flexible_local_profile(compatibility_profile, scope)
     )
     if compatibility_profile is not None and not flexible_local:
         reasons.append("measurement_program.compatibility_profile_invalid")

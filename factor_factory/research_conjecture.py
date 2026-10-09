@@ -9,6 +9,11 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from factor_factory.research_profiles import (
+    ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE,
+    flexible_local_profile,
+)
+
 from factor_factory.research_evidence import (
     resolve_workspace_evidence_path,
     sha256_file,
@@ -48,9 +53,6 @@ RESEARCH_PROTOCOL_SCOPES = {
     RESEARCH_PROTOCOL_SCOPE_HOSTED,
     RESEARCH_PROTOCOL_SCOPE_LOCAL_IS,
 }
-ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE = (
-    "factorforge_ordinary_local_is_flexible_v1"
-)
 EPISTEMIC_EVOLUTION_POLICY_VERSION = "factorforge_epistemic_evolution_policy_v2"
 EPISTEMIC_EVOLUTION_LIFECYCLE_VERSION = "factorforge_epistemic_evolution_lifecycle_v2"
 EPISTEMIC_EVOLUTION_STATES = {
@@ -744,8 +746,7 @@ def validate_research_conjecture(
         return ["BLOCK_FACTORFORGE_RESEARCH_PROTOCOL_SCOPE_INVALID"]
     local_is_only = scope == RESEARCH_PROTOCOL_SCOPE_LOCAL_IS
     flexible_local = (
-        local_is_only
-        and compatibility_profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        flexible_local_profile(compatibility_profile, scope)
     )
     if compatibility_profile is not None and not flexible_local:
         reasons.append("BLOCK_FACTORFORGE_RESEARCH_COMPATIBILITY_PROFILE_INVALID")
@@ -1115,8 +1116,7 @@ def validate_approach_registry(
 ) -> list[str]:
     reasons: list[str] = []
     flexible_local = (
-        scope == RESEARCH_PROTOCOL_SCOPE_LOCAL_IS
-        and compatibility_profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        flexible_local_profile(compatibility_profile, scope)
     )
     if compatibility_profile is not None and not flexible_local:
         reasons.append("BLOCK_FACTORFORGE_APPROACH_COMPATIBILITY_PROFILE_INVALID")

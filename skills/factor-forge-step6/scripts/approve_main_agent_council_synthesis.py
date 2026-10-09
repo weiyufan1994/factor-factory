@@ -25,6 +25,7 @@ from factor_factory.human_approval import (
     validate_external_human_approval_receipt,
 )
 from factor_factory.measurement_program import research_compatibility_profile_from_spec
+from factor_factory.research_profiles import revision_evidence_minimum
 from factor_factory.research_conjecture import (
     RESEARCH_PROTOCOL_SCOPE_HOSTED,
     RESEARCH_PROTOCOL_SCOPE_LOCAL_IS,
@@ -545,7 +546,9 @@ def synthesis_revision_hypothesis(selected: dict[str, Any], implementation_mode:
     }
 
 
-def revision_hypothesis_contract_ok(hypothesis: Any) -> bool:
+def revision_hypothesis_contract_ok(
+    hypothesis: Any, *, compatibility_profile: str | None = None, scope: str | None = None,
+) -> bool:
     if not isinstance(hypothesis, dict):
         return False
     forbidden_changes = set(hypothesis.get("forbidden_changes") or [])
@@ -568,12 +571,11 @@ def revision_hypothesis_contract_ok(hypothesis: Any) -> bool:
     ]
     if any(not nonempty_list(hypothesis.get(key)) for key in required_lists):
         return False
-    if len(hypothesis.get("expected_metric_change") or []) < 2:
-        return False
-    if len(hypothesis.get("falsification_tests") or []) < 2:
-        return False
-    if len(hypothesis.get("kill_criteria") or []) < 2:
-        return False
+    minimum = revision_evidence_minimum(compatibility_profile, scope)
+    for field in ("expected_metric_change", "falsification_tests", "kill_criteria"):
+        values = hypothesis.get(field)
+        if len(values) < minimum or any(not nonempty_str(item) for item in values):
+            return False
     if hypothesis.get("revision_model_layer") not in VALID_REVISION_MODEL_LAYERS:
         return False
     if hypothesis.get("revision_target_math_object") not in VALID_REVISION_MATH_OBJECTS:
@@ -663,12 +665,23 @@ def approve_iteration(
     if primary_failure_signature not in VALID_PRIMARY_FAILURE_SIGNATURES:
         primary_failure_signature = "cost_too_high"
     revision_hypotheses = final.get("revision_hypotheses")
+    compatibility_profile = report_bound_compatibility_profile(root, report_id)
+    scope = (
+        "local_is_only"
+        if os.getenv("FACTORFORGE_LOCAL_IS_ONLY") == "1" and not epistemic_evolution_enabled(evo_conjecture(root, report_id))
+        else None
+    )
     if (
         not isinstance(revision_hypotheses, list)
         or not revision_hypotheses
-        or not all(revision_hypothesis_contract_ok(item) for item in revision_hypotheses)
+        or not all(revision_hypothesis_contract_ok(item, compatibility_profile=compatibility_profile, scope=scope) for item in revision_hypotheses)
     ):
         revision_hypotheses = [synthesis_revision_hypothesis(selected, implementation_mode)]
+    if revision_evidence_minimum(compatibility_profile, scope) == 1 and not all(
+        revision_hypothesis_contract_ok(item, compatibility_profile=compatibility_profile, scope=scope)
+        for item in revision_hypotheses
+    ):
+        block("BLOCK_FACTORFORGE_EXECUTABLE_REVISION_CONTENT_INVALID", {"report_id": report_id})
     final.update(
         {
             "source": "revision_council",

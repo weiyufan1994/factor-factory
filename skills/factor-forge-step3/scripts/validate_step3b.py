@@ -24,6 +24,7 @@ def _contract_excepthook(exc_type, exc, tb):
 
 sys.excepthook = _contract_excepthook
 
+from factor_factory.research_profiles import flexible_local_profile
 from factor_factory.artifact_identity import assert_identity_matches_strict, stable_hash
 from factor_factory.factor_families.registry import validate_family_plugin_artifacts
 from factor_factory.formula.evaluator import evaluate_formula_frame
@@ -1542,7 +1543,10 @@ def assert_step2_context(label: str, ctx: dict):
         f'{label}.step2_research_context.reuse_instruction_for_future_agents must be a list'
     )
     profile = ctx.get('research_compatibility_profile')
-    flexible_local = profile == 'factorforge_ordinary_local_is_flexible_v1'
+    flexible_local = (
+        profile == 'factorforge_ordinary_local_is_flexible_v1'
+        or flexible_local_profile(profile, 'local_is_only' if os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1' else None)
+    )
     absence_reason_fields = {
         'innovative_idea_seeds': 'innovative_idea_seeds_absence_reason',
         'similar_case_lessons_imported': 'similar_case_lessons_absence_reason',

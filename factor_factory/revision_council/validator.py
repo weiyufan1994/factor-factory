@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -7,6 +8,10 @@ from typing import Any
 from factor_factory.measurement_program import (
     build_measurement_program_binding,
     measurement_program_binding_failures,
+)
+from factor_factory.research_profiles import (
+    research_profile_from_workspace,
+    revision_evidence_minimum,
 )
 
 from .guards import FORBIDDEN_TEXT_TOKEN, scan_forbidden_text
@@ -274,7 +279,9 @@ def _model_layer_attribution_present(proposal: dict[str, Any]) -> bool:
     return False
 
 
-def _validate_derivation_record(proposal: dict[str, Any]) -> list[str]:
+def _validate_derivation_record(
+    proposal: dict[str, Any], *, minimum: int = 2, no_revision: bool = False,
+) -> list[str]:
     reasons: list[str] = []
     role = proposal.get("agent_role")
     record = proposal.get("derivation_record")
@@ -358,20 +365,22 @@ def _validate_derivation_record(proposal: dict[str, Any]) -> list[str]:
         reasons.append("BLOCK_REVISION_COUNCIL_DERIVATION_IMPLICATIONS_MISSING")
     else:
         for idx, item in enumerate(implications):
-            if not _has_nonempty_text(item, "claim") or not _nonempty_str_list(item.get("expected_metric_signature"), min_count=2):
+            if not _has_nonempty_text(item, "claim") or not _nonempty_str_list(item.get("expected_metric_signature"), min_count=minimum):
                 reasons.append(f"BLOCK_REVISION_COUNCIL_DERIVATION_IMPLICATION_INVALID:{idx}")
 
     hypotheses = record.get("revision_hypotheses")
-    if not _nonempty_object_list(hypotheses):
+    if no_revision and hypotheses == []:
+        pass  # The explicit stop reason was checked by the caller.
+    elif not _nonempty_object_list(hypotheses):
         reasons.append("BLOCK_REVISION_COUNCIL_DERIVATION_REVISION_HYPOTHESES_MISSING")
     else:
         for idx, item in enumerate(hypotheses):
             if (
                 not _has_nonempty_text(item, "hypothesis")
                 or not _has_nonempty_text(item, "expression_direction")
-                or not _nonempty_str_list(item.get("expected_metric_change"), min_count=2)
-                or not _nonempty_str_list(item.get("falsification_tests"), min_count=2)
-                or not _nonempty_str_list(item.get("kill_criteria"), min_count=2)
+                or not _nonempty_str_list(item.get("expected_metric_change"), min_count=minimum)
+                or not _nonempty_str_list(item.get("falsification_tests"), min_count=minimum)
+                or not _nonempty_str_list(item.get("kill_criteria"), min_count=minimum)
             ):
                 reasons.append(f"BLOCK_REVISION_COUNCIL_DERIVATION_REVISION_HYPOTHESIS_INVALID:{idx}")
 
@@ -512,9 +521,30 @@ def validate_revision_council_proposal(
     if not _model_layer_attribution_present(proposal):
         reasons.append("BLOCK_COUNCIL_REVISION_MODEL_LAYER_MISSING")
 
-    reasons.extend(_validate_derivation_record(proposal))
+    profile = (
+        research_profile_from_workspace(Path(workspace_root), str(proposal.get("report_id") or ""))
+        if workspace_root is not None else None
+    )
+    scope = "local_is_only" if os.getenv("FACTORFORGE_LOCAL_IS_ONLY") == "1" and not evo_v2_required else None
+    minimum = revision_evidence_minimum(profile, scope)
+    if minimum == 1 and (
+        not isinstance(measurement_program, dict)
+        or measurement_program.get("compatibility_profile") != profile
+    ):
+        reasons.append("BLOCK_COUNCIL_RESEARCH_PROFILE_MEASUREMENT_MISMATCH")
+    record = proposal.get("derivation_record")
+    no_revision = (
+        minimum == 1
+        and proposal.get("revision_type") in {"no_action", "reject_advisory"}
+        and proposal.get("candidate_revision_laws") == []
+        and isinstance(record, dict)
+        and record.get("revision_hypotheses") == []
+        and _has_nonempty_text(record, "revision_absence_reason")
+    )
+    reasons.extend(_validate_derivation_record(proposal, minimum=minimum, no_revision=no_revision))
     reasons.extend(_validate_formula_implied_information_review(proposal))
-    reasons.extend(_validate_research_equation_revision(proposal))
+    if not no_revision or proposal.get("research_equation_revision") is not None:
+        reasons.extend(_validate_research_equation_revision(proposal))
     reasons.extend(
         _validate_measurement_program_binding(proposal, measurement_program)
     )
@@ -574,7 +604,7 @@ def validate_revision_council_proposal(
                 reasons.append(f"revision_council_law_{idx}_falsification_tests_missing")
             if not _nonempty_list(law.get("kill_criteria")):
                 reasons.append(f"revision_council_law_{idx}_kill_criteria_missing")
-            if not _nonempty_str_list(law.get("expected_metric_change"), min_count=2):
+            if not _nonempty_str_list(law.get("expected_metric_change"), min_count=minimum):
                 reasons.append(f"BLOCK_REVISION_COUNCIL_EXPECTED_METRIC_CHANGE_MISSING:law_{idx}")
 
     tools = proposal.get("selected_math_tools") or []

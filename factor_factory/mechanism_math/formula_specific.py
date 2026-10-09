@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ast
 import math
+import os
 import re
 from fractions import Fraction
 from typing import Any
@@ -9,6 +10,10 @@ from typing import Any
 from factor_factory.formula import parse_formula
 from factor_factory.formula.registry import canonical_operator_name, validate_operator_call
 from factor_factory.formula.semantics import operator_lookback
+from factor_factory.research_profiles import (
+    research_compatibility_profile_from_spec,
+    revision_evidence_minimum,
+)
 
 
 DERIVATION_VERSION = "factorforge_formula_specific_derivation_v1"
@@ -2006,10 +2011,16 @@ def validate_formula_specific_derivation(derivation: Any, spec_like: dict[str, A
         })
     if not isinstance(derivation.get("formula_components"), list) or not derivation.get("formula_components"):
         failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "formula_components missing"})
-    if not isinstance(derivation.get("falsification_tests"), list) or len(derivation.get("falsification_tests") or []) < 2:
-        failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "falsification_tests must include at least two items"})
-    if not isinstance(derivation.get("kill_criteria"), list) or len(derivation.get("kill_criteria") or []) < 2:
-        failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": "kill_criteria must include at least two items"})
+    minimum = revision_evidence_minimum(
+        research_compatibility_profile_from_spec(spec_like),
+        "local_is_only" if os.getenv("FACTORFORGE_LOCAL_IS_ONLY") == "1" else None,
+    )
+    for field in ("falsification_tests", "kill_criteria"):
+        values = derivation.get(field)
+        if not isinstance(values, list) or len(values) < minimum or (
+            minimum == 1 and any(not isinstance(item, str) or not item.strip() for item in values)
+        ):
+            failures.append({"code": "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING", "message": f"{field} requires {minimum} substantive item(s) for the bound profile"})
     payer = derivation.get("profit_payer_derivation") if isinstance(derivation.get("profit_payer_derivation"), dict) else {}
     required_payer_fields = [
         "payer_or_counterparty",

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,11 @@ from factor_factory.revision_council.production import (
     validate_result_evo_identity,
 )
 from factor_factory.measurement_program import mathematical_object_present as _mathematical_object_present
+from factor_factory.research_profiles import (
+    ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE_V2,
+    research_profile_from_workspace,
+    revision_evidence_minimum,
+)
 
 
 RESULT_VERSION = "factorforge_agentic_revision_council_result_v1"
@@ -99,7 +105,7 @@ def nonempty_limiting_cases(value: Any, min_count: int = 2) -> bool:
             valid_count += 1
         else:
             return False
-    if polarities:
+    if polarities and min_count > 1:
         return valid_count >= min_count and {"positive", "negative"}.issubset(polarities)
     return valid_count >= min_count
 
@@ -562,6 +568,22 @@ def validate_agentic_result(
                 workspace_root=root,
             )
         )
+    profile = research_profile_from_workspace(root, str(expected_report_id or result.get("report_id") or ""))
+    local = os.getenv("FACTORFORGE_LOCAL_IS_ONLY") == "1"
+    ordinary = local and not evo_required and formal_context is None and result.get("evo_v2") is None
+    minimum = revision_evidence_minimum(profile, "local_is_only" if ordinary else None)
+    declared_profiles = [
+        profile, (expected_task or {}).get("research_compatibility_profile"),
+        result.get("research_compatibility_profile"),
+    ]
+    if ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE_V2 in declared_profiles and (
+        not ordinary
+        or any(item != profile for item in declared_profiles)
+        or (expected_task or {}).get("research_protocol_scope") != "local_is_only"
+        or result.get("research_protocol_scope") != "local_is_only"
+    ):
+        reasons.append("BLOCK_COUNCIL_RESEARCH_PROFILE_BINDING_MISMATCH")
+        minimum = 2
     if result.get("result_version") != RESULT_VERSION:
         reasons.append("agentic_result_version_invalid")
     if result.get("status") != "final":
@@ -611,7 +633,7 @@ def validate_agentic_result(
     else:
         if not nonempty_str(record.get("research_question")):
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_RESEARCH_QUESTION_MISSING")
-        if not nonempty_limiting_cases(record.get("limiting_cases"), min_count=2):
+        if not nonempty_limiting_cases(record.get("limiting_cases"), min_count=minimum):
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_LIMITING_CASES_MISSING")
         if not nonempty_object_list(record.get("assumptions")):
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_ASSUMPTIONS_MISSING")
@@ -633,9 +655,9 @@ def validate_agentic_result(
                     reasons.append(f"BLOCK_REVISION_COUNCIL_AGENTIC_FORMULA_CLAIM_INVALID:{idx}")
         if not nonempty_list(record.get("derivation_steps_summary")):
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_DERIVATION_STEPS_MISSING")
-        if not nonempty_str_list(record.get("falsification_tests"), min_count=2):
+        if not nonempty_str_list(record.get("falsification_tests"), min_count=minimum):
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_FALSIFICATION_TESTS_MISSING")
-        if not nonempty_str_list(record.get("kill_criteria"), min_count=2):
+        if not nonempty_str_list(record.get("kill_criteria"), min_count=minimum):
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_KILL_CRITERIA_MISSING")
         if not nonempty_str(record.get("overclaim_guard")):
             reasons.append("BLOCK_REVISION_COUNCIL_AGENTIC_OVERCLAIM_GUARD_MISSING")
@@ -668,11 +690,11 @@ def validate_agentic_result(
         for idx, law in enumerate(laws):
             if not nonempty_str(law.get("law_id")) or not nonempty_str(law.get("law_statement")):
                 reasons.append(f"BLOCK_REVISION_COUNCIL_AGENTIC_LAW_INVALID:{idx}")
-            if not nonempty_str_list(law.get("expected_metric_change"), min_count=2):
+            if not nonempty_str_list(law.get("expected_metric_change"), min_count=minimum):
                 reasons.append(f"BLOCK_REVISION_COUNCIL_AGENTIC_EXPECTED_METRIC_CHANGE_MISSING:{idx}")
-            if not nonempty_str_list(law.get("falsification_tests"), min_count=2):
+            if not nonempty_str_list(law.get("falsification_tests"), min_count=minimum):
                 reasons.append(f"BLOCK_REVISION_COUNCIL_AGENTIC_LAW_FALSIFICATION_MISSING:{idx}")
-            if not nonempty_str_list(law.get("kill_criteria"), min_count=2):
+            if not nonempty_str_list(law.get("kill_criteria"), min_count=minimum):
                 reasons.append(f"BLOCK_REVISION_COUNCIL_AGENTIC_LAW_KILL_CRITERIA_MISSING:{idx}")
             if not nonempty_str(law.get("why_not_portfolio_fix")):
                 reasons.append(f"BLOCK_REVISION_COUNCIL_AGENTIC_WHY_NOT_PORTFOLIO_FIX_MISSING:{idx}")

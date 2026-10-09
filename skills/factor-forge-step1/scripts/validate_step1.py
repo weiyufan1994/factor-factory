@@ -10,6 +10,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+from factor_factory.research_profiles import flexible_local_profile
 from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 
 LEGACY_WORKSPACE = Path('/home/ubuntu/.openclaw/workspace')
@@ -212,7 +213,7 @@ def build_step1_validation_payload(
         knowledge_reference = discipline.get('knowledge_reference_contract') if isinstance(discipline.get('knowledge_reference_contract'), dict) else {}
         compatibility_profile = discipline.get('research_compatibility_profile') or aim.get('research_compatibility_profile')
         local_is_only = os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
-        flexible_local = local_is_only and compatibility_profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        flexible_local = flexible_local_profile(compatibility_profile, 'local_is_only' if local_is_only else 'hosted_formal')
         available_knowledge_node_ids = {
             str(item.get('id'))
             for item in knowledge_context.get('nodes') or []

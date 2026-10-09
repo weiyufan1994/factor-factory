@@ -22,6 +22,7 @@ from ..measurement_program import (
     validate_measurement_program,
 )
 from .formula_specific import BASELINE_MODEL_FAMILIES, build_formula_understanding
+from ..research_profiles import revision_evidence_minimum
 
 
 CONTRACT_VERSION = "factorforge_main_agent_mechanism_memo_v1"
@@ -3262,14 +3263,19 @@ def _unexpected_fields(
     ]
 
 
-def memo_public_schema_failures(memo: dict[str, Any]) -> list[str]:
+def memo_public_schema_failures(memo: dict[str, Any], *, local_v2: bool = False) -> list[str]:
     """Reject fields that are neither formal contract data nor public research."""
     if not isinstance(memo, dict):
         return ["BLOCK_MAIN_AGENT_MECHANISM_MEMO_NOT_OBJECT"]
     failures = _unexpected_fields(
         memo,
-        PUBLIC_MEMO_TOP_LEVEL_FIELDS,
+        PUBLIC_MEMO_TOP_LEVEL_FIELDS | ({"kill_criteria"} if local_v2 else set()),
         "memo",
+    )
+    signature = memo.get("expected_metric_signature")
+    signature_fields = (
+        frozenset(signature) if local_v2 and isinstance(signature, dict)
+        else frozenset(REQUIRED_METRIC_SIGNATURE_FIELDS)
     )
     section_rules = (
         ("agent_authorship", PUBLIC_MEMO_AUTHORSHIP_FIELDS),
@@ -3280,7 +3286,7 @@ def memo_public_schema_failures(memo: dict[str, Any]) -> list[str]:
         ("payer", PUBLIC_MEMO_PAYER_FIELDS),
         ("mathematical_object_mapping", PUBLIC_MEMO_OBJECT_MAPPING_FIELDS),
         ("formula_state_estimator", PUBLIC_MEMO_OBJECT_MAPPING_FIELDS),
-        ("expected_metric_signature", frozenset(REQUIRED_METRIC_SIGNATURE_FIELDS)),
+        ("expected_metric_signature", signature_fields),
         ("evidence_comparison", PUBLIC_MEMO_EVIDENCE_FIELDS),
         (
             "operator_claim_consistency",
@@ -3443,7 +3449,7 @@ def memo_public_schema_failures(memo: dict[str, Any]) -> list[str]:
     require_string_fields(memo.get("payer"), PUBLIC_MEMO_PAYER_FIELDS, "payer")
     require_string_fields(
         memo.get("expected_metric_signature"),
-        frozenset(REQUIRED_METRIC_SIGNATURE_FIELDS),
+        signature_fields,
         "expected_metric_signature",
     )
     authorship = memo.get("agent_authorship")
@@ -3479,7 +3485,7 @@ def memo_public_schema_failures(memo: dict[str, Any]) -> list[str]:
                 f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_PUBLIC_FIELD_TYPE:{mapping_field}.component_links"
             )
 
-    for field in ("falsification_tests", "council_questions"):
+    for field in ("falsification_tests", "council_questions", *(("kill_criteria",) if local_v2 else ())):
         value = memo.get(field)
         if value is not None and (
             not isinstance(value, list)
@@ -3584,7 +3590,7 @@ def memo_public_schema_failures(memo: dict[str, Any]) -> list[str]:
         failures.extend(
             _unexpected_fields(
                 math.get("expected_metric_signature"),
-                frozenset(REQUIRED_METRIC_SIGNATURE_FIELDS),
+                signature_fields,
                 "math_hypothesis.expected_metric_signature",
             )
         )
@@ -4606,10 +4612,11 @@ def _require_open_answer(
     *,
     formula_terms: set[str],
     generic_terms: list[str],
+    minimum_characters: int = 80,
 ) -> None:
     value = _qa_answer(qa, field)
     text = str(value or "").strip().lower()
-    if len(text) < 80:
+    if len(text) < minimum_characters:
         failures.append(f"BLOCK_MAIN_AGENT_MECHANISM_MEMO_QA_INCOMPLETE:{field}")
         return
     if any(term in text for term in generic_terms):
@@ -4626,6 +4633,10 @@ def _require_open_answer(
 
 def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], factor_spec: dict[str, Any] | None = None) -> dict[str, Any]:
     """Convert an accepted freeform main-agent memo into Step6 derivation fields."""
+    minimum = revision_evidence_minimum(
+        research_compatibility_profile_from_spec(factor_spec),
+        "local_is_only" if os.getenv("FACTORFORGE_LOCAL_IS_ONLY") == "1" else None,
+    )
     qa = memo.get("mechanism_qa") if isinstance(memo.get("mechanism_qa"), dict) else {}
     math = memo.get("math_hypothesis") if isinstance(memo.get("math_hypothesis"), dict) else {}
     economic = memo.get("economic_hypothesis") if isinstance(memo.get("economic_hypothesis"), dict) else {}
@@ -4666,7 +4677,11 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
         else ""
     )
     triggered_kill_criteria = evidence_comparison.get("kill_criteria_triggered")
-    if isinstance(triggered_kill_criteria, list) and any(
+    if minimum == 1:
+        # Preserve the author's prospective criterion, including an invalid or
+        # missing declaration for the validator. Triggered events remain evidence.
+        kill_criteria = memo.get("kill_criteria")
+    elif isinstance(triggered_kill_criteria, list) and any(
         isinstance(item, str) and item.strip()
         for item in triggered_kill_criteria
     ):
@@ -4732,11 +4747,13 @@ def formula_specific_derivation_from_main_agent_memo(memo: dict[str, Any], facto
         for item in re.split(r"[;\n]", str(qa.get("falsification_answer") or ""))
         if item.strip()
     ][:5]
-    if len(falsification_tests) < 2:
+    if minimum == 1:
+        falsification_tests = memo.get("falsification_tests")
+    elif len(falsification_tests) < 2:
         memo_tests = memo.get("falsification_tests")
         if isinstance(memo_tests, list):
             falsification_tests = [str(item).strip() for item in memo_tests if str(item).strip()][:5]
-    if len(falsification_tests) < 2:
+    if minimum > 1 and len(falsification_tests) < 2:
         falsification_tests = [
             "Fail if long-side evidence contradicts the declared payoff.",
             "Fail if component ablation contradicts the model.",
@@ -4971,7 +4988,11 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     failures: list[str] = []
     if not isinstance(memo, dict) or not memo:
         return ["BLOCK_MAIN_AGENT_MECHANISM_MEMO_MISSING"]
-    failures.extend(memo_public_schema_failures(memo))
+    minimum = revision_evidence_minimum(
+        research_compatibility_profile_from_spec(factor_spec),
+        "local_is_only" if os.getenv("FACTORFORGE_LOCAL_IS_ONLY") == "1" else None,
+    )
+    failures.extend(memo_public_schema_failures(memo, local_v2=minimum == 1))
     if memo.get("contract_version") != CONTRACT_VERSION:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_CONTRACT_VERSION")
     if memo.get("canonical_write_permission") is True:
@@ -5044,7 +5065,7 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         "signed price state",
     ]
     for field in REQUIRED_QA_FIELDS:
-        _require_open_answer(failures, qa, field, formula_terms=formula_terms, generic_terms=qa_generic_terms)
+        _require_open_answer(failures, qa, field, formula_terms=formula_terms, generic_terms=qa_generic_terms, minimum_characters=1 if minimum == 1 else 80)
     components = memo.get("formula_component_map")
     if not isinstance(components, list) or not components:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_COMPONENT_MAP_MISSING")
@@ -5129,11 +5150,12 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
     math_signature = math.get("expected_metric_signature")
     signatures_are_complete = all(
         isinstance(signature, dict)
-        and REQUIRED_METRIC_SIGNATURE_FIELDS.issubset(signature)
+        and bool(signature)
+        and (minimum == 1 or REQUIRED_METRIC_SIGNATURE_FIELDS.issubset(signature))
         and all(
             isinstance(signature.get(field), str)
             and bool(signature.get(field).strip())
-            for field in REQUIRED_METRIC_SIGNATURE_FIELDS
+            for field in (signature if minimum == 1 else REQUIRED_METRIC_SIGNATURE_FIELDS)
         )
         for signature in (top_signature, math_signature)
     )
@@ -5141,8 +5163,10 @@ def validate_main_agent_mechanism_memo(memo: dict[str, Any], factor_spec: dict[s
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_EXPECTED_METRIC_SIGNATURE_MISSING")
     if not isinstance(top_signature, dict) or not top_signature:
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:expected_metric_signature")
-    if not _nonempty_str_list(memo.get("falsification_tests"), min_count=2):
+    if not _nonempty_str_list(memo.get("falsification_tests"), min_count=minimum):
         failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:falsification_tests")
+    if minimum == 1 and not _nonempty_str_list(memo.get("kill_criteria"), min_count=1):
+        failures.append("BLOCK_MAIN_AGENT_MECHANISM_MEMO_TOP_LEVEL_FIELD_MISSING:kill_criteria")
     raw_selected_model_family = str(
         math.get("selected_model_family") or math.get("model_family") or ""
     ).strip()

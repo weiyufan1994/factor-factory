@@ -39,6 +39,7 @@ from factor_factory.revision_council.visibility import (
     context_for_route,
 )
 from factor_factory.revision_council.schema import ADVISORY_NO_REVISION_GUIDANCE
+from factor_factory.research_profiles import revision_evidence_minimum
 
 OBJ = FF / "objects"
 TASKBOOK_VERSION = "factorforge_agentic_revision_council_taskbook_v1"
@@ -104,6 +105,8 @@ def agent_task(
     route: dict[str, Any],
     visible_context: dict[str, Any],
     evo_context: dict[str, Any] | None = None,
+    compatibility_profile: str | None = None,
+    protocol_scope: str | None = None,
 ) -> dict[str, Any]:
     route_id = str(route.get("route_id") or role)
     task_id = f"route_{safe_token(route_id)}"
@@ -126,9 +129,14 @@ def agent_task(
     measurement_program_binding = build_measurement_program_binding(
         measurement_program
     )
+    minimum = revision_evidence_minimum(
+        compatibility_profile, protocol_scope if evo_context is None else None,
+    )
     task = {
         "agent_role": role,
         "task_id": task_id,
+        "research_compatibility_profile": compatibility_profile,
+        "research_protocol_scope": protocol_scope,
         "research_protocol_version": PROTOCOL_VERSION,
         "route_id": route_id,
         "route_family": route.get("route_family"),
@@ -197,6 +205,13 @@ def agent_task(
             "overclaim_guard",
         ],
         "allowed_tools": tools,
+        "content_guidance": (
+            "Use the shortest sufficient derivation and discriminating test. One substantive limiting case, "
+            "prediction, falsification test and stopping condition can suffice. The independent reviewer "
+            "assesses sufficiency; matching counts does not establish a mechanism. Explicitly justify no revision."
+            if minimum == 1 else
+            "Use the pinned content rules; retain the existing two-item evidence requirements."
+        ),
         "forbidden_changes": [
             "portfolio expression",
             "short-leg adoption",
@@ -627,6 +642,8 @@ def main() -> None:
                     },
                 },
                 evo_context=evo_context,
+                compatibility_profile=compatibility_profile,
+                protocol_scope=protocol_scope,
             )
         )
     taskbook = {

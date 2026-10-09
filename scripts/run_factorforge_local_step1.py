@@ -23,6 +23,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from factor_factory.research_profiles import flexible_local_profile
 from factor_factory.research_workspace import (
     BLOCK_OUTPUT_OUTSIDE_WORKSPACE,
     default_workspace_root,
@@ -232,7 +233,7 @@ def validate_authored_research_discipline(chief: dict[str, Any]) -> None:
         "research_compatibility_profile"
     )
     flexible_local = (
-        profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        flexible_local_profile(profile, 'local_is_only')
         and os.getenv("FACTORFORGE_LOCAL_IS_ONLY") == "1"
     )
     for field in (

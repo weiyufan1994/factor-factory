@@ -24,6 +24,10 @@ if str(REPO_ROOT) not in sys.path:
 if str(FF) not in sys.path:
     sys.path.append(str(FF))
 
+from factor_factory.research_profiles import (
+    ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE,
+    flexible_local_profile,
+)
 from factor_factory.step5.io import load_json, write_json
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 from factor_factory.artifact_identity import assert_identity_matches_strict
@@ -2668,9 +2672,6 @@ def build_formula_understanding(bundle: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE = 'factorforge_ordinary_local_is_flexible_v1'
-
-
 def _research_contract_and_profile(bundle: dict[str, Any]) -> tuple[dict[str, Any], str | None, bool]:
     spec = bundle.get('factor_spec_master') or {}
     contract = spec.get('research_contract') or {}
@@ -2682,7 +2683,7 @@ def _research_contract_and_profile(bundle: dict[str, Any]) -> tuple[dict[str, An
     if spec_has_profile and (not contract_has_profile or spec_profile != contract_profile):
         profile = '__inconsistent_research_compatibility_profile__'
     local = os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
-    return contract, profile, local and profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+    return contract, profile, local and flexible_local_profile(profile, 'local_is_only')
 
 
 def build_research_memo(bundle: dict[str, Any], payloads: dict[str, dict[str, Any]], framework: dict[str, Any], metrics: dict[str, Any], decision: str, authored_memo: dict[str, Any] | None = None) -> dict[str, Any]:

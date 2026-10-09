@@ -41,6 +41,7 @@ SOURCE_SUBJECT_ROUTING_PROFILE = 'factorforge_step2_source_subject_routing_v1'
 RESEARCH_SUBJECT_MODES = {'report_replication', 'source_extension', 'independent_hypothesis'}
 SOURCE_SUBJECT_ROUTING_REQUIRED_MARKER = 'source_subject_routing_required'
 
+from factor_factory.research_profiles import flexible_local_profile
 from factor_factory.artifact_identity import build_spec_hash
 from factor_factory.economic_taxonomy import FORMAL_RETURN_SOURCE_FAMILIES
 from factor_factory.factor_families.base import FAMILY_PLUGIN_DECISION_VERSION
@@ -821,7 +822,7 @@ def main() -> None:
         )
         compatibility_profile = research_contract.get('research_compatibility_profile')
         local_is_only = os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
-        flexible_local = local_is_only and compatibility_profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        flexible_local = flexible_local_profile(compatibility_profile, 'local_is_only' if local_is_only else 'hosted_formal')
         idea_value = learning.get('innovative_idea_seeds') if 'innovative_idea_seeds' in learning else research_contract.get('innovative_idea_seeds')
         lesson_value = learning.get('similar_case_lessons_imported') if 'similar_case_lessons_imported' in learning else research_contract.get('similar_case_lessons_imported')
         measurement_program_failures = validate_measurement_program(

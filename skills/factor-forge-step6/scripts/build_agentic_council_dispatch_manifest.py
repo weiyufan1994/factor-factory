@@ -126,6 +126,9 @@ def main() -> None:
             "human_approval_required": True,
             "runtime_dispatch_policy": runtime_dispatch_policy,
             "research_question": task.get("research_question"),
+            "research_compatibility_profile": task.get("research_compatibility_profile"),
+            "research_protocol_scope": task.get("research_protocol_scope"),
+            "content_guidance": task.get("content_guidance"),
             "shared_context": task.get("visible_context") or {},
             "measurement_program_binding": task.get(
                 "measurement_program_binding"
@@ -176,6 +179,8 @@ def main() -> None:
                 "route_fingerprint": task.get("route_fingerprint"),
                 "blind_context_hash": task.get("blind_context_hash"),
                 "expected_agent_identifier": task.get("expected_agent_identifier"),
+                "research_compatibility_profile": task.get("research_compatibility_profile"),
+                "research_protocol_scope": task.get("research_protocol_scope"),
                 "measurement_program_binding": task.get(
                     "measurement_program_binding"
                 )

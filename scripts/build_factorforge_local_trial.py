@@ -78,6 +78,7 @@ PATCH_PATHS = (
     "factor_factory/ultimate_loop/cli.py", "factor_factory/ultimate_loop/runner.py",
     "factor_factory/ultimate_loop/local.py", "factor_factory/ultimate_loop/hosted.py",
     "factor_factory/ultimate_loop/state.py", "factor_factory/research_evidence.py",
+    "factor_factory/research_profiles.py",
     "factor_factory/research_proof.py", "factor_factory/research_org/__init__.py",
     "factor_factory/provenance.py",
     "skills/factor-forge-step3/SKILL.md", "skills/factor-forge-step4/SKILL.md",

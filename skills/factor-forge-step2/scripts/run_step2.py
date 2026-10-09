@@ -212,6 +212,7 @@ SOURCE_TYPE_STEP2_PRODUCER = {
     'natural_language_hypothesis': 'step12_hypothesis_intake',
 }
 
+from factor_factory.research_profiles import flexible_local_profile
 from factor_factory.artifact_identity import (
     build_artifact_identity,
     build_code_contract_hash,
@@ -2544,7 +2545,7 @@ def _local_agent_authored_research_contract_inputs(
     )
     flexible_local = (
         os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
-        and profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        and flexible_local_profile(profile, 'local_is_only')
     )
 
     def require_text(value: Any, label: str) -> str:

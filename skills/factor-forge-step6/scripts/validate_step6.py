@@ -17,6 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(FF) not in sys.path:
     sys.path.append(str(FF))
 
+from factor_factory.research_profiles import flexible_local_profile, revision_evidence_minimum
 from factor_factory.step5.io import load_json
 from factor_factory.council_terminal import (
     local_terminal_reject_without_revision,
@@ -1274,7 +1275,10 @@ if __name__ == '__main__':
         research_contract = factor_spec.get('research_contract') if isinstance(factor_spec.get('research_contract'), dict) else {}
         compatibility_profile = research_compatibility_profile_from_spec(factor_spec)
         local_is_only = os.getenv('FACTORFORGE_LOCAL_IS_ONLY') == '1'
-        flexible_local = local_is_only and compatibility_profile == ORDINARY_LOCAL_IS_FLEXIBLE_PROFILE
+        flexible_local = flexible_local_profile(compatibility_profile, 'local_is_only' if local_is_only else 'hosted_formal')
+        revision_minimum = revision_evidence_minimum(
+            compatibility_profile, 'local_is_only' if local_is_only else 'hosted_formal',
+        )
         from factor_factory.evo_child_execution import validate_evo_child_execution_gate
 
         evo_gate_reasons = validate_evo_child_execution_gate(
@@ -1787,12 +1791,12 @@ if __name__ == '__main__':
             checks.append(check(f'revision_hypothesis_{idx}_math_falsification_tests_present', nonempty_list(hypothesis.get('math_falsification_tests')), 'revision math_falsification_tests missing'))
             checks.append(check(f'revision_hypothesis_{idx}_mode_preference_enum', hypothesis.get('implementation_mode_preference') in VALID_IMPLEMENTATION_MODE_PREFERENCES, f"invalid implementation_mode_preference: {hypothesis.get('implementation_mode_preference')}"))
             checks.append(check(f'revision_hypothesis_{idx}_expected_metric_change_present', nonempty_list(hypothesis.get('expected_metric_change')), 'expected_metric_change missing'))
-            checks.append(check(f'revision_hypothesis_{idx}_expected_metric_change_minimum', len(hypothesis.get('expected_metric_change') or []) >= 2, 'expected_metric_change must contain at least 2 items'))
+            checks.append(check(f'revision_hypothesis_{idx}_expected_metric_change_minimum', len(hypothesis.get('expected_metric_change') or []) >= revision_minimum, f'expected_metric_change requires {revision_minimum} substantive item(s) for the bound profile'))
             checks.append(check(f'revision_hypothesis_{idx}_falsification_tests_present', nonempty_list(hypothesis.get('falsification_tests')), 'falsification_tests missing'))
-            checks.append(check(f'revision_hypothesis_{idx}_falsification_tests_minimum', len(hypothesis.get('falsification_tests') or []) >= 2, 'falsification_tests must contain at least 2 items'))
+            checks.append(check(f'revision_hypothesis_{idx}_falsification_tests_minimum', len(hypothesis.get('falsification_tests') or []) >= revision_minimum, f'falsification_tests requires {revision_minimum} substantive item(s) for the bound profile'))
             checks.append(check(f'revision_hypothesis_{idx}_overfit_enum', hypothesis.get('risk_of_overfit') in VALID_OVERFIT_RISKS, f"invalid risk_of_overfit: {hypothesis.get('risk_of_overfit')}"))
             checks.append(check(f'revision_hypothesis_{idx}_kill_criteria_present', nonempty_list(hypothesis.get('kill_criteria')), 'kill_criteria missing'))
-            checks.append(check(f'revision_hypothesis_{idx}_kill_criteria_minimum', len(hypothesis.get('kill_criteria') or []) >= 2, 'kill_criteria must contain at least 2 items'))
+            checks.append(check(f'revision_hypothesis_{idx}_kill_criteria_minimum', len(hypothesis.get('kill_criteria') or []) >= revision_minimum, f'kill_criteria requires {revision_minimum} substantive item(s) for the bound profile'))
             checks.append(check(f'revision_hypothesis_{idx}_why_not_portfolio_fix_present', nonempty_str(hypothesis.get('why_not_portfolio_fix')), 'why_not_portfolio_fix missing'))
             checks.append(check(
                 f'revision_hypothesis_{idx}_forbidden_changes_complete',

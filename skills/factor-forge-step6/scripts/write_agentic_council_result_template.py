@@ -103,6 +103,9 @@ def main() -> int:
         )
         or {},
         "research_depth": "medium",
+        "content_guidance": packet.get("content_guidance"),
+        "research_compatibility_profile": packet.get("research_compatibility_profile"),
+        "research_protocol_scope": packet.get("research_protocol_scope"),
         "proposal_generation_mode": "agentic",
         "canonical_write_permission": False,
         "execution_allowed_by_default": False,

@@ -272,6 +272,10 @@ def _build_tree_bundle(*, source_root: Path, output: Path, source_identity: dict
                     target = staging / name; target.parent.mkdir(parents=True, exist_ok=True); target.write_bytes(archive.read(name)); target.chmod(0o755 if name == "query_knowledge.py" else 0o644)
         shutil.rmtree(staging / "knowledge/experience_previews", ignore_errors=True)
         _package_export_seeds(root, staging); _rebuild_staging_index(staging)
+        if source_identity is not None:
+            from factor_factory.source_version import write_source_archive_version
+
+            write_source_archive_version(staging, source_identity["commit"], selected)
         inventory = _inventory(staging, head=head, branch=branch, selected=selected, excluded=excluded)
         inventory["source_commit"] = source_identity
         sdk = Path(temp) / "factorforge-data-api"

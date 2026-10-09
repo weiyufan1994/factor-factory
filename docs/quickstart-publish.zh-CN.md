@@ -1,83 +1,108 @@
-# Factor Forge Ultimate — 本地源码交付版
+# Factor Forge Ultimate — 研究源码与 SDK
 
-此包用于建立一个可交给其他研究者测试的源码仓库，不再需要旧版 integration patch，也不依赖原作者的 Git worktree。它包含当前工作区的源码变更，而不是只导出旧 HEAD。
+这是可阅读、可本地运行的研究包。发布内容取自 `bundle_inventory.json` 指明的 Git 提交，不包含作者工作区的未提交改动。运行中的研究仍使用自己的固定版本；解压本包不会安装全局 Skill、切换默认环境或更改历史结果。
 
-2026-09-22 收口交付保留已验收的 Skill 分层、代码审查交接、原文阅读、custom backend 状态投影、普通 local IS 维护出口及窗口读取保护，并加入经独立复核的新本地研究内容灵活性修复。新研究可以选择合适的方法数量，有理由地声明没有可用经验或新想法；缺失、错误与明确空值仍区分，程序不替作者编造反思。旧研究不自动改规则，真实评审、事前信息、OOS 和晋升边界不变。本包不包含新的 IPPS 提案，也不代表已经完成真实新因子 Step1–6 验收。已审文件有限合入本机源工程，Ultimate 对应参考说明同步安装；接收者仍须使用本包入口。根目录 `AGENTS.md` 随源码和 ZIP 提供，此次仅本地私有试用，没有提交或推送 Git。
+研究主线保持：理解原文/假设 → 经济机制与数学推导 → 因子类实现和评审 → 标准因子值及评估 → 解释、修订或停止。知识库提供有来源的参考，GP/MCTS 帮助实现和检验已限定的数学机制，不代替新的推导。
 
-## 先看什么
+## 包里有什么
 
-- 研究入口：`skills/factor-forge-ultimate/SKILL.md`，以及同目录 `references/current-operating-contract.md`。Step1–6 的配套 skills 一并提供。
-- 知识模块：`factor_factory/knowledge_context.py`、`knowledge_reference.py`、`workspace_experience_export.py`，配合 `knowledge/因子工厂/` 中的方法图谱及脱敏经验种子。
-- 原文基线示例：`examples/mszq_intraday_momentum_pulse/pfvv_source_baseline_v1.py`；同目录包含分区实现、数据接口适配、月度评价和本地执行引擎。
-- 独立扩展示例：`examples/mszq_signed_a_response/`。这是 signed-A 原型，不是研报作者算法；尚不能宣称完成这条扩展的 Step3–6 或实证验证。
+| 路径 | 用途 |
+|---|---|
+| `factor-forge/` | 研究框架、Skill、脚本、例子、测试及只读知识参考。 |
+| `wheels/factor_factory-*.whl` | 可独立安装的 Python 研究库；纯计算 SDK、Step5/6 公共能力可直接调用。 |
+| `factorforge-data-api/`、对应 wheel | 构建时显式选入的独立 Data API SDK；客户端和必要资源，不含生产补数脚本。未选入时由使用环境另行提供。 |
+| `bundle_inventory.json` | 源提交、文件选择和实际 wheel 内容；用于检查交付一致性。 |
 
-研究原则保持不变：先理解原文或用户思路，忠实重建作者基线；知识库提供可采纳、拒绝或仅作类比的经验；新的经济假设与数学建模必须明确标为扩展。历史 `candidate_v2.py` / EVENT_U 不是 PF/VV 复现证据。
+完整 Ultimate 还使用包中的 `scripts/`、`skills/`、`docs/` 和 `examples/`。SDK wheel 不是独立的完整研究编排应用；运行完整流程时保留源码树，不能只复制一个 Python 包。
 
-## 安装与离线验收
+包里没有商业行情、原研报 PDF、账户凭据或完整历史运行目录。安装后的离线例子可独立验证接口，不等于多年回测、真实独立评审或研究收益验证。
 
-解压后进入 `factor-forge/`。这是源码交付，不是独立 wheel；保留 `scripts/`、`skills/`、`knowledge/`、`docs/` 和 `examples/`，不要只复制 Python 包。
+## 安装
+
+最低 Python 3.11；本轮目标为 3.11–3.14，实际已测系统/版本见 `docs/publish-verification.zh-CN.md`。核心 pandas 保持 2.x。
+
+在解压后的 `factor-forge/` 目录：
 
 ```bash
-python3.11 -m venv .venv
+python3.13 -m venv .venv
 source .venv/bin/activate
-python -m pip install -r requirements-test.txt
+python -m pip install -e '.[console,step4,test]'
+# 如果本次包附带独立 Data API SDK：
+python -m pip install '../factorforge-data-api[test]'
+python -m pip check
+```
+
+`console` 目前是保留的依赖分组名，包含 PDF/历史证明解析依赖，不表示启动 Web Console。纯 DataFrame 使用者安装框架 wheel 或 `pip install .` 即可；Step4 增加 `.[step4]`，明确选择 Qlib 时才安装 `.[qlib]`。
+
+`packaging/constraints-tested-macos.txt` 记录作者已测 macOS 环境的第三方版本，可在相同测试环境安装时加 `-c` 使用；它不是所有平台已通过的声明。依赖未缓存时安装需要网络；研究包没有自动下载行情、安装 Qlib或连接服务的步骤。
+
+## 三个手算例子
+
+```bash
+python examples/manual_interface_replay/run_demo.py --output-dir /tmp/factor-manual-interface
+python examples/manual_interface_replay/run_account_demo.py --output-dir /tmp/factor-manual-account
+python examples/manual_interface_replay/run_result_artifact_demo.py --output-dir /tmp/factor-manual-results
+```
+
+每次使用新的输出目录。例子提供逐值结果和复算材料；账户例子的已知净值路径是 1010 / 1000 / 1000 / 1188，总费用 22。代码、factor head/tail、指标与样本属于同一组显式输入。
+
+完整离线测试：
+
+```bash
 export PYTHONPATH="$PWD"
 export PFVV_MONTHLY_EXECUTION_ENGINE_PATH="$PWD/examples/mszq_intraday_momentum_pulse/local_is_execution_engine"
-python query_knowledge.py --query '小波分析'
-python query_knowledge.py --query 'temporary price pressure permanent information same-sign intraday path dispersion volume-peak' --json
 python -m pytest -c pytest-offline.ini
 ```
 
-新研究环境最低 Python 3.11，目标覆盖 3.11–3.14；上例可换成已安装的 3.13/3.14。核心依赖固定在 pandas 2.x 范围；依赖版本统一由 `pyproject.toml` 管理，`requirements-test.txt` 仅选择测试分组。
+`pytest-offline.ini` 明确测试范围；真实行情/云环境、可选后端与独立研究的状态分别记录。两项历史 Git 状态测试仍明确 deselect，因为交付源码不带旧 Git 历史；不把研究失败转成跳过。测试中的 agent 输出是合成输入，不冒充真实独立评审。
 
-纯 DataFrame SDK 可用 `python -m pip install .`；Step4 数值/图形依赖用 `python -m pip install '.[step4]'`；需要完整源码研究和离线测试的环境用 `python -m pip install -e '.[console,step4,test]'`。Data API SDK 仍需单独安装，例如在其已交付源码所在位置执行 `python -m pip install /path/to/factorforge-data-api`，不修改上游包或自动连接行情服务。Qlib 仅在明确选择时安装 `.[qlib]`。
+## 研究入口与标准接口
 
-安装依赖需要网络；上述检索和选定测试本身使用本地源码与合成数据。实际测试环境和结果见 `docs/publish-verification.zh-CN.md`，不把目标矩阵中尚未测试的系统或版本标为通过。可选数值后端未安装时，其测试可能明确 skip。完整分发的锁文件在重新打包时生成；本分支的依赖变更不反向修改既有 R35p8 包。
+默认 11 个 Skill 及可选/兼容入口见 `packaging/research-skills.json`。让研究员读取本包 `skills/factor-forge-ultimate/SKILL.md`，不要混用另一版全局 Skill。默认入口之外的旧角色路径仅用于兼容；研究员日志已并入 Ultimate，证据解释和独立评议在 Step6 维护。
 
-`pytest-offline.ini` 是本次交付验收清单，不等于全仓库、所有后端和云端环境都已验证。工作区专属 `test_prepare_pfvv_evaluation_inputs_20260909.py` 未分发，因为它依赖未交付的历史研究运行目录。两份 PDF fixture 以及三份包含凭据形状负向样例的历史 console/binding 测试也未分发，不属于此离线验收清单。排除规则列在下方；ZIP 顶层 `bundle_inventory.json` 记录实际交付文件及扫描时遇到的排除路径，不枚举未扫描目录的全部内容。
+常用 Python 入口：
 
-清单明确取消选择两项旧 integration-patch 测试：它们检查原仓库 HEAD 和未跟踪文件状态，本交付不带这些 Git 历史；新的完整源码打包器由独立测试覆盖。并非把知识库或研究流程失败改成通过。
+- `factor_factory.factors`：`BaseFactor`、`PriceVolumeFactor`、`FundamentalFactor`、`FormulaFactor`。
+- `factor_factory.research_api`：标准因子表、标签、覆盖、IC 等统计。
+- `factor_factory.portfolio_api`：账户回测，沿用显式价格、交易约束和费用。
+- `factor_factory.result_artifacts`：可阅读样本、结果和复算材料。
 
-此 ZIP 已带有仅从包内两条候选经验种子生成的检索索引，可直接运行检索。索引是可重建缓存，默认不进 Git；经验种子和图谱源码进入 Git。新 clone 缺少索引时，在该副本根目录执行以下命令即可重建，不要把路径指向生产知识目录：
+因子表为有序唯一的 `(datetime, instrument)` MultiIndex，`factor_value` 为 float64；真实零和 NaN 保留。研究员自行用明确输入实现因子类，不在计算入口隐式取数或生成未来标签。Qlib 兼容结构不等于已经证明两个账户引擎逐笔等价。
 
-```bash
-python scripts/build_factorforge_retrieval_index.py --runtime-root "$PWD"
-```
-
-18 份静态参考和两条经验种子均为现有内容的脱敏副本。种子保留 advisory/candidate 状态及原记录哈希；修订关系只作为不可在包内重放的来源上下文，不冒充原记录或新研究成果。本轮没有补写新知识、刷新生产索引或导入额外研究/OOS 数据。
-
-## 如何开展真实研究
-
-使用支持本地 skills 的 agent，在此源码根目录打开项目，并要求它读取本仓库的 Ultimate skill，而不是继续使用其他机器旧版本的全局 skill。示例请求：
-
-> 使用本仓库 `skills/factor-forge-ultimate/SKILL.md` 完成研究。先理解我提供的原文，再重建作者经济逻辑、数学机制和算法；知识库仅补充经验，不替换研究主体。原文基线和独立扩展分开，在同一 Ultimate 框架内推进 Step1–6。只做我指定日期的 local IS。
-
-完整研究仍需要另行提供有权使用的报告原文、行情输入/日历/执行约束，以及实际的 agent 运行环境。包里没有行情、报告 PDF、账户凭据或历史完整运行目录；离线验收不是重新跑了一次多年回测，也不是零配置自动挖因子服务。
-
-若选择 Data API catalog 取数，需要另外安装并配置独立的 `factorforge_data_api` 包；它不在本源码包内。知识检索、合成测试与纯规划导入不因此强制加载取数服务。这里没有用假客户端或代理数据替代真实 Data API。
-
-普通本地 IS 使用现有 Ultimate 的 `--local-is-only` 路径，不要求先部署 Host/SoD 服务。具体输入由 agent 按 skill 准备，CLI 参数可查看：
+完整流程的普通帮助与全部兼容参数：
 
 ```bash
 python scripts/run_factorforge_ultimate.py --help
+python scripts/run_factorforge_ultimate.py --help-all
 ```
 
-知识库当前能提供数学对象、算子、经济解释、适用条件和失败经验的候选参考，并由 Step6 的经验导出供后续研究检索。这不意味着所有算子/市场状态已覆盖，也不证明知识检索已经提升样本外收益。空命中是合法结果。
+实际研究使用单独工作区、用户指定 IS 范围和已有 Data API/catalog。普通本地 IS 走 `--local-is-only`，不要求部署 Host/SoD。改变经济机制或估计对象时回到 Step2；Step3 代码先经真实评审再执行。新普通研究 V2 允许一条充分的推导/证伪和有理由停止，旧研究保留原解释。
 
-## 交付选择与排除项
+## 知识读取与搜索
 
-- 源码选择范围：`factor_factory/`、`scripts/`、`skills/`、`tests/`、`examples/`、`fixtures/`、`docs/`；根目录仅选择 `.gitignore`、`AGENTS.md`、`pyproject.toml`、`requirements-test.txt`、`requirements-knowledge.txt`、`pytest-offline.ini`。
-- 额外生成：两份根目录 README、`query_knowledge.py`、18 份静态参考的脱敏副本、两条既有 active advisory 经验种子的脱敏投影及只从这两条种子生成的索引。种子 ID 为 `RPT_pdf_11d72_pfvv_20250508_mszq` 和 `RPT_web_8596d811_20250508_mszq_intraday_momentum_pulse`；不存在额外历史研究/OOS 导入。
-- 排除目录前缀：`docs/superpowers/`、`dist/`、`outputs/`、`deploy/`、`data/`、`factor_research/`、`.git/`、`caches/`。不在源码选择范围中的其他目录也不扫描。任何位置的 `.venv`、`__pycache__`、`.pytest_cache` 及 `.pyc` 不交付。
-- 明确排除文件：`tests/test_prepare_pfvv_evaluation_inputs_20260909.py`、`fixtures/step1/kakushadze_101_formulas.pdf`、`fixtures/step2/sample_report_stub.pdf`、`tests/test_factorforge_console_model_broker.py`、`tests/test_factorforge_console_store_auth.py`、`tests/test_factorforge_epistemic_binding.py`。
-- 入选文件若含受检查的私钥/访问密钥材料、符号链接或 `.parquet`、`.pdf`、`.pkl`、`.sqlite` 二进制数据/文档，打包器会报错，不会静默放行。本地构建输入、审查证据及安装合并草案均在交付包之外。
+```bash
+python query_knowledge.py --query '小波分析' --json
+python query_knowledge.py --query 'zzuncoveredq42' --json
+```
 
-## 推送前的边界
+图谱、方法参考和两个既有经验种子由选定提交生成脱敏副本，保持 advisory/candidate。无命中正常；检索不证明原研报已复现或知识提高了收益。原文 PF/VV 基线和 EVENT_U/signed-A 扩展继续分开。
 
-此次只交付本地目录和 ZIP，没有创建 commit，也没有推送 GitHub。源码目录不带 `.git`、旧提交历史、数据、缓存目录、部署目录、研究运行产物或私钥。
+已有 GP/MCTS 的合成测试在离线清单中，研究增益只有真实研究记录才能支持。这里没有另外启动搜索预算、OOS、训练或知识库发布。
 
-建议先推送到私有仓库供测试。当前没有新增开源许可证；公开发布前需由项目所有者确认许可和内容公开范围。历史源码/测试中保留了部分部署示例、bucket 名称及本机路径文字，它们不是可用凭据，也不代表这些环境随包交付；因此不将此版本宣称为已完成公开发布脱敏的开源发行版。
+## 构建与排除范围
 
-可进入解压目录建立新仓库，先检查 `git status --short` 和待提交内容，再提交选定源码。若要合并回已有仓库，用单独分支审阅文件差异，不直接覆盖他人的工作区。`bundle_inventory.json` 可用于核对本地交付文件，不要求接收者沿用历史审查包。
+唯一完整包构建入口仍为 `scripts/build_factorforge_publish_bundle.py`。开发者先提交改动，再执行：
 
-原工作区的代码、研究结果和既有改动均保留；知识图谱/经验脱敏只发生在交付副本中。
+```bash
+python -m pip install '.[build]'
+python scripts/build_factorforge_publish_bundle.py \
+  --source-commit HEAD \
+  --data-sdk-root /path/to/delivered-data-api-sdk \
+  --output /path/to/new-output-directory
+```
+
+构建只读选定 Git 提交和明确提供的 SDK，不自动拉取上游；SDK 文件身份单独记录。wheel 从临时副本离线构建，逐个模块核对实际 wheel 与分发源码。已有输出目录不覆盖。
+
+`packaging/research-files.toml` 是单一分发选择表。历史 Host 构建巨型实现、Console 服务端入口、生产数据运维脚本和相应历史测试不随标准研究包交付，原始文件继续保存在 Git 中。仍被研究或兼容功能使用的辅助模块保留，并在验证说明中列出残余依赖；不是根据文件名批量删除 EVO/信息边界检查。
+
+本轮本地候选不自动推送 GitHub或切换研究环境。公开发布前仍需所有者确认代码/参考资料许可；当前定位是私有研究试用。

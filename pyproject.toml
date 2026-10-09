@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+build = [
+  "setuptools>=69",
+  "wheel",
+]
 console = [
   "cryptography>=46,<47",
   "latex2mathml==3.81.0",

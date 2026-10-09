@@ -18,7 +18,7 @@ exclude = [
   "scripts/tushare_*", "scripts/run_tushare_*", "scripts/sync_tushare_*",
   "scripts/*clean_daily*", "scripts/build_daily_clean_enhanced.py",
   "scripts/merge_daily_incremental_into_daily.py", "scripts/preprocess_daily_data.py",
-  "scripts/publish_qlib_daily_provider.py", "scripts/refresh_factorforge_console_catalog.py",
+  "scripts/refresh_factorforge_console_catalog.py",
   "tests/test_factorforge_console*.py", "tests/test_factorforge_epistemic*.py",
   "tests/test_prepare_pfvv_evaluation_inputs_20260909.py",
   "fixtures/step1/kakushadze_101_formulas.pdf", "fixtures/step2/sample_report_stub.pdf",

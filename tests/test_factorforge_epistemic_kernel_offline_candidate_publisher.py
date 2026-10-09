@@ -79,6 +79,7 @@ def publisher_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         return None
 
     monkeypatch.setattr(module, "compose_epistemic_kernel_candidate", compose_stub)
+    monkeypatch.setattr("factor_factory.epistemic_kernel_inputs.compose_epistemic_kernel_candidate", compose_stub)
     monkeypatch.setattr(module, "validate_epistemic_kernel_composition", validate_stub)
     return module, expected_parent.resolve(), fake_repo.resolve()
 

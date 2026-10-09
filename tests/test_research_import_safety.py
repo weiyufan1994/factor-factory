@@ -30,6 +30,9 @@ IMPORT_TARGETS = (
     "factor_factory.knowledge_context",
     "factor_factory.step6.journal",
     "factor_factory.step6.packets",
+    "factor_factory.epistemic_kernel_inputs",
+    "factor_factory.epistemic_ultimate_shadow",
+    "factor_factory.epistemic_ultimate_source_first_bridge",
     "skills/factor-forge-step3/scripts/run_step3.py",
 )
 

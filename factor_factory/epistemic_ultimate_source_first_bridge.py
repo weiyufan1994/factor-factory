@@ -36,7 +36,7 @@ from factor_factory.epistemic_ultimate_shadow import (
 )
 from factor_factory.research_org.contracts import strict_json_loads
 from factor_factory.research_org.rfc8785_canonical import framed_sha256
-from scripts.build_factorforge_epistemic_kernel_offline_candidate import (
+from factor_factory.epistemic_kernel_inputs import (
     build_candidate,
     validate_epistemic_kernel_input_payload,
 )

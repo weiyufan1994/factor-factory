@@ -18,7 +18,7 @@
 解压后进入 `factor-forge/`。这是源码交付，不是独立 wheel；保留 `scripts/`、`skills/`、`knowledge/`、`docs/` 和 `examples/`，不要只复制 Python 包。
 
 ```bash
-python3 -m venv .venv
+python3.11 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements-test.txt
 export PYTHONPATH="$PWD"
@@ -28,7 +28,11 @@ python query_knowledge.py --query 'temporary price pressure permanent informatio
 python -m pytest -c pytest-offline.ini
 ```
 
-安装依赖需要网络；上述检索和选定测试本身使用本地源码与合成数据。Python 包元数据要求 Python 3.10+；本次实际测试环境和结果见 `docs/publish-verification.zh-CN.md`，不把未测试的系统或版本标为通过。可选数值后端未安装时，其测试可能明确 skip。
+新研究环境最低 Python 3.11，目标覆盖 3.11–3.14；上例可换成已安装的 3.13/3.14。核心依赖固定在 pandas 2.x 范围；依赖版本统一由 `pyproject.toml` 管理，`requirements-test.txt` 仅选择测试分组。
+
+纯 DataFrame SDK 可用 `python -m pip install .`；Step4 数值/图形依赖用 `python -m pip install '.[step4]'`；需要完整源码研究和离线测试的环境用 `python -m pip install -e '.[console,step4,test]'`。Data API SDK 仍需单独安装，例如在其已交付源码所在位置执行 `python -m pip install /path/to/factorforge-data-api`，不修改上游包或自动连接行情服务。Qlib 仅在明确选择时安装 `.[qlib]`。
+
+安装依赖需要网络；上述检索和选定测试本身使用本地源码与合成数据。实际测试环境和结果见 `docs/publish-verification.zh-CN.md`，不把目标矩阵中尚未测试的系统或版本标为通过。可选数值后端未安装时，其测试可能明确 skip。完整分发的锁文件在重新打包时生成；本分支的依赖变更不反向修改既有 R35p8 包。
 
 `pytest-offline.ini` 是本次交付验收清单，不等于全仓库、所有后端和云端环境都已验证。工作区专属 `test_prepare_pfvv_evaluation_inputs_20260909.py` 未分发，因为它依赖未交付的历史研究运行目录。两份 PDF fixture 以及三份包含凭据形状负向样例的历史 console/binding 测试也未分发，不属于此离线验收清单。排除规则列在下方；ZIP 顶层 `bundle_inventory.json` 记录实际交付文件及扫描时遇到的排除路径，不枚举未扫描目录的全部内容。
 

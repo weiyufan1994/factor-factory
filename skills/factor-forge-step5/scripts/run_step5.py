@@ -15,19 +15,19 @@ if str(REPO_ROOT) not in sys.path:
 if str(FF) not in sys.path:
     sys.path.append(str(FF))
 
-from skills.factor_forge_step5.modules.io import write_json  # type: ignore
-from skills.factor_forge_step5.modules.archiver import (  # type: ignore
+from factor_factory.step5.io import write_json
+from factor_factory.step5.archiver import (
     init_archive_dir,
     normalize_archive_subdirs,
     copy_many_preserve_existing,
 )
-from skills.factor_forge_step5.modules.rules import (  # type: ignore
+from factor_factory.step5.rules import (
     determine_final_status,
     load_step5_inputs,
     validate_input_consistency,
 )
-from skills.factor_forge_step5.modules.evaluator import build_factor_evaluation  # type: ignore
-from skills.factor_forge_step5.modules.case_builder import build_factor_case_master  # type: ignore
+from factor_factory.step5.evaluator import build_factor_evaluation
+from factor_factory.step5.case_builder import build_factor_case_master
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 from factor_factory.artifact_identity import assert_identity_matches_strict
 from factor_factory.evo_child_execution import validate_evo_child_execution_gate
@@ -126,6 +126,8 @@ def build_handoff_to_step6(bundle: dict, evaluation: dict, case: dict, evaluatio
         "lessons": case.get("lessons") or [],
         "next_actions": case.get("next_actions") or [],
         "math_discipline_review": case.get("math_discipline_review") or {},
+        "research_window_contract": case.get("research_window_contract") or {},
+        "oos_revision_policy": case.get("oos_revision_policy") or {},
         "mechanism_conditioned_measurement_program": case.get("mechanism_conditioned_measurement_program") or {},
         "backend_summary": evaluation.get("backend_summary") or [],
         "known_limits": case.get("known_limits") or [],

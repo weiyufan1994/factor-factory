@@ -1365,6 +1365,11 @@ def test_step6_preserves_dcf_program_without_synthesizing_legacy_math_contracts(
     ]
     assert step5_ref["model_family"] == "discounted cash-flow valuation"
     assert step5_ref["estimand"] == "intrinsic-value-to-price spread"
+    # Exercise the real downstream reader without spec/handoff fallback. The
+    # case archive alone must preserve the mathematical object, not infer it.
+    case_only_bundle = {"factor_case_master": step5_case}
+    assert STEP6.measurement_program_from_bundle(case_only_bundle) == program
+    assert STEP6.mechanism_math_summary_from_bundle(case_only_bundle) == summary
 
 
 def test_council_binds_dcf_core_equation_separately_from_payoff_projection() -> None:

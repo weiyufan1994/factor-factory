@@ -24,7 +24,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(FF) not in sys.path:
     sys.path.append(str(FF))
 
-from skills.factor_forge_step5.modules.io import load_json, write_json  # type: ignore
+from factor_factory.step5.io import load_json, write_json
 from factor_factory.runtime_context import load_runtime_manifest, manifest_factorforge_root, manifest_report_id
 from factor_factory.artifact_identity import assert_identity_matches_strict
 from factor_factory.provenance import (

@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 if str(FF) not in sys.path:
     sys.path.append(str(FF))
 
-from skills.factor_forge_step5.modules.io import load_json  # type: ignore
+from factor_factory.step5.io import load_json
 from factor_factory.artifact_identity import assert_identity_matches_strict
 from factor_factory.advisory_runtime import configured_advisory_root
 from factor_factory.mechanism_math.formula_specific import (

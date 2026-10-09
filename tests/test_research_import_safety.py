@@ -23,6 +23,8 @@ IMPORT_TARGETS = (
     "factor_factory.data_api",
     "factor_factory.data_access.paths",
     "factor_factory.data_access.clean_layer",
+    "factor_factory.step5.case_builder",
+    "factor_factory.step5.evaluator",
     "skills/factor-forge-step3/scripts/run_step3.py",
 )
 

@@ -17,8 +17,8 @@ if str(REPO_ROOT) not in sys.path:
 if str(FF) not in sys.path:
     sys.path.append(str(FF))
 
-from skills.factor_forge_step5.modules.io import load_json  # type: ignore
-from skills.factor_forge_step5.modules.validator import (  # type: ignore
+from factor_factory.step5.io import load_json
+from factor_factory.step5.validator import (
     check_archive_dir_nonempty,
     check_archive_paths_exist,
     check_file_exists,

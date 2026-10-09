@@ -3401,8 +3401,8 @@ def _run_formal_ultimate(args: argparse.Namespace) -> int:
 
     if '6' in steps and not web_evo_checkpoint_pass and not web_evo_wait_only:
         if not args.skip_researcher_packets:
-            commands.append(('build_researcher_dossier', [py, 'skills/factor-forge-researcher/scripts/build_researcher_dossier.py', '--report-id', args.report_id]))
-            commands.append(('build_step6_researcher_packet', [py, 'skills/factor-forge-step6-researcher/scripts/build_researcher_packet.py', '--report-id', args.report_id]))
+            commands.append(('build_researcher_dossier', [py, '-m', 'factor_factory.step6.journal', '--report-id', args.report_id]))
+            commands.append(('build_step6_researcher_packet', [py, '-m', 'factor_factory.step6.packets', '--report-id', args.report_id]))
         run_step6_command = [py, 'skills/factor-forge-step6/scripts/run_step6.py', '--manifest', str(manifest_path)]
         validate_step6_command = [py, 'skills/factor-forge-step6/scripts/validate_step6.py', '--report-id', args.report_id]
         if args.expected_host_trust_manifest_sha256:

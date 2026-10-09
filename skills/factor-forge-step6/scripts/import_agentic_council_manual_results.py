@@ -17,7 +17,7 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from validate_agentic_council_result import (
+from factor_factory.revision_council.agentic_result import (
     expected_manifest_task,
     validate_agentic_result,
 )
@@ -58,8 +58,9 @@ def validate_payload(path: Path, report_id: str) -> list[str]:
     try:
         return validate_agentic_result(
             load_json(path),
-            expected_task=expected_manifest_task(report_id, path),
+            expected_task=expected_manifest_task(report_id, path, workspace_root=FF),
             expected_report_id=report_id,
+            workspace_root=FF,
         )
     except Exception as exc:
         return [f"agentic_result_unreadable:{exc}"]
@@ -121,8 +122,9 @@ def main() -> int:
             continue
         reasons = validate_agentic_result(
             payload,
-            expected_task=expected_manifest_task(rid, expected_path),
+            expected_task=expected_manifest_task(rid, expected_path, workspace_root=FF),
             expected_report_id=rid,
+            workspace_root=FF,
         )
         if reasons:
             invalid.append({"task_id": task_id, "result_dropbox_path": str(dropbox_path), "block_reasons": reasons})

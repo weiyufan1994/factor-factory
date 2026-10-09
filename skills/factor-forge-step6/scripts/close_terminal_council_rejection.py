@@ -20,8 +20,8 @@ from factor_factory.research_proof import (
     factor_proof_certificate_path,
     validate_factor_proof_certificate,
 )
-from validate_agentic_council_collection import validate_collection
-from validate_agentic_council_result import (
+from factor_factory.revision_council.collection import validate_collection
+from factor_factory.revision_council.agentic_result import (
     expected_manifest_task,
     validate_agentic_result,
 )
@@ -217,8 +217,10 @@ def load_valid_terminal_results(root: Path, collection: dict[str, Any]) -> tuple
             expected_task=expected_manifest_task(
                 str(collection.get("report_id") or ""),
                 path,
+                workspace_root=root,
             ),
             expected_report_id=str(collection.get("report_id") or ""),
+            workspace_root=root,
         )
         if reasons:
             invalid.append({"result_path": str(path), "block_reasons": reasons})
@@ -677,7 +679,7 @@ def main() -> int:
 
     summary = load_json(summary_path)
     collection = load_json(collection_path)
-    collection_reasons = validate_collection(rid, collection)
+    collection_reasons = validate_collection(rid, collection, workspace_root=root)
     dispatch = load_json(dispatch_path)
     required_tasks = [
         task

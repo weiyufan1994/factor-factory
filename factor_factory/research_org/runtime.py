@@ -288,7 +288,7 @@ def build_research_org_session_prompt(
         or evo_search_request.exists()
         or evo_search_request.is_symlink()
     ):
-        from factor_factory.knowledge_context import (
+        from factor_factory.evo_memory_retrieval import (
             build_evo_v2_cold_start_search_prompt,
         )
 

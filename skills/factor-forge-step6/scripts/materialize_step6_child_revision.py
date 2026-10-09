@@ -53,7 +53,7 @@ from factor_factory.evo_oos import (
     sha256_file as evo_sha256_file,
 )
 from factor_factory.formula.parser import parse_formula
-from factor_factory.console.web_research_plan import (
+from factor_factory.evaluation_contract import (
     build_web_evaluation_contract,
     stable_json_hash as web_stable_json_hash,
 )

@@ -16,7 +16,7 @@ FF = Path(os.getenv("FACTORFORGE_ROOT") or (LEGACY_WORKSPACE / "factorforge" if 
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from validate_agentic_council_result import validate_agentic_result
+from factor_factory.revision_council.agentic_result import validate_agentic_result
 from factor_factory.revision_council.production import result_evo_outcome_summary
 
 OBJ = FF / "objects"
@@ -78,6 +78,7 @@ def main() -> int:
                 payload,
                 expected_task=task,
                 expected_report_id=rid,
+                workspace_root=FF,
             )
         except Exception as exc:
             reasons = [f"agentic_result_unreadable:{exc}"]

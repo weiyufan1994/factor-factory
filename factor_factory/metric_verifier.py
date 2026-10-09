@@ -12,6 +12,14 @@ import numpy as np
 import pandas as pd
 
 from factor_factory import research_statistics
+from factor_factory.data_access.calendar_snapshot import (
+    TRADING_CALENDAR_REGISTRY_VERSION,
+    TRADING_CALENDAR_REGISTRY_RELATIVE_PATH,
+    TRADING_CALENDAR_REGISTRY_PATH,
+    TRADING_CALENDAR_REGISTRY_TRUST_COMMIT,
+    TRADING_CALENDAR_REGISTRY_TRUST_BLOB,
+    TRADING_CALENDAR_REGISTRY_TRUST_SHA256,
+)
 
 from factor_factory.research_evidence import (
     resolve_workspace_evidence_path,
@@ -38,25 +46,6 @@ SHA256_HEX_LENGTH = 64
 FORMAL_RETURN_PATH_MODE = "daily_one_period_forward_return"
 LABEL_CONTRACT_VERSION = "factorforge_daily_return_label_contract_v1"
 FORMAL_RETURN_FORMULA = "label_end_price/label_start_price-1"
-TRADING_CALENDAR_REGISTRY_VERSION = (
-    "factorforge_trusted_trading_calendar_registry_v1"
-)
-TRADING_CALENDAR_REGISTRY_RELATIVE_PATH = (
-    "docs/contracts/factorforge-trusted-trading-calendar-snapshots-v1.json"
-)
-TRADING_CALENDAR_REGISTRY_PATH = (
-    Path(__file__).resolve().parents[1]
-    / TRADING_CALENDAR_REGISTRY_RELATIVE_PATH
-)
-TRADING_CALENDAR_REGISTRY_TRUST_COMMIT = (
-    "f3809e2c9610f2b434357d16fa53389aae07bcda"
-)
-TRADING_CALENDAR_REGISTRY_TRUST_BLOB = (
-    "3cc5b79f62da35330be4b9b30ce1d759af0fd152"
-)
-TRADING_CALENDAR_REGISTRY_TRUST_SHA256 = (
-    "81816dc7fac1213a9ba8442ac729e32447b25fd215b5a1a8dfcc26e55936d4d5"
-)
 
 
 def _stable_hash(payload: Any) -> str:

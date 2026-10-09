@@ -421,7 +421,7 @@ def build_council_revision_strategy(
                         and p.get("candidate_revision_laws") == [] for p in proposals.values())):
             # Preserve an existing authored local stop only under the same
             # strict recognizer used by Step6. No new terminal authority.
-            from validate_step6 import local_terminal_reject_without_actions
+            from factor_factory.council_terminal import local_terminal_reject_without_actions
 
             advisory_stop = local_terminal_reject_without_actions(
                 iteration, step3b_handoff_path, deterministic,

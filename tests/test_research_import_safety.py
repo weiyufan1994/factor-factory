@@ -25,6 +25,11 @@ IMPORT_TARGETS = (
     "factor_factory.data_access.clean_layer",
     "factor_factory.step5.case_builder",
     "factor_factory.step5.evaluator",
+    "factor_factory.data_access.calendar_snapshot",
+    "factor_factory.evaluation_contract",
+    "factor_factory.knowledge_context",
+    "factor_factory.step6.journal",
+    "factor_factory.step6.packets",
     "skills/factor-forge-step3/scripts/run_step3.py",
 )
 

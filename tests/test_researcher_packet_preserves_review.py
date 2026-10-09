@@ -15,9 +15,7 @@ def _builder():
 
 def test_packet_preparation_preserves_authored_review(tmp_path, monkeypatch):
     module = _builder()
-    monkeypatch.setattr(module, "FF", tmp_path)
-    monkeypatch.setattr(module, "OBJ", tmp_path / "objects")
-    monkeypatch.setattr(module, "EVAL", tmp_path / "evaluations")
+    monkeypatch.setenv("FACTORFORGE_ROOT", str(tmp_path))
     monkeypatch.setattr("sys.argv", ["builder", "--report-id", "TEST"])
     memo = tmp_path / "objects/research_iteration_master/researcher_memo__TEST.json"
     memo.parent.mkdir(parents=True)
@@ -33,9 +31,7 @@ def test_packet_preparation_preserves_authored_review(tmp_path, monkeypatch):
 
 def test_packet_preparation_never_invents_a_review(tmp_path, monkeypatch):
     module = _builder()
-    monkeypatch.setattr(module, "FF", tmp_path)
-    monkeypatch.setattr(module, "OBJ", tmp_path / "objects")
-    monkeypatch.setattr(module, "EVAL", tmp_path / "evaluations")
+    monkeypatch.setenv("FACTORFORGE_ROOT", str(tmp_path))
     monkeypatch.setattr("sys.argv", ["builder", "--report-id", "TEST"])
     module.main()
     assert (tmp_path / "objects/research_iteration_master/researcher_packet__TEST.json").is_file()

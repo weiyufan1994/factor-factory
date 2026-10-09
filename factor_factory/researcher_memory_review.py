@@ -753,7 +753,7 @@ def build_evo_v2_memory_review_projection(
         validate_experience_transfer_bundle,
         validate_transfer_use_receipt,
     )
-    from factor_factory.knowledge_context import (
+    from factor_factory.evo_memory_retrieval import (
         validate_evo_v2_cold_start_search_receipt,
     )
 

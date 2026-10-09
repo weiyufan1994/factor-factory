@@ -111,7 +111,7 @@ from factor_factory.evo_child_execution import (
     materialize_evo_child_execution_result,
     validate_evo_transfer_diagnostic_contract,
 )
-from factor_factory.console.web_factor_proof import validate_trusted_calendar_snapshot
+from factor_factory.data_access.calendar_snapshot import validate_trusted_calendar_snapshot
 from factor_factory.data_access.minute_derived import (
     DEFAULT_MINUTE_CUTOFF_TIME,
     FLOW_STATE_REQUIRED_COLUMNS,

@@ -13,7 +13,14 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 
 from factor_factory.console.trial_budget import trial_budget_binding_reasons
-from factor_factory.data_access.paths import resolve_local_tushare_paths
+from factor_factory.data_access.calendar_snapshot import (
+    CALENDAR_SNAPSHOT_ID,
+    validate_trusted_calendar_snapshot,
+)
+from factor_factory.evaluation_contract import (
+    RISK_PROOF_CONTROL_COLUMNS,
+    BEHAVIORAL_PROOF_SOURCE_CONTROL_COLUMNS,
+)
 from factor_factory.data_access.step4 import (
     build_forward_return_frame,
     normalize_trade_date_series,
@@ -86,14 +93,6 @@ BLOCK_PREREGISTRATION = "BLOCK_FACTORFORGE_WEB_FACTOR_PROOF_PREREGISTRATION_INVA
 BLOCK_FINALIZATION = "BLOCK_FACTORFORGE_WEB_FACTOR_PROOF_FINALIZATION_INVALID"
 BLOCK_EVO_IS_DIAGNOSTICS = "BLOCK_FACTORFORGE_WEB_EVO_IS_DIAGNOSTICS_INVALID"
 BLOCK_EVO_OOS_SEQUENCE = "BLOCK_FACTORFORGE_WEB_EVO_OOS_SEQUENCE_INVALID"
-CALENDAR_SNAPSHOT_ID = "tushare_sse_open_days_19901219_20261231"
-RISK_PROOF_CONTROL_COLUMNS = ("total_mv", "turnover_rate")
-BEHAVIORAL_PROOF_SOURCE_CONTROL_COLUMNS = (
-    "pct_chg",
-    "turnover_rate",
-    "ln_mcap_free",
-    "volume_ratio",
-)
 BEHAVIORAL_PROOF_CONTROL_COLUMNS = (
     "pct_chg",
     "abs_pct_chg",
@@ -344,74 +343,8 @@ def _component_obligation_specs(
 
 
 def _trusted_calendar_snapshot(*, workspace_root: Path | None = None) -> dict[str, Any]:
-    configured = os.getenv("FACTORFORGE_TRUSTED_TRADE_CAL_CSV")
-    calendar_path = (
-        Path(configured).expanduser().resolve(strict=False)
-        if configured
-        else Path(resolve_local_tushare_paths().trade_cal_csv).expanduser().resolve(
-            strict=False
-        )
-    )
-    if workspace_root is not None:
-        root = workspace_root.resolve(strict=False)
-        if calendar_path == root or root in calendar_path.parents:
-            raise ValueError(f"{BLOCK_PREREGISTRATION}: calendar is not independent")
-    if not calendar_path.is_file():
-        raise ValueError(f"{BLOCK_PREREGISTRATION}: trusted calendar missing")
-    if sha256_file(TRADING_CALENDAR_REGISTRY_PATH) != TRADING_CALENDAR_REGISTRY_TRUST_SHA256:
-        raise ValueError(f"{BLOCK_PREREGISTRATION}: calendar registry diverged")
-    registry = _read_json(TRADING_CALENDAR_REGISTRY_PATH)
-    matches = [
-        row
-        for row in registry.get("snapshots") or []
-        if isinstance(row, dict) and row.get("snapshot_id") == CALENDAR_SNAPSHOT_ID
-    ]
-    if len(matches) != 1 or matches[0].get("scope") != "production":
-        raise ValueError(f"{BLOCK_PREREGISTRATION}: trusted calendar snapshot invalid")
-    trusted = matches[0]
-    frame = pd.read_csv(
-        calendar_path,
-        usecols=lambda column: column in {"exchange", "cal_date", "is_open"},
-        dtype={"exchange": "string", "cal_date": "string", "is_open": "string"},
-    )
-    if "exchange" in frame.columns and (frame["exchange"] == "SSE").any():
-        frame = frame[frame["exchange"] == "SSE"]
-    dates = (
-        frame.loc[frame["is_open"].astype(str) == "1", "cal_date"]
-        .astype(str)
-        .str.replace(".0", "", regex=False)
-        .str.zfill(8)
-    )
-    parsed = pd.to_datetime(dates, errors="coerce", utc=True)
-    if parsed.isna().any():
-        raise ValueError(f"{BLOCK_PREREGISTRATION}: trusted calendar dates invalid")
-    normalized = parsed.dt.strftime("%Y-%m-%d").tolist()
-    if normalized != sorted(set(normalized)):
-        raise ValueError(f"{BLOCK_PREREGISTRATION}: trusted calendar is not canonical")
-    open_dates_sha256 = _stable_hash(normalized)
-    if (
-        trusted.get("open_dates_sha256") != open_dates_sha256
-        or trusted.get("raw_file_sha256") != sha256_file(calendar_path)
-        or trusted.get("date_count") != len(normalized)
-        or trusted.get("date_min") != normalized[0]
-        or trusted.get("date_max") != normalized[-1]
-    ):
-        raise ValueError(f"{BLOCK_PREREGISTRATION}: calendar snapshot is untrusted")
-    return {
-        "path": calendar_path,
-        "dates": normalized,
-        "open_dates_sha256": open_dates_sha256,
-        "raw_file_sha256": sha256_file(calendar_path),
-        "registry_sha256": TRADING_CALENDAR_REGISTRY_TRUST_SHA256,
-        "registry_git_commit": TRADING_CALENDAR_REGISTRY_TRUST_COMMIT,
-        "registry_git_blob": TRADING_CALENDAR_REGISTRY_TRUST_BLOB,
-        "snapshot_id": CALENDAR_SNAPSHOT_ID,
-    }
-
-
-def validate_trusted_calendar_snapshot() -> dict[str, Any]:
-    """Validate the independent production calendar before accepting formal work."""
-    return _trusted_calendar_snapshot()
+    """Legacy Console entry; the library owns parsing and snapshot checks."""
+    return validate_trusted_calendar_snapshot(workspace_root=workspace_root)
 
 
 def trusted_calendar_healthy() -> bool:

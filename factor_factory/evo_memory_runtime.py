@@ -11,7 +11,7 @@ from factor_factory.console.web_research_plan import (
     validate_materialized_web_research,
     validate_plan,
 )
-from factor_factory.knowledge_context import (
+from factor_factory.evo_memory_retrieval import (
     BLOCK_EVO_V2_MEMORY_RETRIEVAL_INVALID,
     complete_evo_v2_cold_start_search_session,
     prepare_evo_v2_cold_start_search_session,

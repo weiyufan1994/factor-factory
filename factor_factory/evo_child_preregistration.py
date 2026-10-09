@@ -422,7 +422,7 @@ def _parent_contract_context(
         validate_web_factor_proof_preregistration_structural,
         web_factor_proof_paths,
     )
-    from factor_factory.console.web_research_plan import build_web_evaluation_contract
+    from factor_factory.evaluation_contract import build_web_evaluation_contract
 
     plan_path = root / "identity" / "web_research_plan.json"
     plan = _load_source_object(plan_path, label="parent_web_research_plan")

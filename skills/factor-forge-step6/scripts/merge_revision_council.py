@@ -26,7 +26,7 @@ from factor_factory.revision_council.production import (
     result_evo_outcome_summary,
     validate_formal_evo_packet,
 )
-from validate_agentic_council_result import (
+from factor_factory.revision_council.agentic_result import (
     expected_manifest_task,
     validate_agentic_result,
 )
@@ -415,11 +415,12 @@ def main() -> None:
     for path in agent_result_paths:
         result = load_json(path)
         result["_source_path"] = str(path)
-        expected = expected_manifest_task(rid, path)
+        expected = expected_manifest_task(rid, path, workspace_root=FF)
         reasons = validate_agentic_result(
             result,
             expected_task=expected,
             expected_report_id=rid,
+            workspace_root=FF,
         )
         if reasons:
             blocked_agent_results.append({"path": str(path), "task_id": result.get("task_id"), "agent_role": result.get("agent_role"), "block_reasons": reasons})

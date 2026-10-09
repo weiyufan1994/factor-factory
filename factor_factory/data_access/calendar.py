@@ -9,6 +9,19 @@ from .paths import LocalTusharePaths, resolve_local_tushare_paths
 DEFAULT_CALENDAR_COLUMNS = ['exchange', 'cal_date', 'is_open']
 
 
+def read_trade_calendar_csv(csv_path: Path, columns: list[str]) -> pd.DataFrame:
+    """Read declared exchange-calendar fields without sorting or filling dates."""
+    frame = pd.read_csv(
+        csv_path,
+        usecols=lambda column: column in columns,
+        dtype={'exchange': 'string', 'cal_date': 'string', 'is_open': 'string'},
+    )
+    if not {'cal_date', 'is_open'}.issubset(frame.columns):
+        raise ValueError(f'trade_cal.csv missing cal_date/is_open columns: {csv_path}')
+    frame['cal_date'] = frame['cal_date'].str.replace('.0', '', regex=False).str.zfill(8)
+    return frame
+
+
 def _normalize_date(value: str | int | None) -> str | None:
     if value is None:
         return None
@@ -53,12 +66,7 @@ def get_trade_calendar(
         if column in header
     ]
 
-    frame = pd.read_csv(
-        csv_path,
-        usecols=usecols,
-        dtype={'exchange': 'string', 'cal_date': 'string', 'is_open': 'string'},
-    )
-    frame['cal_date'] = frame['cal_date'].str.replace('.0', '', regex=False).str.zfill(8)
+    frame = read_trade_calendar_csv(csv_path, list(dict.fromkeys(usecols + ['is_open'])))
 
     start_date = _normalize_date(start)
     end_date = _normalize_date(end)

@@ -38,7 +38,7 @@ from factor_factory.evo_v2 import (
     validate_experience_transfer_bundle,
     validate_transfer_use_receipt,
 )
-from factor_factory.knowledge_context import (
+from factor_factory.evo_memory_retrieval import (
     validate_evo_v2_cold_start_search_receipt,
 )
 from factor_factory.pre_oos_human_bridge import (

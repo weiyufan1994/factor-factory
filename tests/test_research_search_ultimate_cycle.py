@@ -170,6 +170,27 @@ def test_reviewed_step2_binding_consumes_native_readiness_and_exact_scope(case):
         bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, wrong)
 
 
+def test_reviewed_step2_binding_passes_program_profile_and_native_scope(case, monkeypatch):
+    reviewed, ticket, declaration = _reviewed_case(case)
+    import factor_factory.research_search.ultimate_cycle as cycle
+    actual = cycle.validate_measurement_program
+    captured = {}
+
+    def recording_validator(program, **options):
+        captured.update(options)
+        return actual(program, **options)
+
+    monkeypatch.setattr(cycle, "validate_measurement_program", recording_validator)
+    bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, declaration)
+    reviewed_spec = read_json(ticket["native_request"]["spec_ref"]["path"])
+    program = reviewed_spec["mechanism_conditioned_measurement_program"]
+    assert captured == {
+        "require_web_executable": False,
+        "compatibility_profile": program.get("compatibility_profile"),
+        "scope": "local_is_only",
+    }
+
+
 def test_generated_ast_children_use_existing_proposer_and_ledger_path(case):
     reviewed, ticket, declaration = _reviewed_case(case)
     binding = bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, declaration)

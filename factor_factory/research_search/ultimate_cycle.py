@@ -138,7 +138,13 @@ def bind_reviewed_step2_scope(
         raise SearchError("code-reviewed Step2 spec lacks a measurement program")
     if proposal["mutation_class"] == "implementation_equivalent" and program != base_program:
         raise SearchError("implementation-equivalent reviewed spec differs from base Step2 program")
-    reasons = validate_measurement_program(program, require_web_executable=False)
+    preparation_proof = _bound_json(r["step3_proof_ref"])
+    reasons = validate_measurement_program(
+        program,
+        require_web_executable=False,
+        compatibility_profile=program.get("compatibility_profile"),
+        scope=preparation_proof.get("execution_scope"),
+    )
     if reasons:
         raise SearchError("reviewed Step2 measurement program is invalid: " + ";".join(reasons))
     selected = [row for row in program["model_selection"]["candidate_models"] if row.get("selected") is True]

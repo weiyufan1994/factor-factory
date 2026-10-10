@@ -265,6 +265,7 @@ include = [
   "tests/test_research_search_formula_bridge.py",
   "tests/test_research_search_mechanism.py",
   "tests/test_research_search_two_level_planner.py",
+  "tests/test_research_search_ultimate_cycle.py",
   "tests/test_research_search_d05_independent.py",
   "tests/test_research_episode_index.py",
   "tests/test_research_import_safety.py",

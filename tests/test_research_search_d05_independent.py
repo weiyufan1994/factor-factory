@@ -18,6 +18,7 @@ from factor_factory.research_search.induction import (
     FieldSpec, ForwardInductionRecord, InductionScope, SemanticType, Unit,
 )
 from factor_factory.research_search.typed_ast import ASTNode
+from tests.test_research_search_interface import case as b3_native_case
 
 
 def scope():
@@ -266,3 +267,70 @@ def test_parent_induction_with_an_old_delta_cannot_be_reused_as_a_fresh_inductio
     run_mechanism_mcts(initial_state=state, actions=(action,), evaluator=lambda *args: calls.append(args),
                        protocol_id="p", seed=4, total_budget=1.0, max_expansions=1)
     assert calls == []
+
+
+@pytest.mark.parametrize("change", [
+    "field_unit", "output_unit", "windows", "constants", "operators",
+    "depth", "missing_policy", "numeric_domain", "parent",
+])
+def test_native_grammar_cannot_be_changed_by_repeating_the_reviewed_evidence_text(
+        b3_native_case, change):
+    """Use protocol setup only; independently challenge each caller-owned claim.
+
+    The native receipts here are test doubles, not an actual research review.
+    Keeping the strings called ``*_evidence`` unchanged must not let a caller
+    silently replace the typed grammar that the real Step2 reviewer saw.
+    """
+    from factor_factory.research_search.contracts import SearchError
+    from factor_factory.research_search.ultimate_cycle import bind_reviewed_step2_scope
+    from tests.test_research_search_ultimate_cycle import _reviewed_case
+
+    reviewed, ticket, declaration = _reviewed_case(b3_native_case)
+    baseline = bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, declaration)
+    assert baseline.scope.allowed_windows == declaration.allowed_windows
+    changed = {
+        "field_unit": {"allowed_fields": tuple(
+            replace(field, semantic_type=replace(field.semantic_type, unit=Unit((("currency", 1),))))
+            for field in declaration.allowed_fields)},
+        "output_unit": {"output_type": replace(declaration.output_type, unit=Unit((("currency", 1),)))},
+        "windows": {"allowed_windows": (*declaration.allowed_windows, 50)},
+        "constants": {"allowed_constants": (*declaration.allowed_constants, 37.0)},
+        "operators": {"allowed_operators": declaration.allowed_operators[:1]},
+        "depth": {"max_depth": declaration.max_depth + 1},
+        "missing_policy": {"missing_value_policy": "replace every missing value with zero"},
+        "numeric_domain": {"numeric_domain": "caller selected different domain"},
+        "parent": {"parent_induction_id": "an-unreviewed-different-parent"},
+    }[change]
+    with pytest.raises((SearchError, ValueError)):
+        bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket,
+                                 replace(declaration, **changed))
+
+
+def test_native_engineering_fixture_does_not_gain_market_data_scope(b3_native_case):
+    from factor_factory.research_search.ultimate_cycle import bind_reviewed_step2_scope
+    from tests.test_research_search_ultimate_cycle import _reviewed_case
+
+    reviewed, ticket, declaration = _reviewed_case(b3_native_case)
+    bound = bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, declaration)
+    assert bound.scope.induction_record.data_exposure == "synthetic_only"
+
+
+def test_native_parent_selection_cannot_borrow_a_better_scoring_different_mechanism(b3_native_case):
+    from copy import deepcopy
+    from factor_factory.research_search.ultimate_cycle import (
+        TwoLevelCandidateProposer, bind_reviewed_step2_scope,
+    )
+    from tests.test_research_search_ultimate_cycle import _reviewed_case
+
+    reviewed, ticket, declaration = _reviewed_case(b3_native_case)
+    bound = bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, declaration)
+    context = reviewed["controller"].proposer_context()
+    foreign = deepcopy(context["candidates"][0])
+    foreign["candidate_hash"] = "f" * 64
+    foreign["semantics"]["mathematical_object"] = "a different economic response"
+    context["candidates"].append(foreign)
+    context["development_feedback"].append({"candidate_hash": foreign["candidate_hash"], "candidate_score": 1.0})
+    children = TwoLevelCandidateProposer(bound, population_size=2).propose(context, max_proposals=2, seed=9)
+    assert children
+    assert all(row["parent_candidate_hash"] != foreign["candidate_hash"] for row in children)
+    assert all(row["semantics"] == reviewed["proposal"]["semantics"] for row in children)

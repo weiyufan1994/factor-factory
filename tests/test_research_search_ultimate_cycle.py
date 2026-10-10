@@ -1,4 +1,5 @@
 from copy import deepcopy
+from dataclasses import replace
 import json
 from pathlib import Path
 import sys
@@ -8,7 +9,9 @@ import pytest
 
 from factor_factory.factors import FormulaFactor
 from factor_factory.measurement_program import MEASUREMENT_PROGRAM_VERSION_V2
-from factor_factory.research_search.contracts import SearchError, digest, file_ref, program_identity, read_json
+from factor_factory.research_search.contracts import (
+    SearchError, candidate_hash, digest, file_ref, program_identity, read_json,
+)
 from factor_factory.research_search.controller import ResearchSearchController
 from factor_factory.research_search.executor import FileNativeExecutor
 from factor_factory.research_search.induction import FieldSpec, SemanticType, Unit
@@ -16,7 +19,7 @@ from factor_factory.research_search.ledger import SearchLedger
 from factor_factory.research_search.native import native_source_pin
 from factor_factory.research_search.ultimate_cycle import (
     CAUSAL_AFFINE_VARIATIONS, Step2GrammarDeclaration, TwoLevelCandidateProposer, bind_reviewed_step2_scope,
-    publish_step6_search_material,
+    grammar_declaration_payload, publish_step6_search_material,
 )
 from tests.test_factorforge_measurement_program_research_equation_v2 import _filled_program
 from tests.test_research_search_interface import REPO, case, proof, put, result, stamp
@@ -25,7 +28,7 @@ from tests.test_research_search_interface import REPO, case, proof, put, result,
 VARIATIONS = CAUSAL_AFFINE_VARIATIONS
 
 
-def _reviewed_case(case):
+def _reviewed_case(case, *, reviewed_program_change=False):
     root = case["root"]
     program = _filled_program(MEASUREMENT_PROGRAM_VERSION_V2)
     program["search_policy"]["allowed_model_or_estimator_variations"].extend(VARIATIONS)
@@ -44,16 +47,17 @@ def _reviewed_case(case):
     authority["campaign_id"] = c["campaign_id"]
     c["budget_authority"] = put(root / "b3-budget.json", authority)
     p = deepcopy(case["proposal"])
-    p["context_hash"] = digest(c)
+    selected = next(row for row in program["model_selection"]["candidate_models"] if row["selected"])
+    p["semantics"]["mathematical_object"] = selected["mechanism_equation_or_functional"]
+    p["semantics"]["observation_map"] = program["observation_and_estimation"]["observation_map"]
+    p["candidate_hash"] = candidate_hash(p)
     p["public_derivation_ref"] = measurement
     c["root_candidate_hash"] = p["candidate_hash"]
+    p["context_hash"] = digest(c)
     ledger = SearchLedger(root)
     ledger.create_campaign(c)
     ledger.register(c["campaign_id"], [p])
     controller = ResearchSearchController(ledger, c["campaign_id"], FileNativeExecutor(root))
-    revised = {**case, "context": c, "proposal": p, "ledger": ledger, "controller": controller}
-    ticket = _ready(revised, _dispatch(revised))
-    selected = next(row for row in program["model_selection"]["candidate_models"] if row["selected"])
     signal = SemanticType("panel", "numeric", Unit.dimensionless(),
                           "session_close", "instrument_ts", "observed_at_or_before_t")
     declaration = Step2GrammarDeclaration(
@@ -70,6 +74,12 @@ def _reviewed_case(case):
         information_time_evidence=p["semantics"]["information_time"],
         missing_zero_evidence=p["semantics"]["missing_zero_policy"],
     )
+    revised = {**case, "context": c, "proposal": p, "ledger": ledger, "controller": controller}
+    reviewed_program = deepcopy(program)
+    if reviewed_program_change:
+        reviewed_program["observation_and_estimation"]["observation_map"] += " reviewed-only change"
+    ticket = _ready(revised, _dispatch(revised), declaration=declaration,
+                    reviewed_program=reviewed_program)
     return revised, ticket, declaration
 
 
@@ -81,14 +91,28 @@ def _dispatch(case):
     return case["ledger"].ticket(campaign, out["ticket_id"])
 
 
-def _ready(case, ticket, proposal=None):
+def _ready(case, ticket, proposal=None, *, declaration, reviewed_program=None):
     c, p = case["context"], proposal or case["proposal"]
     campaign = c["campaign_id"]
     root = case["tmp"] / (campaign + "-" + p["candidate_hash"][:12])
     root.mkdir(exist_ok=True)
     rid = c["report_id"] + "_B3_" + p["candidate_hash"][:12].upper()
     started = stamp(-500)
-    spec = put(root / "spec.json", {"report_id": rid})
+    if reviewed_program is None:
+        source = read_json(c["source_refs"]["measurement_program"]["path"])
+        reviewed_program = source.get("mechanism_conditioned_measurement_program", source)
+    spec = put(root / "spec.json", {
+        "report_id": rid,
+        "mechanism_conditioned_measurement_program": reviewed_program,
+        "research_search_grammar_declaration": grammar_declaration_payload(declaration),
+        "research_search_lineage": {
+            "base_context_hash": digest(c),
+            "base_source_refs": c["source_refs"],
+            "candidate_hash": p["candidate_hash"],
+            "parent_candidate_hash": p["parent_candidate_hash"],
+            "mutation_class": p["mutation_class"],
+        },
+    })
     code = root / "implementation.py"
     code.write_text("raise RuntimeError('review-only synthetic implementation')\n")
     impl = file_ref(code)
@@ -134,13 +158,15 @@ def _ready(case, ticket, proposal=None):
 def test_reviewed_step2_binding_consumes_native_readiness_and_exact_scope(case):
     reviewed, ticket, declaration = _reviewed_case(case)
     binding = bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, declaration)
-    assert binding.scope.induction_record.origin == "step2_review"
+    assert binding.scope.induction_record.origin == "reviewed_fixture"
+    assert binding.scope.induction_record.data_exposure == "synthetic_only"
     assert binding.scope.induction_record.review_binding_hash == binding.review_binding_hash
+    assert binding.scope.induction_record.source_ref == ticket["native_request"]["spec_ref"]["path"]
     assert binding.scope.mathematical_object == declaration.mathematical_object
     assert binding.scope.observation_map == declaration.observation_map
 
     wrong = Step2GrammarDeclaration(**{**declaration.__dict__, "mathematical_object": "changed object"})
-    with pytest.raises(SearchError, match="differs from reviewed Step2"):
+    with pytest.raises(SearchError, match="code-reviewed Step2 spec"):
         bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, wrong)
 
 
@@ -185,6 +211,9 @@ def test_pending_is_not_scored_and_terminal_native_metric_becomes_step6_material
     assert terminal["material"]["pending_ticket_ids"] == []
     assert terminal["material"]["mechanism_assessment"].startswith("unknown")
     assert publish_step6_search_material(reviewed["controller"], binding)["material_ref"] == terminal["material_ref"]
+    with pytest.raises(SearchError, match="controller/campaign differs"):
+        publish_step6_search_material(
+            reviewed["controller"], replace(binding, context_hash="0" * 64))
 
 
 def test_feedback_changes_parent_lineage_and_formula_runs_standard_factor(case):
@@ -197,7 +226,11 @@ def test_feedback_changes_parent_lineage_and_formula_runs_standard_factor(case):
     snapshot = reviewed["ledger"].snapshot("b3-cycle")
     proposals = {row["candidate_hash"]: __import__("json").loads(row["proposal_json"])
                  for row in snapshot["proposals"]}
-    child = proposals[registered[0]]
+    child_reservation = reviewed["controller"].tick()
+    assert child_reservation["state"] == "RESERVED"
+    assert reviewed["controller"].tick()["state"] == "WAITING_PREPARATION"
+    child_ticket = reviewed["ledger"].ticket("b3-cycle", child_reservation["ticket_id"])
+    child = proposals[child_ticket["candidate_hash"]]
     assert child["parent_candidate_hash"] == reviewed["proposal"]["candidate_hash"]
     frame = pd.DataFrame({
         "ts_code": ["A", "A", "B", "B"],
@@ -210,12 +243,7 @@ def test_feedback_changes_parent_lineage_and_formula_runs_standard_factor(case):
     raw_metric = float(values.factor_value.fillna(0).abs().mean())
     derived_metric = 0.5 + raw_metric / (2 * (1 + raw_metric))
 
-    child_reservation = reviewed["controller"].tick()
-    assert child_reservation["state"] == "RESERVED"
-    assert reviewed["controller"].tick()["state"] == "WAITING_PREPARATION"
-    child_ticket = reviewed["ledger"].ticket("b3-cycle", child_reservation["ticket_id"])
-    assert child_ticket["candidate_hash"] == child["candidate_hash"]
-    child_ticket = _ready(reviewed, child_ticket, child)
+    child_ticket = _ready(reviewed, child_ticket, child, declaration=declaration)
     child_running = reviewed["ledger"].transition(child_ticket["ticket_id"], {"READY"}, "RUNNING")
     child_feedback = reviewed["ledger"].record_feedback(
         child_ticket["ticket_id"], result(reviewed, child_running, value=derived_metric))
@@ -235,7 +263,7 @@ def test_unreviewed_or_unadmitted_scope_fails_before_generation(case):
     reviewed, ticket, declaration = _reviewed_case(case)
     missing = Step2GrammarDeclaration(**{**declaration.__dict__,
         "allowed_variation_evidence": ("nonlinear variable product",)})
-    with pytest.raises(SearchError, match="complete reviewed variation set"):
+    with pytest.raises(SearchError, match="code-reviewed Step2 spec"):
         bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, missing)
     unprepared = dict(ticket)
     unprepared["native_request"] = None
@@ -247,8 +275,39 @@ def test_unreviewed_or_unadmitted_scope_fails_before_generation(case):
         bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], wrong_ticket, declaration)
     stale_parent = Step2GrammarDeclaration(**{**declaration.__dict__,
         "parent_induction_id": "prior", "parent_delta": ("changed response",)})
-    with pytest.raises(SearchError, match="reviewed Step2 revision lineage"):
+    with pytest.raises(SearchError, match="code-reviewed Step2 spec"):
         bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, stale_parent)
     wrong_units = Step2GrammarDeclaration(**{**declaration.__dict__, "units_evidence": "different units"})
-    with pytest.raises(SearchError, match="type/time/missing"):
+    with pytest.raises(SearchError, match="code-reviewed Step2 spec"):
         bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, wrong_units)
+
+
+@pytest.mark.parametrize("change", ["field_unit", "window", "operator", "parent_delta"])
+def test_reviewed_grammar_rejects_unreviewed_structural_change(case, change):
+    reviewed, ticket, declaration = _reviewed_case(case)
+    values = dict(declaration.__dict__)
+    if change == "field_unit":
+        field = declaration.allowed_fields[0]
+        changed = SemanticType(
+            field.semantic_type.shape, field.semantic_type.value_type, Unit.named("price"),
+            field.semantic_type.clock, field.semantic_type.grouping,
+            field.semantic_type.information_semantics,
+        )
+        values["allowed_fields"] = (FieldSpec(field.name, changed), *declaration.allowed_fields[1:])
+    elif change == "window":
+        values["allowed_windows"] = declaration.allowed_windows + (5,)
+    elif change == "operator":
+        values["allowed_operators"] = declaration.allowed_operators + ("divide",)
+    else:
+        values["parent_induction_id"] = "unreviewed-parent"
+        values["parent_delta"] = ("unreviewed response change",)
+    with pytest.raises(SearchError, match="code-reviewed Step2 spec"):
+        bind_reviewed_step2_scope(
+            reviewed["context"], reviewed["proposal"], ticket,
+            Step2GrammarDeclaration(**values))
+
+
+def test_reviewed_spec_cannot_silently_differ_from_base_program(case):
+    reviewed, ticket, declaration = _reviewed_case(case, reviewed_program_change=True)
+    with pytest.raises(SearchError, match="differs from base Step2 program"):
+        bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, declaration)

@@ -94,9 +94,9 @@ class FieldSpec:
 class ForwardInductionRecord:
     """Public, auditable content consumed before expression search.
 
-    Synthetic fixtures carry no review authority. A production Step2 record is
-    accepted only with the content hash created by the native review-binding
-    adapter; a caller cannot promote an unreviewed payload with a status flag.
+    Synthetic fixtures carry no review authority. ``review_binding_hash`` is a
+    content-addressed adapter identifier only; it is not a signature or proof
+    of review. The adapter must separately validate the reviewed native files.
     """
 
     record_id: str
@@ -116,7 +116,7 @@ class ForwardInductionRecord:
     review_binding_hash: str | None = None
 
     def __post_init__(self) -> None:
-        if self.origin not in {"synthetic_fixture", "step2_review"}:
+        if self.origin not in {"synthetic_fixture", "reviewed_fixture", "step2_review"}:
             raise ValueError("unsupported induction record origin")
         if self.review_decision != "proceed":
             raise ValueError("only a proceed induction record can define search scope")
@@ -136,10 +136,15 @@ class ForwardInductionRecord:
         if self.origin == "synthetic_fixture":
             if self.data_exposure != "synthetic_only" or self.review_binding_hash is not None:
                 raise ValueError("synthetic induction records cannot carry reviewed data authority")
+        elif self.origin == "reviewed_fixture":
+            if (self.data_exposure != "synthetic_only"
+                    or not isinstance(self.review_binding_hash, str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", self.review_binding_hash)):
+                raise ValueError("reviewed fixture metadata requires a SHA256 binding and synthetic-only scope")
         elif (self.data_exposure != "development_only"
               or not isinstance(self.review_binding_hash, str)
               or not re.fullmatch(r"[0-9a-f]{64}", self.review_binding_hash)):
-            raise ValueError("Step2 induction requires a bound review hash and development-only scope")
+            raise ValueError("Step2 induction metadata requires a SHA256 binding and development-only scope")
 
     @property
     def record_hash(self) -> str:

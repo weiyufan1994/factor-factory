@@ -61,8 +61,45 @@ class ReviewedStep2Scope:
     scope: InductionScope
     context_hash: str
     candidate_hash: str
+    accepted_semantics: dict[str, str]
     readiness_ref: dict[str, str]
     review_binding_hash: str
+
+
+def grammar_declaration_payload(declaration: Step2GrammarDeclaration) -> dict[str, Any]:
+    """Canonical machine-readable content that must live in the reviewed spec."""
+    return {
+        "response_family": declaration.response_family,
+        "mathematical_object": declaration.mathematical_object,
+        "observation_map": declaration.observation_map,
+        "allowed_fields": [
+            {"name": row.name, "semantic_type": row.semantic_type.payload()}
+            for row in declaration.allowed_fields
+        ],
+        "output_type": declaration.output_type.payload(),
+        "allowed_operators": list(declaration.allowed_operators),
+        "allowed_constants": list(declaration.allowed_constants),
+        "allowed_windows": list(declaration.allowed_windows),
+        "max_depth": declaration.max_depth,
+        "missing_value_policy": declaration.missing_value_policy,
+        "numeric_domain": declaration.numeric_domain,
+        "allowed_variation_evidence": list(declaration.allowed_variation_evidence),
+        "units_evidence": declaration.units_evidence,
+        "information_time_evidence": declaration.information_time_evidence,
+        "missing_zero_evidence": declaration.missing_zero_evidence,
+        "parent_induction_id": declaration.parent_induction_id,
+        "parent_delta": list(declaration.parent_delta),
+    }
+
+
+def _expected_lineage(context: Mapping[str, Any], proposal: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "base_context_hash": digest(context),
+        "base_source_refs": context["source_refs"],
+        "candidate_hash": proposal["candidate_hash"],
+        "parent_candidate_hash": proposal["parent_candidate_hash"],
+        "mutation_class": proposal["mutation_class"],
+    }
 
 
 def bind_reviewed_step2_scope(
@@ -87,10 +124,20 @@ def bind_reviewed_step2_scope(
     readiness = _bound_json(r["readiness_ref"])
     source_spec = _bound_json(c["source_refs"]["step2_spec"])
     measurement_object = _bound_json(c["source_refs"]["measurement_program"])
-    program = measurement_object.get("mechanism_conditioned_measurement_program", measurement_object)
-    spec_program = source_spec.get("mechanism_conditioned_measurement_program")
-    if spec_program != program:
+    base_program = measurement_object.get("mechanism_conditioned_measurement_program", measurement_object)
+    source_program = source_spec.get("mechanism_conditioned_measurement_program")
+    if source_program != base_program:
         raise SearchError("Step2 spec and measurement-program source are not identical")
+    reviewed_spec = _bound_json(r["spec_ref"])
+    if reviewed_spec.get("research_search_grammar_declaration") != grammar_declaration_payload(declaration):
+        raise SearchError("AST grammar differs from the code-reviewed Step2 spec")
+    if reviewed_spec.get("research_search_lineage") != _expected_lineage(c, proposal):
+        raise SearchError("reviewed Step2 spec lineage differs from candidate/source lineage")
+    program = reviewed_spec.get("mechanism_conditioned_measurement_program")
+    if not isinstance(program, Mapping):
+        raise SearchError("code-reviewed Step2 spec lacks a measurement program")
+    if proposal["mutation_class"] == "implementation_equivalent" and program != base_program:
+        raise SearchError("implementation-equivalent reviewed spec differs from base Step2 program")
     reasons = validate_measurement_program(program, require_web_executable=False)
     if reasons:
         raise SearchError("reviewed Step2 measurement program is invalid: " + ";".join(reasons))
@@ -102,6 +149,10 @@ def bind_reviewed_step2_scope(
         raise SearchError("search mathematical object differs from reviewed Step2")
     if declaration.observation_map != program["observation_and_estimation"].get("observation_map"):
         raise SearchError("search observation map differs from reviewed Step2")
+    semantics = proposal["semantics"]
+    if (semantics["mathematical_object"] != declaration.mathematical_object
+            or semantics["observation_map"] != declaration.observation_map):
+        raise SearchError("reviewed Step2 math/observation differs from proposal semantics")
     if declaration.response_family != "causal_affine_response_estimator":
         raise SearchError("only the implemented causal-affine response family is supported")
     if declaration.allowed_variation_evidence != CAUSAL_AFFINE_VARIATIONS:
@@ -110,7 +161,6 @@ def bind_reviewed_step2_scope(
     if (not declaration.allowed_variation_evidence
             or not set(declaration.allowed_variation_evidence).issubset(reviewed_variations)):
         raise SearchError("AST grammar is not explicitly admitted by reviewed Step2 variations")
-    semantics = proposal["semantics"]
     if (declaration.units_evidence != semantics["units"]
             or declaration.information_time_evidence != semantics["information_time"]
             or declaration.missing_zero_evidence != semantics["missing_zero_policy"]):
@@ -119,17 +169,22 @@ def bind_reviewed_step2_scope(
     if tuple(row.name for row in declaration.allowed_fields) != required_inputs:
         raise SearchError("AST fields differ from the reviewed candidate program inputs")
     public = program["public_derivation_record"]
-    if declaration.parent_delta and proposal["mutation_class"] == "implementation_equivalent":
+    if ((declaration.parent_delta or declaration.parent_induction_id is not None)
+            and proposal["mutation_class"] == "implementation_equivalent"):
         raise SearchError("a fresh response induction requires reviewed Step2 revision lineage")
     review_hash = digest({
         "context_hash": digest(c), "candidate_hash": proposal["candidate_hash"],
-        "source_refs": c["source_refs"], "readiness_ref": r["readiness_ref"],
+        "source_refs": c["source_refs"], "reviewed_spec_ref": r["spec_ref"],
+        "readiness_ref": r["readiness_ref"],
         "readiness_decision": readiness.get("decision"),
         "accepted_semantics": readiness.get("accepted_semantics"),
     })
+    protocol = _bound_json(c["development_protocol"])
+    fixture = protocol["data_kind"] == "engineering_fixture"
     record = ForwardInductionRecord(
-        record_id="step2-" + review_hash[:20], origin="step2_review",
-        source_ref=c["source_refs"]["step2_spec"]["path"],
+        record_id="step2-" + review_hash[:20],
+        origin="reviewed_fixture" if fixture else "step2_review",
+        source_ref=r["spec_ref"]["path"],
         assumptions=tuple(public["assumptions"]),
         key_derivation_steps=tuple(public["key_derivation_steps"]),
         parent_delta=declaration.parent_delta,
@@ -139,7 +194,7 @@ def bind_reviewed_step2_scope(
         grammar_productions=("field", "constant", *declaration.allowed_operators),
         conclusions=(public["overclaim_guard"],),
         falsifiers=tuple(public["identification_gaps"]),
-        review_decision="proceed", data_exposure="development_only",
+        review_decision="proceed", data_exposure="synthetic_only" if fixture else "development_only",
         review_binding_hash=review_hash,
     )
     scope = InductionScope(
@@ -155,7 +210,7 @@ def bind_reviewed_step2_scope(
         change_class="new_response_structure" if declaration.parent_delta else "in_family_parameter",
     )
     return ReviewedStep2Scope(scope, digest(c), proposal["candidate_hash"],
-                              dict(r["readiness_ref"]), review_hash)
+                              dict(semantics), dict(r["readiness_ref"]), review_hash)
 
 
 class TwoLevelCandidateProposer:
@@ -182,7 +237,11 @@ class TwoLevelCandidateProposer:
         if self.binding.candidate_hash not in candidates:
             raise SearchError("reviewed parent candidate is absent from proposer context")
         feedback = {row["candidate_hash"]: row for row in context["development_feedback"]}
-        scored = [row for row in context["candidates"]
+        scoped = [row for row in context["candidates"]
+                  if row["semantics"] == self.binding.accepted_semantics
+                  and tuple(row["program"].get("required_inputs") or ())
+                  == tuple(field.name for field in self.binding.scope.allowed_fields)]
+        scored = [row for row in scoped
                   if feedback.get(row["candidate_hash"], {}).get("candidate_score") is not None]
         scored.sort(key=lambda row: (feedback[row["candidate_hash"]]["candidate_score"], row["candidate_hash"]),
                     reverse=True)
@@ -255,6 +314,10 @@ def publish_step6_search_material(
 ) -> dict[str, Any]:
     """Publish replayable Step6 input without issuing a mechanism verdict."""
     snapshot = controller.ledger.snapshot(controller.campaign_id)
+    if (digest(snapshot["context"]) != binding.context_hash
+            or not any(row["candidate_hash"] == binding.candidate_hash
+                       for row in snapshot["proposals"])):
+        raise SearchError("Step6 material controller/campaign differs from reviewed binding")
     feedback = controller.verified_feedback(snapshot)
     terminal = []
     for row in feedback:

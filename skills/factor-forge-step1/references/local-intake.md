@@ -1,8 +1,9 @@
 # Local PDF input landing
 
 Read after the source has actually been read. Use the selected checkout and one
-factor workspace. The CLI accepts PDF-backed intake; formula/user-hypothesis
-routes use their matching Step1 source producer, not a fabricated PDF.
+factor workspace. The CLI accepts PDF-backed intake. A user hypothesis uses
+[authored hypothesis input](../../factor-forge-step2/references/local-hypothesis-inputs.md),
+not a fabricated PDF; canonical-formula intake retains its own producer.
 
 `scripts/run_factorforge_local_step1.py` takes these JSON inputs:
 

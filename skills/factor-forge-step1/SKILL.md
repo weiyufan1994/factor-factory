@@ -47,6 +47,8 @@ a simple sufficient derivation need not be padded into more models or steps.
 
 - [Local PDF intake](references/local-intake.md) defines the actual envelopes
   and command; [schema](references/schema.md) defines the source/chief fields.
+- For a user hypothesis, use [authored hypothesis input](../factor-forge-step2/references/local-hypothesis-inputs.md)
+  after the actual independent understanding, not the generic draft producer.
 - When landing the measurement program, read its
   [maintained field contract](../../docs/contracts/mechanism_conditioned_measurement_program_v1.zh-CN.md).
 - For state/conjecture/approach records, use

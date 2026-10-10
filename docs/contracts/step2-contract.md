@@ -16,7 +16,7 @@ Step 2 is the canonical spec gate. It consumes `alpha_idea_master` from the appr
 - `fixtures/step2/sample_report_stub.pdf`
 
 ## Runner status
-Sample/debug runners are archived or debug-blocked for canonical writes. Formal Step2 execution must use the approved producer contract and must not be replaced by handwritten JSON.
+Sample/debug runners are archived or debug-blocked for canonical writes. Formal Step2 outputs must be produced by the approved runner, not handwritten passed masters. Ordinary local researchers supply their real authored input specs through the documented PDF or hypothesis input route; the runner validates these and builds the master/handoff. Input authorship is not a completed review or a research result.
 
 ## Input class
 - `alpha_idea_master__{report_id}.json`

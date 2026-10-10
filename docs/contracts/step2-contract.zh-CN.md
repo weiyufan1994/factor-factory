@@ -16,7 +16,7 @@ Step 2 是 canonical spec 闸门。它消费批准的 Step 1 intake 产出的 `a
 - `fixtures/step2/sample_report_stub.pdf`
 
 ## runner 状态
-sample/debug runner 对 canonical 写入已 archived 或 debug-blocked。正式 Step2 必须使用批准的 producer contract，不能用手写 JSON 取代。
+sample/debug runner 对 canonical 写入已 archived 或 debug-blocked。正式 Step2 输出由批准的 runner 产生，不能手写通过的 master。普通本地研究员通过已说明的 PDF 或假设输入通道提供真实撰写的原始规格，由 runner 验证后生成 master/handoff。撰写输入不等于已经完成评审或研究。
 
 ## 输入类
 - `alpha_idea_master__{report_id}.json`

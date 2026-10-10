@@ -1,4 +1,4 @@
-# Third-party versions used for the macOS Python 3.13 author tests.
+# Third-party versions used for the macOS Python 3.13 and 3.14 author tests.
 # Not a claim of Linux/root/3.11 or independent research acceptance.
 # Framework and Data SDK are installed from this delivery, not private paths.
 attrs==26.1.0

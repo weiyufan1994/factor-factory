@@ -1,0 +1,26 @@
+# Build from an unpacked delivery root (wheels/, factor-forge/, Data SDK).
+# Candidate test environment only. Building installs public Python dependencies;
+# run the finished image with --network none and --read-only (see the README).
+ARG PYTHON_VERSION=3.13
+FROM python:${PYTHON_VERSION}-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+    HOME=/tmp/factorforge-test-home \
+    MPLCONFIGDIR=/tmp/factorforge-matplotlib \
+    PFVV_MONTHLY_EXECUTION_ENGINE_PATH=/candidate/factor-forge/examples/mszq_intraday_momentum_pulse/local_is_execution_engine
+
+COPY . /candidate
+RUN set -eu; \
+    set -- /candidate/wheels/factor_factory-*.whl; \
+    test "$#" -eq 1; \
+    test -f "$1"; \
+    framework_wheel="$1"; \
+    set -- /candidate/wheels/factorforge_data_api-*.whl; \
+    test "$#" -eq 1; \
+    test -f "$1"; \
+    python -m pip install --no-cache-dir "${framework_wheel}[console,step4,test]" "$1[test]"; \
+    python -m pip check
+
+WORKDIR /candidate/factor-forge
+CMD ["python", "-m", "pytest", "-c", "pytest-offline.ini", "-p", "no:cacheprovider", "-q"]

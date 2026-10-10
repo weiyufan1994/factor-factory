@@ -334,3 +334,18 @@ def test_native_parent_selection_cannot_borrow_a_better_scoring_different_mechan
     assert children
     assert all(row["parent_candidate_hash"] != foreign["candidate_hash"] for row in children)
     assert all(row["semantics"] == reviewed["proposal"]["semantics"] for row in children)
+
+
+def test_novel_ast_is_not_called_a_numerically_equivalent_implementation(b3_native_case):
+    from factor_factory.research_search.ultimate_cycle import (
+        TwoLevelCandidateProposer, bind_reviewed_step2_scope,
+    )
+    from tests.test_research_search_ultimate_cycle import _reviewed_case
+
+    reviewed, ticket, declaration = _reviewed_case(b3_native_case)
+    bound = bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, declaration)
+    context = reviewed["controller"].proposer_context()
+    children = TwoLevelCandidateProposer(bound, population_size=3).propose(context, max_proposals=3, seed=7)
+    assert children
+    assert all(row["mutation_class"] == "measurement_variant" for row in children)
+    assert all("observation_map" in row["changes"] for row in children)

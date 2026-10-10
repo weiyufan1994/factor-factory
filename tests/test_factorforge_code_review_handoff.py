@@ -128,6 +128,18 @@ def test_prepare_is_idempotent_and_preserves_existing_journal(flow_case):
     assert not flow.review_path.exists()
 
 
+def test_material_fingerprint_retains_the_existing_prepare_identity(flow_case):
+    _prepare(flow_case)
+    entry = _flow(flow_case)._active()
+    keys = ("issue_id", "summary", "author_id", "reviewer_id", "materials_note", "origin_step",
+            "resume", "spec", "handoff", "reviewed_files", "context_files")
+    identity = {key: entry[key] for key in keys if key not in ("summary", "materials_note")}
+    expected = hashlib.sha256(json.dumps(
+        {"report_id": REPORT, **identity}, sort_keys=True, ensure_ascii=False,
+    ).encode()).hexdigest()[:24]
+    assert entry["material_fingerprint"] == expected
+
+
 def test_status_of_unmanaged_study_is_read_only(flow_case):
     flow = _flow(flow_case)
     assert flow.status()["status"] == "NOT_MANAGED"
@@ -296,6 +308,153 @@ def _complete_stage4(case):
     flow = _flow(case)
     flow.before_command("validate_step4", end_step="5", execution_context=_command_context(case))
     flow.record_command(_command_result("validate_step4"))
+
+
+def _complete_stage45(case):
+    _complete_stage4(case)
+    flow = _flow(case)
+    flow.before_command("run_step5", end_step="5", execution_context=_command_context(case))
+    _stage_outputs(case, "5")
+    flow.record_command(_command_result("run_step5"))
+    flow = _flow(case)
+    flow.before_command("validate_step5", end_step="5", execution_context=_command_context(case))
+    flow.record_command(_command_result("validate_step5"))
+    return _flow(case)._active()["request_id"]
+
+
+def test_step6_scope_continuation_preserves_review_and_computation(flow_case):
+    request_id = _complete_stage45(flow_case)
+    flow = _flow(flow_case)
+    original = deepcopy(flow._active())
+    before = {p: p.read_bytes() for p in flow.workspace.rglob("*") if p.is_file()}
+    with pytest.raises(HandoffError, match="scope"):
+        flow.before_command("run_step6", end_step="6")
+    preview = flow.continue_step6(request_id, reference="Synthetic full-study task; not live approval")
+    assert preview["continuation_action"] == "DRY_RUN"
+    assert preview["planned_resume"]["start_step"] == "6"
+    assert {p: p.read_bytes() for p in before} == before
+    result = flow.continue_step6(request_id, reference="Synthetic scope reference", dry_run=False)
+    assert result["continuation_action"] == "APPLIED"
+    assert result["remaining_steps"] == ["6"]
+    assert result["resume"]["start_step"] == result["resume"]["end_step"] == "6"
+    assert result["request_id"] == request_id and result["step6_followup"]
+    current = _flow(flow_case)._active()
+    changed = {key for key in set(original) | set(current) if original.get(key) != current.get(key)}
+    assert changed == {"resume", "material_fingerprint", "scope_continuation_history"}
+    event = current["scope_continuation_history"][0]
+    assert event["from_resume"] == original["resume"]
+    assert event["to_resume"] == current["resume"]
+    assert event["from_material_fingerprint"] == original["material_fingerprint"]
+    assert event["to_material_fingerprint"] == current["material_fingerprint"]
+    assert {p: p.read_bytes() for p in before if p != flow.path} == {
+        p: raw for p, raw in before.items() if p != flow.path
+    }
+    assert _flow(flow_case).before_command("run_step6", end_step="6")["status"] == "NATIVE_STEP6"
+    assert _flow(flow_case).before_command("validate_step6", end_step="6")["status"] == "NATIVE_STEP6"
+    # Completed writers still reuse; the active coordination was not removed.
+    for step in ("4", "5"):
+        assert _flow(flow_case).before_command(
+            f"run_step{step}", end_step="6", execution_context=_command_context(flow_case)
+        )["status"] == "REUSE"
+    saved = flow.path.read_bytes()
+    repeated = _flow(flow_case).continue_step6(request_id, reference="same task", dry_run=False)
+    assert repeated["continuation_action"] == "ALREADY_IN_SCOPE"
+    assert flow.path.read_bytes() == saved
+    extended_request = deepcopy(flow_case["request"])
+    extended_request["resume"]["end_step"] = "6"
+    assert _flow(flow_case).prepare(extended_request)["created"] is False
+    assert flow.path.read_bytes() == saved
+
+
+@pytest.mark.parametrize("mutation", [
+    "code", "review", "artifact", "missing_command", "boolean_returncode",
+    "unfinished", "unknown", "end4", "start5", "invalid_history", "request_id", "reference",
+])
+def test_step6_scope_continuation_rejects_invalid_prerequisites_without_writes(flow_case, mutation):
+    request_id = _complete_stage45(flow_case)
+    flow = _flow(flow_case)
+    if mutation == "code":
+        flow_case["code"].write_text("changed")
+    elif mutation == "review":
+        record = json.loads(flow.review_path.read_text())
+        record["summary"] = "different review"
+        _write(flow.review_path, record)
+    elif mutation == "artifact":
+        flow_case["workspace"].joinpath("synthetic-metric.csv").write_text("changed")
+    elif mutation not in ("request_id", "reference"):
+        journal = json.loads(flow.path.read_text())
+        entry = journal["code_review_coordination"]["requests"][-1]
+        if mutation == "missing_command":
+            del entry["execution"]["5"]["validate_step5"]
+        elif mutation == "boolean_returncode":
+            entry["execution"]["5"]["validate_step5"]["returncode"] = False
+        elif mutation == "unfinished":
+            entry["execution"]["5"]["status"] = "computed"
+        elif mutation == "unknown":
+            entry["execution"]["5"]["status"] = "validating"
+        elif mutation == "end4":
+            entry["resume"]["end_step"] = "4"
+        elif mutation == "invalid_history":
+            entry["scope_continuation_history"] = "malformed history"
+        else:
+            entry["resume"]["start_step"] = "5"
+        _write(flow.path, journal)
+    before = {p: p.read_bytes() for p in flow.workspace.rglob("*") if p.is_file()}
+    with pytest.raises(HandoffError):
+        _flow(flow_case).continue_step6(
+            "stale" if mutation == "request_id" else request_id,
+            reference="" if mutation == "reference" else "synthetic existing scope",
+            dry_run=False,
+        )
+    assert {p: p.read_bytes() for p in before} == before
+
+
+def test_step6_scope_continuation_does_not_overwrite_newer_journal(flow_case):
+    request_id = _complete_stage45(flow_case)
+    flow = _flow(flow_case)
+    newer = deepcopy(flow.journal)
+    newer["actual_research_memo"] = "arrived after this editor was loaded"
+    _write(flow.path, newer)
+    before = flow.path.read_bytes()
+    with pytest.raises(HandoffError, match="Journal changed"):
+        flow.continue_step6(request_id, reference="synthetic task", dry_run=False)
+    assert flow.path.read_bytes() == before
+
+
+def test_step6_scope_continuation_retains_a_note_written_during_preflight(flow_case, monkeypatch):
+    request_id = _complete_stage45(flow_case)
+    flow = _flow(flow_case)
+    status = flow.status
+    newer = deepcopy(flow.journal)
+    newer["actual_research_memo"] = "arrived while materials were checked"
+
+    def interleaved_status():
+        result = status()
+        _write(flow.path, newer)
+        return result
+
+    monkeypatch.setattr(flow, "status", interleaved_status)
+    with pytest.raises(HandoffError, match="Journal changed during preflight"):
+        flow.continue_step6(request_id, reference="synthetic task", dry_run=False)
+    assert json.loads(flow.path.read_text()) == newer
+
+
+def test_step6_scope_continuation_cli_dry_run_then_apply(flow_case):
+    request_id = _complete_stage45(flow_case)
+    flow = _flow(flow_case)
+    before = flow.path.read_bytes()
+    argv = [sys.executable, "-B", str(REPO / "scripts/manage_factorforge_code_review.py"),
+            "continue-step6", "--workspace-root", str(flow.workspace), "--report-id", REPORT,
+            "--repo-root", str(REPO), "--request-id", request_id,
+            "--reference", "synthetic task, not a real authorization"]
+    result = subprocess.run([*argv, "--dry-run"], capture_output=True, text=True, cwd=REPO)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["continuation_action"] == "DRY_RUN"
+    assert flow.path.read_bytes() == before
+    result = subprocess.run(argv, capture_output=True, text=True, cwd=REPO)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert json.loads(result.stdout)["continuation_action"] == "APPLIED"
+    assert _flow(flow_case).before_command("run_step6", end_step="6")["status"] == "NATIVE_STEP6"
 
 
 @pytest.mark.parametrize("filename", ["factor_run_master.json", "factor_run_diagnostics.json", "handoff_to_step5.json",

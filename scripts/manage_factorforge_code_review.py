@@ -16,7 +16,7 @@ from factor_factory.code_review_handoff import CodeReviewHandoff
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("prepare", "delivery", "receive", "tests", "command-result", "recover-artifacts", "recover-source-version", "status"))
+    parser.add_argument("action", choices=("prepare", "delivery", "receive", "tests", "command-result", "recover-artifacts", "recover-source-version", "continue-step6", "status"))
     parser.add_argument("--workspace-root", required=True)
     parser.add_argument("--report-id", required=True)
     parser.add_argument("--repo-root", default=str(REPO_ROOT))
@@ -30,11 +30,11 @@ def main() -> int:
     parser.add_argument("--proof", help="Original failed Ultimate wrapper report; never a newly invented receipt")
     parser.add_argument("--artifact-repair", help="Explicit file/directory reference correction JSON; no metrics or code changes")
     parser.add_argument("--release-record", help="Original assembly JSON proving the executing archive's source version")
-    parser.add_argument('--dry-run', action='store_true', help='Read-only source-version recovery preflight')
+    parser.add_argument('--dry-run', action='store_true', help='Read-only source-version recovery or Step6 continuation preflight')
     args = parser.parse_args()
     try:
-        if args.dry_run and args.action != 'recover-source-version':
-            raise ValueError('--dry-run is supported only for recover-source-version')
+        if args.dry_run and args.action not in ('recover-source-version', 'continue-step6'):
+            raise ValueError('--dry-run is supported only for recover-source-version or continue-step6')
         flow = CodeReviewHandoff(args.workspace_root, args.report_id, args.repo_root)
         if args.action == "prepare":
             if not args.request_file:
@@ -45,7 +45,9 @@ def main() -> int:
         else:
             if not args.request_id:
                 raise ValueError("--request-id is required; stale handoffs cannot change current work")
-            if args.action == "delivery":
+            if args.action == "continue-step6":
+                result = flow.continue_step6(args.request_id, reference=args.reference, dry_run=args.dry_run)
+            elif args.action == "delivery":
                 result = flow.delivery(args.request_id, args.outcome, args.reference, retry_reason=args.retry_reason)
             elif args.action == 'recover-source-version':
                 if not args.proof or not args.release_record or not args.reference:

@@ -10,6 +10,36 @@ The existing manager is `scripts/manage_factorforge_code_review.py`. All actions
 below use the current study's `--workspace-root`, `--report-id`, `--repo-root`
 and `--request-id`. Use only the operation matching the observed failure.
 
+## Continue Step6 after a completed Step4/5 segment
+
+When a full Ultimate study was internally segmented at Step5, the coordinator's
+recorded `4..5` range can block the native Step6 handoff. Once the original review,
+post-review tests and both Step4/5 writers **and validators** are still current
+and complete, the sole journal owner uses:
+
+```sh
+python3 scripts/manage_factorforge_code_review.py continue-step6 \
+  --workspace-root <workspace> --report-id <report_id> \
+  --repo-root <original-pinned-checkout> --request-id <active-request-id> \
+  --reference <existing-full-study-task-reference> --dry-run
+```
+
+After inspecting `planned_resume=6..6`, repeat without `--dry-run` to record only
+the continuation. Use the reviewed maintenance checkout's script if the pinned
+runtime lacks this action; keep `--repo-root` and the research runtime unchanged.
+The original request ID, review/tests and Step4/5 computation stay intact. The
+scope and deduplication fingerprint change together, with their old/new values
+retained in `scope_continuation_history`. Repeating the operation is a no-op.
+
+Resume the original Ultimate entry at `--start-step 6 --end-step 6`, retaining
+the study's other invocation options. Its native Step6/Council checks still
+decide continuation and completion. This action neither executes research nor
+grants a wider task: a user-requested Step5-only study remains Step5-only.
+Preparing another review request or removing active coordination is unnecessary
+and would discard useful continuation state.
+
+## Reconcile an interrupted command or failed artifact recording
+
 If a wrapper session was interrupted, inspect its actual tool/process result.
 Only after the outcome is known may `command-result --request-id <id> --record
 <actual-command-result.json> --reference <actual-tool/result-locator>` reconcile

@@ -148,7 +148,8 @@ checkpoint without this optional coordination field retains its existing check.
 For interruption reconciliation or a failure in recording already produced
 artifacts, read [Code-review recovery](code-review-recovery.md). It covers
 unknown command outcomes, reference limits, legacy directory references and
-old source-version records. These are conditional repairs, not normal study
+old source-version records, plus continuing Step6 after a completed `4..5`
+segment of a full study. These are conditional repairs, not normal study
 startup steps. Preserve the original failure and inspect the actual outcome
 before selecting one of them.
 

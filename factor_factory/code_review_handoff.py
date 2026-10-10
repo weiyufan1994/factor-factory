@@ -36,6 +36,12 @@ def _digest(value: Any) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
 
 
+def _material_fingerprint(report_id: str, entry: dict) -> str:
+    fields = ("issue_id", "author_id", "reviewer_id", "origin_step", "resume",
+              "spec", "handoff", "reviewed_files", "context_files")
+    return _digest({"report_id": report_id, **{key: entry[key] for key in fields}})[:24]
+
+
 def _read(path: Path) -> dict:
     value = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(value, dict):
@@ -282,8 +288,7 @@ class CodeReviewHandoff:
                  "reviewed_files": sorted(files, key=lambda x: (x["role"], x["path"])),
                  "context_files": sorted(contexts, key=lambda x: (x["role"], x["path"]))}
         # Prose edits cannot cause repeated dispatch for the same issue/version.
-        identity = {k: v for k, v in bound.items() if k not in ("summary", "materials_note")}
-        fingerprint = _digest({"report_id": self.report_id, **identity})[:24]
+        fingerprint = _material_fingerprint(self.report_id, bound)
         active = self._active()
         if active and active.get("material_fingerprint", active["request_id"]) == fingerprint:
             return {**self.status(), "created": False, "matched_request_id": active["request_id"]}
@@ -484,6 +489,68 @@ class CodeReviewHandoff:
                                    if ready and remaining == ["6"] else None),
                 "cached_execution_steps": list(_CACHED_STEPS),
                 "independence_authenticated": False, "scope": "local code review coordination only"}
+
+    def continue_step6(self, request_id: str, *, reference: str, dry_run: bool = True) -> dict:
+        """Continue an already-authorized full study after a finished 4..5 segment.
+
+        Only journal metadata changes. The initial review-round ID, review/tests
+        and cached executions survive; native Step6 remains responsible for its
+        own validations, pauses and outcome. A reference records the caller's
+        existing task scope, not new authority or proof of user authorization.
+        """
+        reference = _text(reference, "existing full-study scope reference")
+        baseline = _read(self.path)
+        if baseline != self.journal:
+            raise HandoffError("Journal changed since loading; reopen with the single writer")
+        entry = self._active(request_id)
+        if entry is None:
+            raise HandoffError("An active completed 4..5 handoff is required")
+        if not isinstance(entry.get("scope_continuation_history", []), list):
+            raise HandoffError("Invalid scope continuation history; preserve and inspect the journal")
+        scope = entry["resume"]
+        if scope.get("start_step") != "4" or scope.get("end_step") not in ("5", "6"):
+            raise HandoffError("Only a completed 4..5 segment can continue to native Step6")
+        view = self.status()
+        if view["status"] != "READY":
+            raise HandoffError(f"Continuation prerequisites are not current: {view['reasons']}")
+        for step in _CACHED_STEPS:
+            execution = entry["execution"].get(step, {})
+            if execution.get("status") != "complete":
+                raise HandoffError(f"Step{step} writer and validator must already be complete")
+            for kind in ("run", "validate"):
+                name = f"{kind}_step{step}"
+                result = execution.get(name, {})
+                if (result.get("name") != name or result.get("status") != "PASS"
+                        or type(result.get("returncode")) is not int
+                        or result["returncode"] != 0):
+                    raise HandoffError(f"Missing successful recorded command: {name}")
+        if scope["end_step"] == "6":
+            return {**view, "continuation_action": "ALREADY_IN_SCOPE", "changed": False}
+        proposed_scope = {**scope, "end_step": "6"}
+        planned_resume = {**proposed_scope, "start_step": "6"}
+        if dry_run:
+            return {**view, "continuation_action": "DRY_RUN", "changed": False,
+                    "planned_resume": planned_resume}
+        # One journal writer remains required. Do not overwrite an intervening
+        # note or command result held by an older in-memory editor.
+        if _read(self.path) != baseline:
+            raise HandoffError("Journal changed during preflight; reopen with the single writer")
+        prior_fingerprint = entry["material_fingerprint"]
+        next_entry = {**entry, "resume": proposed_scope}
+        next_fingerprint = _material_fingerprint(self.report_id, next_entry)
+        event = {
+            "recorded_at": utc_now(), "reference": reference,
+            "from_resume": deepcopy(scope), "to_resume": deepcopy(proposed_scope),
+            "from_material_fingerprint": prior_fingerprint,
+            "to_material_fingerprint": next_fingerprint,
+            "maintenance_module": _snapshot(Path(__file__), "maintenance_implementation"),
+            "pinned_repo_root": str(self.repo),
+        }
+        entry.setdefault("scope_continuation_history", []).append(event)
+        entry["resume"] = proposed_scope
+        entry["material_fingerprint"] = next_fingerprint
+        self._save()
+        return {**self.status(), "continuation_action": "APPLIED", "changed": True}
 
     def before_command(self, name: str, *, end_step: str,
                        spec: str | Path | None = None, handoff: str | Path | None = None,

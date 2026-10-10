@@ -18,7 +18,7 @@ from factor_factory.research_search.induction import (
 )
 
 
-def main() -> None:
+def build_scope() -> InductionScope:
     signal = SemanticType("panel", "numeric", Unit.dimensionless(),
                           "session_close", "instrument_ts", "observed_at_or_before_t")
     observation_map = "x_t and y_t are available at session close t"
@@ -37,7 +37,7 @@ def main() -> None:
         conclusions=("the grammar preserves affine causal structure and makes no alpha-direction claim",),
         falsifiers=("a future perturbation changes an earlier output",),
         review_decision="proceed", data_exposure="synthetic_only")
-    scope = InductionScope(
+    return InductionScope(
         induction_id="example-linear-response-v1", parent_induction_id=None, induction_record=record,
         response_family="causal_affine_response_estimator",
         mathematical_object="g_t = a0 + a1*x_t + a2*y_t with trailing observations",
@@ -48,6 +48,10 @@ def main() -> None:
         missing_value_policy="preserve warmup NaN", numeric_domain="finite real synthetic inputs",
         change_class="in_family_parameter",
     )
+
+
+def main() -> None:
+    scope = build_scope()
     generated = generate_population(scope, seed=19, population_size=6, max_attempts=40)
     parent = next(row for row in generated.candidates if row.root.kind == "operator")
     child, mutation = mutate_candidate(parent, scope, seed=7, candidate_id="example-mutant")

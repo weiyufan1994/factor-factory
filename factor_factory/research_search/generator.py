@@ -1,7 +1,8 @@
 """Real bounded generation, subtree mutation, and typed crossover."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from math import isfinite, log, sqrt
 from random import Random
 
 from .induction import InductionScope, SemanticType, Unit, require_effect_evaluation_scope
@@ -42,6 +43,29 @@ class GenerationResult:
     trace: tuple[GenerationTrace, ...]
     attempts: int
     rejected: int
+    stop_reason: str
+
+
+@dataclass(frozen=True)
+class SearchTrace:
+    iteration: int
+    generation: int
+    operation: str
+    parents: tuple[str, ...]
+    candidate_id: str | None
+    expression: str | None
+    score: float | None
+    status: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class ExpressionSearchResult:
+    algorithm: str
+    best_candidate: ExpressionCandidate | None
+    best_score: float | None
+    evaluated_candidates: tuple[ExpressionCandidate, ...]
+    trace: tuple[SearchTrace, ...]
     stop_reason: str
 
 
@@ -245,3 +269,253 @@ def _trace(attempt: int, generation: int, operation: str, parents: tuple[str, ..
            status: str, reason: str, candidate: ExpressionCandidate) -> GenerationTrace:
     return GenerationTrace(attempt, generation, operation, parents, status, reason,
                            candidate.root.node_hash, candidate.expression)
+
+
+def run_expression_gp(
+    scope: InductionScope, *, evaluator, seed: int, population_size: int = 8,
+    generations: int = 3, max_attempts_per_generation: int = 64,
+) -> ExpressionSearchResult:
+    """Run bounded multi-generation selection, mutation, and crossover."""
+    if population_size < 2 or generations < 1:
+        raise ValueError("GP requires population_size >= 2 and at least one generation")
+    rng = Random(seed)
+    initial = generate_population(scope, seed=rng.randrange(2**31), population_size=population_size,
+                                  max_attempts=max_attempts_per_generation)
+    population = list(initial.candidates)
+    trace = [SearchTrace(row.attempt, 0, row.operation, row.parents, None, row.expression, None,
+                         row.status, row.reason) for row in initial.trace]
+    evaluated: list[ExpressionCandidate] = []
+    scored: list[tuple[float, ExpressionCandidate]] = []
+    score_cache: dict[str, float] = {}
+    if not population:
+        return ExpressionSearchResult("gp", None, None, (), tuple(trace), "initial_population_empty")
+    for generation in range(generations):
+        scored = []
+        for candidate in population:
+            reused = candidate.root.node_hash in score_cache
+            if reused:
+                score = score_cache[candidate.root.node_hash]
+            else:
+                try:
+                    score = float(evaluate_candidate(candidate, scope, evaluator))
+                except Exception as exc:
+                    trace.append(SearchTrace(
+                        len(trace) + 1, generation, "evaluate", candidate.parents,
+                        candidate.candidate_id, candidate.expression, None, "evaluator_error",
+                        f"{type(exc).__name__}: {exc}"))
+                    return _expression_result("gp", scored, evaluated, trace, "evaluator_error")
+                if not isfinite(score):
+                    trace.append(SearchTrace(len(trace) + 1, generation, "evaluate", candidate.parents,
+                                             candidate.candidate_id, candidate.expression, None,
+                                             "evaluator_error", "nonfinite evaluator score"))
+                    return _expression_result("gp", scored, evaluated, trace, "evaluator_error")
+                score_cache[candidate.root.node_hash] = score
+                evaluated.append(candidate)
+            scored.append((score, candidate))
+            trace.append(SearchTrace(len(trace) + 1, generation, "evaluate", candidate.parents,
+                                     candidate.candidate_id, candidate.expression, score,
+                                     "reused" if reused else "completed",
+                                     "cached_ast_score" if reused else "complete_ast"))
+        scored.sort(key=lambda row: (row[0], -row[1].root.complexity, row[1].root.node_hash), reverse=True)
+        if generation == generations - 1:
+            break
+        elites = [row[1] for row in scored[:max(2, population_size // 2)]]
+        next_population = [elites[0]]
+        seen = {elites[0].root.node_hash}
+        attempts = 0
+        while len(next_population) < population_size and attempts < max_attempts_per_generation:
+            attempts += 1
+            if attempts % 2 == 0 and len(elites) > 1:
+                left, right = rng.sample(elites, 2)
+                child, generated = crossover_candidates(
+                    left, right, scope, seed=rng.randrange(2**31),
+                    candidate_id=f"gp-g{generation + 1}-{attempts:03d}")
+            else:
+                parent = rng.choice(elites)
+                child, generated = mutate_candidate(
+                    parent, scope, seed=rng.randrange(2**31),
+                    candidate_id=f"gp-g{generation + 1}-{attempts:03d}")
+            status = generated.status
+            detail = generated.reason
+            if child is not None and child.root.node_hash in seen:
+                child = None
+                status, detail = "rejected", "duplicate_offspring"
+            if child is not None:
+                seen.add(child.root.node_hash)
+                next_population.append(child)
+            trace.append(SearchTrace(len(trace) + 1, generation + 1, generated.operation,
+                                     generated.parents, child.candidate_id if child else None,
+                                     child.expression if child else None, None, status, detail))
+        if len(next_population) < 2:
+            return _expression_result("gp", scored, evaluated, trace, "offspring_budget_exhausted")
+        population = next_population
+    return _expression_result("gp", scored, evaluated, trace, "generation_budget_exhausted")
+
+
+@dataclass
+class _ExpressionTreeNode:
+    partial: ASTNode
+    parent: "_ExpressionTreeNode | None" = None
+    action: str = "root"
+    children: list["_ExpressionTreeNode"] = field(default_factory=list)
+    visits: int = 0
+    value_sum: float = 0.0
+
+    @property
+    def mean(self) -> float:
+        return self.value_sum / self.visits if self.visits else 0.0
+
+
+def run_expression_mcts(
+    scope: InductionScope, *, evaluator, seed: int, iterations: int = 32,
+    exploration_weight: float = 1.0,
+) -> ExpressionSearchResult:
+    """Expand typed AST holes, roll out complete trees, and backpropagate scores."""
+    if iterations < 1 or not isfinite(exploration_weight) or exploration_weight < 0:
+        raise ValueError("invalid MCTS budget or exploration weight")
+    require_effect_evaluation_scope(scope, candidate_scope_hash=scope.scope_hash,
+                                    candidate_response_family=scope.response_family)
+    rng = Random(seed)
+    root = _ExpressionTreeNode(ASTNode.hole("panel"))
+    trace: list[SearchTrace] = []
+    evaluated: list[ExpressionCandidate] = []
+    scored: list[tuple[float, ExpressionCandidate]] = []
+    score_cache: dict[str, float] = {}
+    for iteration in range(iterations):
+        selected = _select_ast_node(root, scope, exploration_weight, rng)
+        if selected is None:
+            return _expression_result("mcts", scored, evaluated, trace, "tree_exhausted")
+        options = _untried_ast_expansions(selected, scope)
+        if not options:
+            return _expression_result("mcts", scored, evaluated, trace, "tree_exhausted")
+        action, partial = rng.choice(options)
+        child = _ExpressionTreeNode(partial, selected, action)
+        selected.children.append(child)
+        try:
+            complete = _rollout_ast(partial, scope, rng)
+        except (ASTTypeError, ValueError) as exc:
+            trace.append(SearchTrace(iteration, iteration + 1, action, (), None, None, None,
+                                     "rejected", str(exc)))
+            continue
+        candidate = ExpressionCandidate(
+            f"mcts-{iteration:03d}", complete, scope.response_family, scope.scope_hash,
+            iteration + 1, (), "typed_hole_mcts", ("expression_structure",),
+        )
+        reused = candidate.root.node_hash in score_cache
+        if reused:
+            score = score_cache[candidate.root.node_hash]
+        else:
+            try:
+                score = float(evaluate_candidate(candidate, scope, evaluator))
+            except Exception as exc:
+                trace.append(SearchTrace(iteration, iteration + 1, action, (), candidate.candidate_id,
+                                         candidate.expression, None, "evaluator_error",
+                                         f"{type(exc).__name__}: {exc}"))
+                return _expression_result("mcts", scored, evaluated, trace, "evaluator_error")
+            if not isfinite(score):
+                trace.append(SearchTrace(iteration, iteration + 1, action, (), candidate.candidate_id,
+                                         candidate.expression, None, "evaluator_error",
+                                         "nonfinite evaluator score"))
+                return _expression_result("mcts", scored, evaluated, trace, "evaluator_error")
+            score_cache[candidate.root.node_hash] = score
+            evaluated.append(candidate)
+        scored.append((score, candidate))
+        _backpropagate_ast(child, score)
+        trace.append(SearchTrace(iteration, iteration + 1, action, (), candidate.candidate_id,
+                                 candidate.expression, score, "reused" if reused else "completed",
+                                 "cached_ast_score" if reused else "typed_rollout_backpropagated"))
+    return _expression_result("mcts", scored, evaluated, trace, "iteration_budget_exhausted")
+
+
+def _expression_result(algorithm: str, scored, evaluated, trace, stop_reason: str) -> ExpressionSearchResult:
+    best = max(scored, key=lambda row: (row[0], -row[1].root.complexity, row[1].root.node_hash)) if scored else None
+    return ExpressionSearchResult(algorithm, best[1] if best else None, best[0] if best else None,
+                                  tuple(evaluated), tuple(trace), stop_reason)
+
+
+def _first_hole(root: ASTNode) -> tuple[tuple[int, ...], ASTNode] | None:
+    return next(((path, node) for path, node in iter_paths(root) if node.kind == "hole"), None)
+
+
+def _ast_expansions(partial: ASTNode, scope: InductionScope) -> list[tuple[str, ASTNode]]:
+    found = _first_hole(partial)
+    if found is None:
+        return []
+    path, hole = found
+    remaining = scope.max_depth - len(path)
+    replacements: list[tuple[str, ASTNode]] = []
+    if hole.value == "scalar":
+        replacements.extend((f"constant:{value}", ASTNode.constant(value)) for value in scope.allowed_constants)
+    else:
+        replacements.extend((f"field:{row.name}", ASTNode.field(row.name))
+                            for row in scope.allowed_fields if row.semantic_type == scope.output_type)
+        if remaining > 1:
+            if "plus" in scope.allowed_operators:
+                replacements.extend((name, node) for name, node in (
+                    ("plus:panel-panel", ASTNode.operator("plus", ASTNode.hole("panel"), ASTNode.hole("panel"))),
+                    ("plus:panel-scalar", ASTNode.operator("plus", ASTNode.hole("panel"), ASTNode.hole("scalar"))),
+                ))
+            if "minus" in scope.allowed_operators:
+                replacements.extend((name, node) for name, node in (
+                    ("minus:panel-panel", ASTNode.operator("minus", ASTNode.hole("panel"), ASTNode.hole("panel"))),
+                    ("minus:panel-scalar", ASTNode.operator("minus", ASTNode.hole("panel"), ASTNode.hole("scalar"))),
+                ))
+            if "multiply" in scope.allowed_operators:
+                replacements.append(("multiply:panel-scalar",
+                                     ASTNode.operator("multiply", ASTNode.hole("panel"), ASTNode.hole("scalar"))))
+            if "divide" in scope.allowed_operators:
+                replacements.append(("divide:panel-scalar",
+                                     ASTNode.operator("divide", ASTNode.hole("panel"), ASTNode.hole("scalar"))))
+            for operator in ("delay", "mean"):
+                if operator in scope.allowed_operators:
+                    replacements.extend((f"{operator}:{window}",
+                                         ASTNode.operator(operator, ASTNode.hole("panel"), ASTNode.window(window)))
+                                        for window in scope.allowed_windows)
+    return [(action, replace_path(partial, path, replacement)) for action, replacement in replacements
+            if replacement.depth <= remaining]
+
+
+def _untried_ast_expansions(node: _ExpressionTreeNode, scope: InductionScope) -> list[tuple[str, ASTNode]]:
+    existing = {child.partial.node_hash for child in node.children}
+    return [(action, partial) for action, partial in _ast_expansions(node.partial, scope)
+            if partial.node_hash not in existing]
+
+
+def _has_ast_expansion(node: _ExpressionTreeNode, scope: InductionScope) -> bool:
+    return bool(_untried_ast_expansions(node, scope)) or any(_has_ast_expansion(child, scope) for child in node.children)
+
+
+def _select_ast_node(root: _ExpressionTreeNode, scope: InductionScope, weight: float,
+                     rng: Random) -> _ExpressionTreeNode | None:
+    node = root
+    while True:
+        if _untried_ast_expansions(node, scope):
+            return node
+        children = [child for child in node.children if _has_ast_expansion(child, scope)]
+        if not children:
+            return None
+        best = max((child.mean + weight * sqrt(log(node.visits + 1) / (child.visits + 1))) for child in children)
+        tied = [child for child in children
+                if child.mean + weight * sqrt(log(node.visits + 1) / (child.visits + 1)) == best]
+        node = rng.choice(tied)
+
+
+def _rollout_ast(partial: ASTNode, scope: InductionScope, rng: Random) -> ASTNode:
+    for _ in range(scope.max_depth * 8):
+        options = _ast_expansions(partial, scope)
+        if not options:
+            if _first_hole(partial) is not None:
+                raise ASTTypeError("rollout reached an unfillable typed hole")
+            infer_type(partial, scope)
+            require_response_family(partial, scope)
+            return partial
+        _action, partial = rng.choice(options)
+    raise ASTTypeError("rollout expansion budget exhausted")
+
+
+def _backpropagate_ast(node: _ExpressionTreeNode, score: float) -> None:
+    current: _ExpressionTreeNode | None = node
+    while current is not None:
+        current.visits += 1
+        current.value_sum += score
+        current = current.parent

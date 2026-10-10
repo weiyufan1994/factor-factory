@@ -60,6 +60,35 @@ a formal proof system nor an independent reviewer and is not a required extra
 model call for ordinary work. This is a local audit adaptation for D0.4, not a
 claim to have migrated or reproduced a separate Tutor system.
 
+## Two search levels (D0.5 construction)
+
+Use one research loop with two distinct search spaces:
+
+- **Mechanism/research search:** explore economic assumptions, mathematical
+  objects, response structures and discriminating experiments; exploit the
+  current mechanism through estimation, counterexamples or targeted checks.
+- **Expression search:** generate and mutate actual operator trees within a
+  derived family, including legal crossover and tree expansion. Selecting an
+  existing candidate list is not the same as generating formulas.
+
+A new response structure requires the forward induction above before efficacy
+evaluation. In-family parameter changes may reuse a derivation with a scope
+check; matching units or an operator allowlist alone does not establish that
+scope. Data-inspired proposals keep that exposure history after re-derivation.
+
+Keep the layers' conclusions separate: a poor expression does not by itself
+refute its economic mechanism, and a high score cannot repair inconsistent
+mathematics. Use comparable evidence and cost to select the next experiment;
+unknown rewards stay unknown. Derivation, identification, prediction and
+trading performance answer different questions.
+
+Generated expressions use the existing Factor class, Formula engine and standard
+Step3/4/5 inputs, outputs and metrics. New search code does not replace those
+interfaces or the distinct Step2 review of Step3 code. The implementation and
+acceptance plan is [D0.5 construction](../../../docs/design/self-improvement-d05/02_construction.zh-CN.md);
+see its adjacent status file before claiming the new engines are available.
+The interfaces below describe the narrower existing implementations.
+
 ## Shipped interfaces and limits
 
 Ordinary Ultimate execution leaves hybrid research off. Use an explicitly

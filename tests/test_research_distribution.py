@@ -64,6 +64,7 @@ def test_build_selection_does_not_ship_historical_services(selected_tree):
         "factor_factory/portfolio_api.py", "factor_factory/hybrid_research/mcts.py",
         "factor_factory/knowledge_context.py", "factor_factory/step5/evaluator.py",
         "skills/factor-forge-step6/SKILL.md", "scripts/run_factorforge_ultimate.py",
+        "scripts/build_report_qlib_provider.py", "scripts/publish_qlib_daily_provider.py",
     ):
         assert (selected_tree / rel).is_file(), rel
 

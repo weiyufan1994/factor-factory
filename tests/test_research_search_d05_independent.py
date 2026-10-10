@@ -167,3 +167,102 @@ def test_real_zero_missingness_negative_coefficient_and_future_invariance():
     revised = compute_candidate(compiled, {"daily_df": changed})
     earlier = actual.index.get_level_values("datetime") <= cutoff
     pd.testing.assert_frame_equal(actual.loc[earlier], revised.loc[earlier])
+
+
+@pytest.mark.parametrize("algorithm", ["gp", "mcts"])
+def test_search_fitness_uses_real_factor_values_and_each_tree_is_evaluated_once(algorithm):
+    from factor_factory.research_search.generator import run_expression_gp, run_expression_mcts
+
+    derived = scope()
+    days = pd.bdate_range("2020-01-02", periods=16)
+    frame = pd.DataFrame({"ts_code": ["SYNTHETIC"] * 16, "trade_date": days,
+                          "x": [float(i % 5 - 2) for i in range(16)],
+                          "y": [float((i * 3) % 7 - 3) for i in range(16)]})
+    target = frame.x.to_numpy() + 0.5 * frame.y.to_numpy()
+    # Fixed common development window; no candidate-specific sample selection.
+    # 12 warmup rows exceed any causal lag in this depth-4, max-window-3 grammar.
+    calls = {}
+
+    def loss(candidate):
+        key = candidate.root.node_hash
+        assert key not in calls, "same complete AST must reuse its previous result"
+        compiled = compile_candidate(candidate, derived, available_columns=list(frame.columns))
+        values = compute_candidate(compiled, {"daily_df": frame}).factor_value.to_numpy()
+        assert np.isfinite(values[12:]).all()
+        score = -float(np.mean((values[12:] - target[12:]) ** 2))
+        calls[key] = score
+        return score
+
+    if algorithm == "gp":
+        result = run_expression_gp(derived, evaluator=loss, seed=31, population_size=8,
+                                   generations=3, max_attempts_per_generation=64)
+        assert len(calls) <= 24
+    else:
+        result = run_expression_mcts(derived, evaluator=loss, seed=31, iterations=36)
+        assert len(calls) <= 36
+    assert calls and result.best_candidate is not None
+    assert result.best_score == max(calls.values())
+    assert result.best_score == calls[result.best_candidate.root.node_hash]
+    assert all(row.score is None for row in result.trace if row.status == "rejected")
+    assert all(value <= 0.0 for value in calls.values())
+
+
+def test_mechanism_refutation_and_implementation_score_have_distinct_meanings():
+    from factor_factory.research_search.mechanism import ExperimentEvidence, MechanismState, Prediction
+
+    state = MechanismState(
+        state_id="m0", mechanism="synthetic linear response", response_family="causal_affine_response_estimator",
+        response_structure="constant-coefficient causal filter", induction_record_hash=scope().induction_record.record_hash,
+        assumptions=("inputs observed by t",), predictions=(Prediction("p0", "no response before input", ("anticipation",)),),
+        competing_mechanisms=("anticipation",), unknowns=(), implementation_scores=(-0.25,),
+    )
+    refutation = ExperimentEvidence("synthetic://refutation", "p0", "frozen-test", "refutes", True, True, 0.75)
+    support = replace(refutation, evidence_ref="synthetic://support", outcome="supports")
+    assert refutation.research_reward(state, "frozen-test") == support.research_reward(state, "frozen-test") == 0.75
+    assert replace(refutation, protocol_id="different-test").research_reward(state, "frozen-test") is None
+    assert replace(refutation, test_utility=None).research_reward(state, "frozen-test") is None
+    assert state.mechanism_assessment == "unknown"  # a negative implementation score is not a refutation
+
+
+@pytest.mark.parametrize("change", [
+    {"mechanism": "a common cause drives x and the response"},
+    {"add_assumptions": ("x is endogenous to an unobserved common shock",)},
+])
+def test_changed_economics_cannot_keep_old_response_label_to_skip_induction(change):
+    from factor_factory.research_search.mechanism import MechanismState, Prediction, ResearchAction, run_mechanism_mcts
+
+    derived = scope()
+    state = MechanismState(
+        state_id="m0", mechanism="x directly drives the response", response_family=derived.response_family,
+        response_structure="affine filter", induction_record_hash=derived.induction_record.record_hash,
+        assumptions=("x is exogenous",), predictions=(Prediction("p0", "no anticipation", ("common cause",)),),
+        competing_mechanisms=("common cause",),
+    )
+    action = ResearchAction("changed-economics", "derive_new_structure", "explore", 1.0,
+                            "new premise needs a new forward argument", **change)
+    calls = []
+    result = run_mechanism_mcts(initial_state=state, actions=(action,),
+                               evaluator=lambda *args: calls.append(args),
+                               protocol_id="p", seed=4, total_budget=1.0, max_expansions=1)
+    assert calls == []
+    assert result.decision == "needs_induction"
+
+
+def test_parent_induction_with_an_old_delta_cannot_be_reused_as_a_fresh_induction():
+    from factor_factory.research_search.mechanism import MechanismState, Prediction, ResearchAction, run_mechanism_mcts
+
+    old = replace(scope().induction_record, record_id="already-used-child-record",
+                  parent_delta=("the previous round expanded to a longer causal kernel",))
+    state = MechanismState(
+        state_id="child", mechanism="x directly drives the response", response_family=old.response_family,
+        response_structure="affine filter", induction_record_hash=old.record_hash,
+        assumptions=("x is exogenous",), predictions=(Prediction("p0", "no anticipation", ("common cause",)),),
+        competing_mechanisms=("common cause",),
+    )
+    action = ResearchAction("new-cause", "derive_new_structure", "explore", 1.0,
+                            "change the economic explanation, but incorrectly reuse the parent's record",
+                            mechanism="a common cause drives both series", induction_record=old)
+    calls = []
+    run_mechanism_mcts(initial_state=state, actions=(action,), evaluator=lambda *args: calls.append(args),
+                       protocol_id="p", seed=4, total_budget=1.0, max_expansions=1)
+    assert calls == []

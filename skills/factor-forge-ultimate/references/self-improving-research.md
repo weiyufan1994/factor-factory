@@ -89,6 +89,14 @@ acceptance plan is [D0.5 construction](../../../docs/design/self-improvement-d05
 see its adjacent status file before claiming the new engines are available.
 The interfaces below describe the narrower existing implementations.
 
+The D0.5 local development checkout now has `research_search.mechanism` for
+research-action MCTS and `research_search.generator` for multi-generation GP
+and typed-hole expression MCTS. The two `examples/research_search_d05_b*.py`
+scripts demonstrate synthetic evidence and standard Factor outputs. This first
+slice supports a derived causal-affine family, not arbitrary response semantics;
+its induction records accept synthetic fixtures only. Real Step2 review binding
+and the native Ultimate loop are the next integration batch, not shipped claims.
+
 ## Shipped interfaces and limits
 
 Ordinary Ultimate execution leaves hybrid research off. Use an explicitly

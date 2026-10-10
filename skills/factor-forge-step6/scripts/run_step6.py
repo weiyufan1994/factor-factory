@@ -5817,6 +5817,305 @@ def write_step6_prewrite_block(
     print(f'[WRITE] {diag_path}')
 
 
+def apply_authored_step6_mechanism(
+    *,
+    iteration,
+    main_agent_memo,
+    factor_spec_master,
+    main_agent_memo_ref,
+):
+    """Project a validated authored derivation; retain heuristic fields only as history."""
+    research_memo = ((iteration.get('research_judgment') or {}).get('research_memo') or {})
+    mechanism_analysis = research_memo.get('mechanism_analysis') or {}
+    legacy_mechanism_snapshot = {
+        key: mechanism_analysis.get(key)
+        for key in [
+            'return_source',
+            'factor_family',
+            'mechanism_hypothesis',
+            'mechanism_math_summary',
+            'mechanism_fit',
+        ]
+        if key in mechanism_analysis
+    }
+    mechanism_analysis['formula_specific_derivation'] = formula_specific_derivation_from_main_agent_memo(main_agent_memo, factor_spec_master)
+    if (research_memo.get('revision_strategy') or {}).get('terminal_local_rejection') is True:
+        project_authored_terminal_model_review(mechanism_analysis, main_agent_memo)
+    qa = main_agent_memo.get('mechanism_qa') if isinstance(main_agent_memo.get('mechanism_qa'), dict) else {}
+    math_hypothesis = main_agent_memo.get('math_hypothesis') if isinstance(main_agent_memo.get('math_hypothesis'), dict) else {}
+    if qa.get('economic_hypothesis_answer') or qa.get('math_model_answer'):
+        mechanism_analysis['mechanism_hypothesis'] = ' '.join(
+            str(part).strip()
+            for part in [qa.get('economic_hypothesis_answer'), qa.get('math_model_answer')]
+            if str(part or '').strip()
+        )
+    if isinstance(math_hypothesis.get('expected_metric_signature'), dict):
+        mechanism_analysis['expected_metric_signature'] = math_hypothesis['expected_metric_signature']
+    mechanism_analysis['main_agent_mechanism_memo_takeover'] = {
+        'enabled': True,
+        'memo_ref': main_agent_memo_ref,
+        'validation_scope': 'main_agent_formula_specific_derivation',
+        'legacy_deterministic_mechanism_retained_for_audit': legacy_mechanism_snapshot,
+    }
+    mechanism_analysis['mechanism_formula_consistency'] = validate_mechanism_formula_consistency(
+        factor_spec_master,
+        mechanism_analysis,
+        mechanism_analysis.get('formula_specific_derivation') or {},
+    )
+    research_memo['mechanism_analysis'] = mechanism_analysis
+
+    # Public economic summaries must agree with the validated authored
+    # derivation, not the token classifier (e.g. "volume" -> risk premium).
+    authored_projection = _knowledge_reuse_projection(iteration)
+    economic_fields = (
+        'factor_family', 'monetization_model', 'bias_type', 'return_source_hypothesis',
+        'expected_failure_regimes', 'objective_constraint_dependency', 'constraint_sources',
+        'research_variant', 'paper_replication_status',
+    )
+    economic_projection = {key: authored_projection[key] for key in economic_fields if key in authored_projection}
+    if economic_projection:
+        framework = iteration['research_judgment'].get('factor_investing_framework') or {}
+        mechanism_analysis['main_agent_mechanism_memo_takeover']['legacy_framework_not_economic_evidence'] = {
+            key: framework.get(key) for key in economic_fields
+        }
+        framework.update(economic_projection)
+        iteration['knowledge_writeback'].update(economic_projection)
+    return mechanism_analysis
+
+
+def check_step6_promotion_evidence(
+    *,
+    iteration,
+    bundle,
+    report_id,
+    protocol_scope,
+):
+    """Check the existing promotion-only path without introducing a local IS prerequisite."""
+    factor_proof_failures: list[str] = []
+    formal_protocol_required = (
+        os.getenv('FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE') != '1'
+        and (
+            os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1'
+            or iteration['research_judgment']['decision'] == 'promote_official'
+        )
+    )
+    if (
+        formal_protocol_required
+        and iteration['research_judgment']['decision'] == 'promote_official'
+    ):
+        protocol_paths = research_protocol_paths(FF, str(report_id))
+        pre_revision_protocol_report = validate_protocol_bundle(
+            root=FF,
+            report_id=str(report_id),
+            stage='pre_revision',
+            scope=protocol_scope,
+            compatibility_profile=research_compatibility_profile_from_spec(
+                bundle.get('factor_spec_master') or {}
+            ),
+        )
+        if pre_revision_protocol_report.get('verdict') == 'PASS':
+            obligation_payload = load_json(protocol_paths['obligations'])
+            verified_kinds = {
+                str(row.get('obligation_kind'))
+                for row in obligation_payload.get('obligations') or []
+                if isinstance(row, dict)
+                and row.get('status') == 'passed'
+                and row.get('status_source') == 'verifier'
+            }
+            if {
+                'measurement_validity',
+                'component_ablation',
+            }.issubset(verified_kinds):
+                iteration['mechanism_claim_level'] = 'component_validated'
+                research_memo = (
+                    iteration['research_judgment'].get('research_memo') or {}
+                )
+                research_memo['mechanism_claim_level'] = (
+                    'component_validated'
+                )
+                iteration['research_judgment']['research_memo'] = (
+                    research_memo
+                )
+        proof_path = protocol_paths['factor_proof']
+        proof_report: dict[str, Any]
+        if not proof_path.exists():
+            proof_report = {
+                'verdict': 'BLOCK',
+                'block_reasons': [
+                    'BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_MISSING'
+                ],
+            }
+        else:
+            try:
+                factor_proof = load_json(proof_path)
+                proof_report = validate_factor_proof_certificate(
+                    factor_proof,
+                    workspace_root=FF,
+                    expected_report_id=str(report_id),
+                    expected_factor_id=str(iteration.get('factor_id') or ''),
+                )
+                conjecture_path = protocol_paths['conjecture']
+                if conjecture_path.exists():
+                    conjecture = load_json(conjecture_path)
+                    if factor_proof.get('claim_class') != conjecture.get('claim_class'):
+                        proof_report.setdefault('block_reasons', []).append(
+                            'BLOCK_FACTORFORGE_RESEARCH_PROTOCOL_CLAIM_CLASS_MISMATCH'
+                        )
+                        proof_report['verdict'] = 'BLOCK'
+            except Exception as exc:
+                proof_report = {
+                    'verdict': 'BLOCK',
+                    'block_reasons': [
+                        f'BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_INVALID:{exc}'
+                    ],
+                }
+        if proof_report.get('verdict') != 'ACCEPT':
+            factor_proof_failures.extend(
+                proof_report.get('block_reasons')
+                or ['BLOCK_FACTORFORGE_PROMOTION_WITHOUT_ACCEPTED_FACTOR_PROOF']
+            )
+        iteration['factor_proof_gate'] = {
+            'required': True,
+            'proof_path': str(proof_path),
+            'verdict': proof_report.get('verdict'),
+            'block_reasons': proof_report.get('block_reasons') or [],
+        }
+        promotion_protocol_report = validate_protocol_bundle(
+            root=FF,
+            report_id=str(report_id),
+            stage='pre_promotion',
+            scope=protocol_scope,
+            compatibility_profile=research_compatibility_profile_from_spec(
+                bundle.get('factor_spec_master') or {}
+            ),
+            iteration_payload=iteration,
+        )
+        iteration['research_protocol_promotion_gate'] = {
+            'required': True,
+            'stage': 'pre_promotion',
+            'verdict': promotion_protocol_report.get('verdict'),
+            'block_reasons': (
+                promotion_protocol_report.get('block_reasons') or []
+            ),
+        }
+        if promotion_protocol_report.get('verdict') != 'PASS':
+            factor_proof_failures.extend(
+                promotion_protocol_report.get('block_reasons')
+                or ['BLOCK_FACTORFORGE_PROMOTION_PROTOCOL_GATE_FAILED']
+            )
+    return factor_proof_failures
+
+
+def handle_step6_prewrite_failure(
+    *,
+    prewrite_failures,
+    report_id,
+    iteration,
+    would_have_written,
+    memo_revision_failures,
+    main_agent_memo_json_path,
+    prior_main_agent_status,
+    main_agent_questionnaire_json_path,
+    main_agent_questionnaire_ref,
+    main_agent_memo_ref,
+    main_agent_status_path,
+):
+    """Persist the existing failure or bounded memo-revision pause, then stop before final writes."""
+    if prewrite_failures:
+        write_step6_prewrite_block(
+            report_id=str(report_id),
+            decision=iteration['research_judgment']['decision'],
+            reasons=prewrite_failures,
+            would_have_written=would_have_written,
+        )
+        if memo_revision_failures and set(prewrite_failures).issubset(
+            set(memo_revision_failures)
+        ):
+            current_memo_sha256 = hashlib.sha256(
+                main_agent_memo_json_path.read_bytes()
+            ).hexdigest()
+            prior_pause_status = prior_main_agent_status.get('status')
+            same_rejected_memo = (
+                prior_pause_status
+                in {
+                    'awaiting_main_agent_mechanism_memo_revision',
+                    'awaiting_main_agent_mechanism_manual_review',
+                }
+                and prior_main_agent_status.get('prior_memo_sha256')
+                == current_memo_sha256
+            )
+            prior_revision_number = (
+                int(prior_main_agent_status.get('revision_number') or 0)
+                if prior_pause_status
+                in {
+                    'awaiting_main_agent_mechanism_memo_revision',
+                    'awaiting_main_agent_mechanism_manual_review',
+                }
+                else 0
+            )
+            revision_number = (
+                prior_revision_number
+                if same_rejected_memo
+                or prior_pause_status
+                == 'awaiting_main_agent_mechanism_manual_review'
+                else prior_revision_number + 1
+            )
+            prior_memo_sha256 = current_memo_sha256
+            prewrite_block_path = (
+                OBJ
+                / 'validation'
+                / f'step6_prewrite_block__{report_id}.json'
+            )
+            manual_review_required = (
+                revision_number > MAX_MECHANISM_MEMO_REVISIONS
+            )
+            pause_status = (
+                'awaiting_main_agent_mechanism_manual_review'
+                if manual_review_required
+                else 'awaiting_main_agent_mechanism_memo_revision'
+            )
+            pause_token = (
+                'AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW'
+                if manual_review_required
+                else 'AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION'
+            )
+            status = {
+                'report_id': str(report_id),
+                'status': pause_status,
+                'token': pause_token,
+                'revision_number': revision_number,
+                'revision_failures': memo_revision_failures,
+                'prior_memo_sha256': prior_memo_sha256,
+                'questionnaire_sha256': hashlib.sha256(
+                    main_agent_questionnaire_json_path.read_bytes()
+                ).hexdigest(),
+                'prewrite_block_ref': str(
+                    prewrite_block_path.relative_to(FF)
+                ),
+                'prewrite_block_sha256': hashlib.sha256(
+                    prewrite_block_path.read_bytes()
+                ).hexdigest(),
+                'questionnaire_ref': main_agent_questionnaire_ref,
+                'expected_memo_ref': main_agent_memo_ref,
+                'prior_memo_ref': main_agent_memo_ref,
+                'next_action': (
+                    'Human review is required because the bounded mechanism memo revision budget is exhausted.'
+                    if manual_review_required
+                    else 'A fresh current main agent must replace the hash-bound rejected memo and resolve every formula-specific failure before Step6 can continue.'
+                ),
+                'canonical_write_permission': False,
+                'execution_allowed_by_default': False,
+                'final_step6_write_allowed': False,
+            }
+            write_json(main_agent_status_path, status)
+            print(pause_token)
+            raise SystemExit(
+                pause_token + ': '
+                + '; '.join(memo_revision_failures)
+            )
+        raise SystemExit('STEP6_PREWRITE_BLOCK: ' + '; '.join(prewrite_failures))
+
+
 def main() -> None:
     global FF, OBJ, EVAL
     ap = argparse.ArgumentParser()
@@ -6002,174 +6301,14 @@ def main() -> None:
         )
         raise SystemExit('BLOCK_MAIN_AGENT_MECHANISM_MEMO_INVALID: ' + ','.join(main_agent_memo_failures))
 
-    research_memo = ((iteration.get('research_judgment') or {}).get('research_memo') or {})
-    mechanism_analysis = research_memo.get('mechanism_analysis') or {}
-    legacy_mechanism_snapshot = {
-        key: mechanism_analysis.get(key)
-        for key in [
-            'return_source',
-            'factor_family',
-            'mechanism_hypothesis',
-            'mechanism_math_summary',
-            'mechanism_fit',
-        ]
-        if key in mechanism_analysis
-    }
-    mechanism_analysis['formula_specific_derivation'] = formula_specific_derivation_from_main_agent_memo(main_agent_memo, factor_spec_master)
-    if (research_memo.get('revision_strategy') or {}).get('terminal_local_rejection') is True:
-        project_authored_terminal_model_review(mechanism_analysis, main_agent_memo)
-    qa = main_agent_memo.get('mechanism_qa') if isinstance(main_agent_memo.get('mechanism_qa'), dict) else {}
-    math_hypothesis = main_agent_memo.get('math_hypothesis') if isinstance(main_agent_memo.get('math_hypothesis'), dict) else {}
-    if qa.get('economic_hypothesis_answer') or qa.get('math_model_answer'):
-        mechanism_analysis['mechanism_hypothesis'] = ' '.join(
-            str(part).strip()
-            for part in [qa.get('economic_hypothesis_answer'), qa.get('math_model_answer')]
-            if str(part or '').strip()
-        )
-    if isinstance(math_hypothesis.get('expected_metric_signature'), dict):
-        mechanism_analysis['expected_metric_signature'] = math_hypothesis['expected_metric_signature']
-    mechanism_analysis['main_agent_mechanism_memo_takeover'] = {
-        'enabled': True,
-        'memo_ref': main_agent_memo_ref,
-        'validation_scope': 'main_agent_formula_specific_derivation',
-        'legacy_deterministic_mechanism_retained_for_audit': legacy_mechanism_snapshot,
-    }
-    mechanism_analysis['mechanism_formula_consistency'] = validate_mechanism_formula_consistency(
-        factor_spec_master,
-        mechanism_analysis,
-        mechanism_analysis.get('formula_specific_derivation') or {},
+    mechanism_analysis = apply_authored_step6_mechanism(
+        iteration=iteration, main_agent_memo=main_agent_memo, factor_spec_master=factor_spec_master,
+        main_agent_memo_ref=main_agent_memo_ref,
     )
-    research_memo['mechanism_analysis'] = mechanism_analysis
 
-    # Public economic summaries must agree with the validated authored
-    # derivation, not the token classifier (e.g. "volume" -> risk premium).
-    authored_projection = _knowledge_reuse_projection(iteration)
-    economic_fields = (
-        'factor_family', 'monetization_model', 'bias_type', 'return_source_hypothesis',
-        'expected_failure_regimes', 'objective_constraint_dependency', 'constraint_sources',
-        'research_variant', 'paper_replication_status',
+    factor_proof_failures = check_step6_promotion_evidence(
+        iteration=iteration, bundle=bundle, report_id=report_id, protocol_scope=protocol_scope,
     )
-    economic_projection = {key: authored_projection[key] for key in economic_fields if key in authored_projection}
-    if economic_projection:
-        framework = iteration['research_judgment'].get('factor_investing_framework') or {}
-        mechanism_analysis['main_agent_mechanism_memo_takeover']['legacy_framework_not_economic_evidence'] = {
-            key: framework.get(key) for key in economic_fields
-        }
-        framework.update(economic_projection)
-        iteration['knowledge_writeback'].update(economic_projection)
-
-    factor_proof_failures: list[str] = []
-    formal_protocol_required = (
-        os.getenv('FACTORFORGE_LEGACY_RESEARCH_PROTOCOL_SMOKE') != '1'
-        and (
-            os.getenv('FACTORFORGE_ULTIMATE_RUN') == '1'
-            or iteration['research_judgment']['decision'] == 'promote_official'
-        )
-    )
-    if (
-        formal_protocol_required
-        and iteration['research_judgment']['decision'] == 'promote_official'
-    ):
-        protocol_paths = research_protocol_paths(FF, str(report_id))
-        pre_revision_protocol_report = validate_protocol_bundle(
-            root=FF,
-            report_id=str(report_id),
-            stage='pre_revision',
-            scope=protocol_scope,
-            compatibility_profile=research_compatibility_profile_from_spec(
-                bundle.get('factor_spec_master') or {}
-            ),
-        )
-        if pre_revision_protocol_report.get('verdict') == 'PASS':
-            obligation_payload = load_json(protocol_paths['obligations'])
-            verified_kinds = {
-                str(row.get('obligation_kind'))
-                for row in obligation_payload.get('obligations') or []
-                if isinstance(row, dict)
-                and row.get('status') == 'passed'
-                and row.get('status_source') == 'verifier'
-            }
-            if {
-                'measurement_validity',
-                'component_ablation',
-            }.issubset(verified_kinds):
-                iteration['mechanism_claim_level'] = 'component_validated'
-                research_memo = (
-                    iteration['research_judgment'].get('research_memo') or {}
-                )
-                research_memo['mechanism_claim_level'] = (
-                    'component_validated'
-                )
-                iteration['research_judgment']['research_memo'] = (
-                    research_memo
-                )
-        proof_path = protocol_paths['factor_proof']
-        proof_report: dict[str, Any]
-        if not proof_path.exists():
-            proof_report = {
-                'verdict': 'BLOCK',
-                'block_reasons': [
-                    'BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_MISSING'
-                ],
-            }
-        else:
-            try:
-                factor_proof = load_json(proof_path)
-                proof_report = validate_factor_proof_certificate(
-                    factor_proof,
-                    workspace_root=FF,
-                    expected_report_id=str(report_id),
-                    expected_factor_id=str(iteration.get('factor_id') or ''),
-                )
-                conjecture_path = protocol_paths['conjecture']
-                if conjecture_path.exists():
-                    conjecture = load_json(conjecture_path)
-                    if factor_proof.get('claim_class') != conjecture.get('claim_class'):
-                        proof_report.setdefault('block_reasons', []).append(
-                            'BLOCK_FACTORFORGE_RESEARCH_PROTOCOL_CLAIM_CLASS_MISMATCH'
-                        )
-                        proof_report['verdict'] = 'BLOCK'
-            except Exception as exc:
-                proof_report = {
-                    'verdict': 'BLOCK',
-                    'block_reasons': [
-                        f'BLOCK_FACTORFORGE_PROMOTION_FACTOR_PROOF_INVALID:{exc}'
-                    ],
-                }
-        if proof_report.get('verdict') != 'ACCEPT':
-            factor_proof_failures.extend(
-                proof_report.get('block_reasons')
-                or ['BLOCK_FACTORFORGE_PROMOTION_WITHOUT_ACCEPTED_FACTOR_PROOF']
-            )
-        iteration['factor_proof_gate'] = {
-            'required': True,
-            'proof_path': str(proof_path),
-            'verdict': proof_report.get('verdict'),
-            'block_reasons': proof_report.get('block_reasons') or [],
-        }
-        promotion_protocol_report = validate_protocol_bundle(
-            root=FF,
-            report_id=str(report_id),
-            stage='pre_promotion',
-            scope=protocol_scope,
-            compatibility_profile=research_compatibility_profile_from_spec(
-                bundle.get('factor_spec_master') or {}
-            ),
-            iteration_payload=iteration,
-        )
-        iteration['research_protocol_promotion_gate'] = {
-            'required': True,
-            'stage': 'pre_promotion',
-            'verdict': promotion_protocol_report.get('verdict'),
-            'block_reasons': (
-                promotion_protocol_report.get('block_reasons') or []
-            ),
-        }
-        if promotion_protocol_report.get('verdict') != 'PASS':
-            factor_proof_failures.extend(
-                promotion_protocol_report.get('block_reasons')
-                or ['BLOCK_FACTORFORGE_PROMOTION_PROTOCOL_GATE_FAILED']
-            )
 
     all_record = build_factor_record(iteration, bundle)
     all_record['artifact_identity'] = derive_identity(base_identity, 'factor_library_all')
@@ -6247,99 +6386,15 @@ def main() -> None:
         bundle=bundle,
     )
     prewrite_failures.extend(contract_failures)
-    if prewrite_failures:
-        write_step6_prewrite_block(
-            report_id=str(report_id),
-            decision=iteration['research_judgment']['decision'],
-            reasons=prewrite_failures,
-            would_have_written=would_have_written,
-        )
-        if memo_revision_failures and set(prewrite_failures).issubset(
-            set(memo_revision_failures)
-        ):
-            current_memo_sha256 = hashlib.sha256(
-                main_agent_memo_json_path.read_bytes()
-            ).hexdigest()
-            prior_pause_status = prior_main_agent_status.get('status')
-            same_rejected_memo = (
-                prior_pause_status
-                in {
-                    'awaiting_main_agent_mechanism_memo_revision',
-                    'awaiting_main_agent_mechanism_manual_review',
-                }
-                and prior_main_agent_status.get('prior_memo_sha256')
-                == current_memo_sha256
-            )
-            prior_revision_number = (
-                int(prior_main_agent_status.get('revision_number') or 0)
-                if prior_pause_status
-                in {
-                    'awaiting_main_agent_mechanism_memo_revision',
-                    'awaiting_main_agent_mechanism_manual_review',
-                }
-                else 0
-            )
-            revision_number = (
-                prior_revision_number
-                if same_rejected_memo
-                or prior_pause_status
-                == 'awaiting_main_agent_mechanism_manual_review'
-                else prior_revision_number + 1
-            )
-            prior_memo_sha256 = current_memo_sha256
-            prewrite_block_path = (
-                OBJ
-                / 'validation'
-                / f'step6_prewrite_block__{report_id}.json'
-            )
-            manual_review_required = (
-                revision_number > MAX_MECHANISM_MEMO_REVISIONS
-            )
-            pause_status = (
-                'awaiting_main_agent_mechanism_manual_review'
-                if manual_review_required
-                else 'awaiting_main_agent_mechanism_memo_revision'
-            )
-            pause_token = (
-                'AWAITING_MAIN_AGENT_MECHANISM_MANUAL_REVIEW'
-                if manual_review_required
-                else 'AWAITING_MAIN_AGENT_MECHANISM_MEMO_REVISION'
-            )
-            status = {
-                'report_id': str(report_id),
-                'status': pause_status,
-                'token': pause_token,
-                'revision_number': revision_number,
-                'revision_failures': memo_revision_failures,
-                'prior_memo_sha256': prior_memo_sha256,
-                'questionnaire_sha256': hashlib.sha256(
-                    main_agent_questionnaire_json_path.read_bytes()
-                ).hexdigest(),
-                'prewrite_block_ref': str(
-                    prewrite_block_path.relative_to(FF)
-                ),
-                'prewrite_block_sha256': hashlib.sha256(
-                    prewrite_block_path.read_bytes()
-                ).hexdigest(),
-                'questionnaire_ref': main_agent_questionnaire_ref,
-                'expected_memo_ref': main_agent_memo_ref,
-                'prior_memo_ref': main_agent_memo_ref,
-                'next_action': (
-                    'Human review is required because the bounded mechanism memo revision budget is exhausted.'
-                    if manual_review_required
-                    else 'A fresh current main agent must replace the hash-bound rejected memo and resolve every formula-specific failure before Step6 can continue.'
-                ),
-                'canonical_write_permission': False,
-                'execution_allowed_by_default': False,
-                'final_step6_write_allowed': False,
-            }
-            write_json(main_agent_status_path, status)
-            print(pause_token)
-            raise SystemExit(
-                pause_token + ': '
-                + '; '.join(memo_revision_failures)
-            )
-        raise SystemExit('STEP6_PREWRITE_BLOCK: ' + '; '.join(prewrite_failures))
+    handle_step6_prewrite_failure(
+        prewrite_failures=prewrite_failures, report_id=report_id, iteration=iteration,
+        would_have_written=would_have_written, memo_revision_failures=memo_revision_failures,
+        main_agent_memo_json_path=main_agent_memo_json_path,
+        prior_main_agent_status=prior_main_agent_status,
+        main_agent_questionnaire_json_path=main_agent_questionnaire_json_path,
+        main_agent_questionnaire_ref=main_agent_questionnaire_ref,
+        main_agent_memo_ref=main_agent_memo_ref, main_agent_status_path=main_agent_status_path,
+    )
 
     iteration['loop_research_brief'] = write_loop_research_brief(iteration, bundle)
     print(f"[WRITE] {iteration['loop_research_brief']['json_path']}")

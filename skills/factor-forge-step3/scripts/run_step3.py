@@ -2485,103 +2485,18 @@ def materialize_retained_chip_state_slice(
     }
 
 
-def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_local_inputs: dict | None = None):
-    fsm = load_json(OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json')
-    _aim = load_json(OBJ / 'alpha_idea_master' / f'alpha_idea_master__{report_id}.json')
-    handoff_to_step3 = read_existing_json(OBJ / 'handoff' / f'handoff_to_step3__{report_id}.json')
-
-    factor_id = fsm.get('factor_id', report_id)
-    canonical = fsm.get('canonical_spec', {})
-    try:
-        primary_daily_dataset_id = declared_primary_daily_dataset_id(fsm)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
-    required_fields = formula_required_daily_fields(fsm)
-    evaluation_contract = (
-        fsm.get('evaluation_contract')
-        if isinstance(fsm.get('evaluation_contract'), dict)
-        else {}
-    )
-    proof_control_columns = [
-        str(field)
-        for field in (evaluation_contract.get('proof_control_columns') or [])
-        if str(field).strip()
-    ]
-    moneyflow_fields = moneyflow_required_fields(fsm)
-    need_moneyflow = bool(moneyflow_fields)
-    retained_chip_state = direct_code_uses_retained_chip_state(fsm)
-    price_volume_minute = is_price_volume_minute_formula(canonical)
-    implementation_mode = declared_implementation_mode(
-        fsm,
-        price_volume_minute=price_volume_minute,
-    )
-    requires_exchange_calendar = (
-        implementation_mode == 'direct_code'
-        and direct_code_requires_exchange_calendar(fsm)
-    )
-    measurement_program = validated_measurement_program_for_step3(
-        fsm,
-        handoff_to_step3,
-        implementation_mode=implementation_mode,
-    )
-    direct_code_minute = (not retained_chip_state) and direct_code_requires_minute_inputs(fsm)
-    required = list(dict.fromkeys([
-        *(canonical.get('required_inputs', []) or []),
-        *proof_control_columns,
-    ]))
-    required_text = ' '.join(required)
-    need_minute = (not need_moneyflow) and (not retained_chip_state) and (bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute or direct_code_minute)
-    need_daily = not need_moneyflow
-    need_daily_basic = price_volume_minute or bool(re.search(r'market_cap|total_mv|circ_mv|turnover|pe|pb|ps|估值|市值', required_text, re.I))
-    explicitly_required_intraday_proxy_datasets = [
-        dataset_id for dataset_id in INTRADAY_PROXY_DATASETS
-        if dataset_id in required or dataset_id in required_text
-    ]
-    missing_intraday_proxy_datasets = []
-    intraday_proxy_catalog_path = None
-    for dataset_id in explicitly_required_intraday_proxy_datasets:
-        registered, catalog_path = data_api_dataset_registered(dataset_id)
-        intraday_proxy_catalog_path = intraday_proxy_catalog_path or catalog_path
-        if not registered:
-            missing_intraday_proxy_datasets.append(dataset_id)
-    if missing_intraday_proxy_datasets:
-        need_minute = False
-        need_daily = False
-        need_moneyflow = False
-        need_daily_basic = False
-
-    sample_window = declared_sample_window(
-        fsm,
-        handoff_to_step3,
-        infer_sample_window(factor_id, required_text),
-        alpha_idea=_aim,
-    )
-    if prepared_local_inputs is not None:
-        prepared_local_inputs = validate_prepared_local_inputs(prepared_local_inputs)
-        if prepared_local_inputs['input_mode'] == 'daily_only' and os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1':
-            raise SystemExit('BLOCK_STEP3_PREPARED_DAILY_LOCAL_IS_ONLY')
-        sample_window = dict(prepared_local_inputs['sample_window_actual'])
-        sample_window.setdefault('calendar', 'A-share trading days')
-        need_minute = need_daily = need_moneyflow = need_daily_basic = False
-    try:
-        evo_research_windows = resolve_evo_pre_release_research_windows(
-            workspace_root=FF,
-            report_id=report_id,
-        )
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    if evo_research_windows is not None:
-        sample_window = {
-            'start': evo_research_windows['is_start'],
-            'end': evo_research_windows['is_end'],
-        }
-        # Fail closed on forbidden proof-control/query fields before any Data
-        # API resolution or fetch is attempted.
-        canonical_step3_sample_query(
-            fsm=fsm,
-            research_windows=evo_research_windows,
-        )
+def describe_step3_source_requirements(
+    *,
+    explicitly_required_intraday_proxy_datasets,
+    intraday_proxy_catalog_path,
+    missing_intraday_proxy_datasets,
+    moneyflow_fields,
+    need_daily,
+    need_daily_basic,
+    need_minute,
+    need_moneyflow,
+):
+    """Build source descriptors without fetching data or changing the selected route."""
     data_sources = []
     coverage = []
     proxy_rules = []
@@ -2737,6 +2652,224 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
             'daily_market_cap': 'total_mv',
             'daily_circulating_market_cap': 'circ_mv'
         })
+    return data_sources, coverage, proxy_rules, blocked, field_mapping, notes, intraday_proxy_blocked_local_input_paths
+
+
+def build_step3_qlib_adapter(
+    *,
+    report_id,
+    factor_id,
+    data_sources,
+    proxy_rules,
+    local_input_paths,
+    data_prep_master,
+    sample_window,
+):
+    """Project the already selected inputs onto the existing Qlib-facing mapping."""
+    qlib_adapter_config = {
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'adapter_name': 'factorforge_step3a_qlib_adapter',
+        'provider_priority': ['local_cache', 's3'],
+        'normalized_datasets': [ds['normalized_dataset'] for ds in data_sources],
+        'instrument_field': 'ts_code',
+        'date_field': 'trade_date',
+        'qlib_field_map': {
+            '$open': 'open',
+            '$high': 'high',
+            '$low': 'low',
+            '$close': 'close',
+            '$volume': 'vol',
+            '$amount': 'amount',
+            '$ret': 'pct_chg'
+        },
+        'logical_fields': {
+            'instrument': 'ts_code',
+            'date': 'trade_date',
+            'open': 'open',
+            'high': 'high',
+            'low': 'low',
+            'close': 'close',
+            'volume': 'vol',
+            'amount': 'amount',
+            'return_daily': 'pct_chg',
+            'turnover_rate': 'turnover_rate',
+            'turnover_rate_f': 'turnover_rate_f',
+            'volume_ratio': 'volume_ratio',
+            'pe': 'pe',
+            'pe_ttm': 'pe_ttm',
+            'pb': 'pb',
+            'ps': 'ps',
+            'ps_ttm': 'ps_ttm',
+            'total_mv': 'total_mv',
+            'circ_mv': 'circ_mv'
+        },
+        'proxy_rules': proxy_rules,
+        'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
+        **projected_data_contracts_for_qlib(
+            data_prep_master,
+            sample_window=sample_window,
+        ),
+        'sample_window': sample_window,
+        'local_input_paths': local_input_paths,
+        'step4_access_rule': 'Step 4 must consume Step3 data contract and fetch full formal data through factorforge_data_api, not raw S3/local path guessing.'
+    }
+    return qlib_adapter_config
+
+
+def build_step3_implementation_plan(
+    *,
+    report_id,
+    factor_id,
+    fsm,
+    implementation_mode,
+    measurement_program,
+    qlib_adapter_config,
+):
+    """Describe the chosen implementation route without generating factor code."""
+    direct_code_contract = (
+        build_direct_code_contract_for_step3a(fsm, qlib_adapter_config)
+        if implementation_mode == 'direct_code' else {}
+    )
+    direct_code_ready = direct_code_contract.get('status') == 'ready'
+    implementation_plan_stub = {
+        'report_id': report_id,
+        'factor_id': factor_id,
+        'preferred_execution_mode': implementation_mode,
+        'implementation_mode': implementation_mode,
+        'candidate_paths': ['operator', 'hybrid', 'direct_code'],
+        'route_selection_basis': 'mechanism_conditioned_measurement_program',
+        'silent_route_fallback_forbidden': True,
+        'mechanism_conditioned_measurement_program': measurement_program,
+        'current_decision': 'defer_to_step3b',
+        'notes': [
+            'Step 3A 已完成 Data API contract；Step3B 只做小样本证明，Step4 负责全量正式执行',
+            '实现路线由数学对象与 measurement program 决定；不得静默切换路线，无法保证正确时必须 BLOCK'
+        ]
+    }
+    if implementation_mode == 'direct_code':
+        implementation_plan_stub.update({
+            'implementation_contract': {
+                'implementation_mode': 'direct_code',
+                'mode': 'direct_code',
+                'code_contract': direct_code_contract.get('code_contract') if direct_code_ready else None,
+                'output_schema': direct_code_contract.get('output_schema') if direct_code_ready else None,
+            },
+            'code_contract': direct_code_contract.get('code_contract') if direct_code_ready else None,
+            'source_code': direct_code_contract.get('source_code') if direct_code_ready else None,
+            'code_hash': direct_code_contract.get('code_hash') if direct_code_ready else None,
+            'code_contract_hash': direct_code_contract.get('code_contract_hash') if direct_code_ready else None,
+            'output_schema': direct_code_contract.get('output_schema') if direct_code_ready else {'columns': ['ts_code', 'trade_date', 'factor_value']},
+            'direct_code_contract_status': direct_code_contract.get('status'),
+            'direct_code_contract_blocked_reason': direct_code_contract.get('blocked_reason'),
+        })
+    return implementation_plan_stub
+
+
+def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_local_inputs: dict | None = None):
+    fsm = load_json(OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json')
+    _aim = load_json(OBJ / 'alpha_idea_master' / f'alpha_idea_master__{report_id}.json')
+    handoff_to_step3 = read_existing_json(OBJ / 'handoff' / f'handoff_to_step3__{report_id}.json')
+
+    factor_id = fsm.get('factor_id', report_id)
+    canonical = fsm.get('canonical_spec', {})
+    try:
+        primary_daily_dataset_id = declared_primary_daily_dataset_id(fsm)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    formula_ir = canonical.get('formula_ir') if isinstance(canonical.get('formula_ir'), dict) else {}
+    required_fields = formula_required_daily_fields(fsm)
+    evaluation_contract = (
+        fsm.get('evaluation_contract')
+        if isinstance(fsm.get('evaluation_contract'), dict)
+        else {}
+    )
+    proof_control_columns = [
+        str(field)
+        for field in (evaluation_contract.get('proof_control_columns') or [])
+        if str(field).strip()
+    ]
+    moneyflow_fields = moneyflow_required_fields(fsm)
+    need_moneyflow = bool(moneyflow_fields)
+    retained_chip_state = direct_code_uses_retained_chip_state(fsm)
+    price_volume_minute = is_price_volume_minute_formula(canonical)
+    implementation_mode = declared_implementation_mode(
+        fsm,
+        price_volume_minute=price_volume_minute,
+    )
+    requires_exchange_calendar = (
+        implementation_mode == 'direct_code'
+        and direct_code_requires_exchange_calendar(fsm)
+    )
+    measurement_program = validated_measurement_program_for_step3(
+        fsm,
+        handoff_to_step3,
+        implementation_mode=implementation_mode,
+    )
+    direct_code_minute = (not retained_chip_state) and direct_code_requires_minute_inputs(fsm)
+    required = list(dict.fromkeys([
+        *(canonical.get('required_inputs', []) or []),
+        *proof_control_columns,
+    ]))
+    required_text = ' '.join(required)
+    need_minute = (not need_moneyflow) and (not retained_chip_state) and (bool(re.search(r'minute|分钟|高频', required_text, re.I)) or price_volume_minute or direct_code_minute)
+    need_daily = not need_moneyflow
+    need_daily_basic = price_volume_minute or bool(re.search(r'market_cap|total_mv|circ_mv|turnover|pe|pb|ps|估值|市值', required_text, re.I))
+    explicitly_required_intraday_proxy_datasets = [
+        dataset_id for dataset_id in INTRADAY_PROXY_DATASETS
+        if dataset_id in required or dataset_id in required_text
+    ]
+    missing_intraday_proxy_datasets = []
+    intraday_proxy_catalog_path = None
+    for dataset_id in explicitly_required_intraday_proxy_datasets:
+        registered, catalog_path = data_api_dataset_registered(dataset_id)
+        intraday_proxy_catalog_path = intraday_proxy_catalog_path or catalog_path
+        if not registered:
+            missing_intraday_proxy_datasets.append(dataset_id)
+    if missing_intraday_proxy_datasets:
+        need_minute = False
+        need_daily = False
+        need_moneyflow = False
+        need_daily_basic = False
+
+    sample_window = declared_sample_window(
+        fsm,
+        handoff_to_step3,
+        infer_sample_window(factor_id, required_text),
+        alpha_idea=_aim,
+    )
+    if prepared_local_inputs is not None:
+        prepared_local_inputs = validate_prepared_local_inputs(prepared_local_inputs)
+        if prepared_local_inputs['input_mode'] == 'daily_only' and os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1':
+            raise SystemExit('BLOCK_STEP3_PREPARED_DAILY_LOCAL_IS_ONLY')
+        sample_window = dict(prepared_local_inputs['sample_window_actual'])
+        sample_window.setdefault('calendar', 'A-share trading days')
+        need_minute = need_daily = need_moneyflow = need_daily_basic = False
+    try:
+        evo_research_windows = resolve_evo_pre_release_research_windows(
+            workspace_root=FF,
+            report_id=report_id,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if evo_research_windows is not None:
+        sample_window = {
+            'start': evo_research_windows['is_start'],
+            'end': evo_research_windows['is_end'],
+        }
+        # Fail closed on forbidden proof-control/query fields before any Data
+        # API resolution or fetch is attempted.
+        canonical_step3_sample_query(
+            fsm=fsm,
+            research_windows=evo_research_windows,
+        )
+    (data_sources, coverage, proxy_rules, blocked, field_mapping, notes, intraday_proxy_blocked_local_input_paths) = describe_step3_source_requirements(
+        explicitly_required_intraday_proxy_datasets=explicitly_required_intraday_proxy_datasets,
+        intraday_proxy_catalog_path=intraday_proxy_catalog_path,
+        missing_intraday_proxy_datasets=missing_intraday_proxy_datasets,
+        moneyflow_fields=moneyflow_fields, need_daily=need_daily, need_daily_basic=need_daily_basic,
+        need_minute=need_minute, need_moneyflow=need_moneyflow,
+    )
 
     local_input_paths = {}
     if prepared_local_inputs is not None:
@@ -2980,91 +3113,16 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
         sample_window = dict(data_prep_master['sample_window'])
         local_input_paths = data_prep_master['local_input_paths']
 
-    qlib_adapter_config = {
-        'report_id': report_id,
-        'factor_id': factor_id,
-        'adapter_name': 'factorforge_step3a_qlib_adapter',
-        'provider_priority': ['local_cache', 's3'],
-        'normalized_datasets': [ds['normalized_dataset'] for ds in data_sources],
-        'instrument_field': 'ts_code',
-        'date_field': 'trade_date',
-        'qlib_field_map': {
-            '$open': 'open',
-            '$high': 'high',
-            '$low': 'low',
-            '$close': 'close',
-            '$volume': 'vol',
-            '$amount': 'amount',
-            '$ret': 'pct_chg'
-        },
-        'logical_fields': {
-            'instrument': 'ts_code',
-            'date': 'trade_date',
-            'open': 'open',
-            'high': 'high',
-            'low': 'low',
-            'close': 'close',
-            'volume': 'vol',
-            'amount': 'amount',
-            'return_daily': 'pct_chg',
-            'turnover_rate': 'turnover_rate',
-            'turnover_rate_f': 'turnover_rate_f',
-            'volume_ratio': 'volume_ratio',
-            'pe': 'pe',
-            'pe_ttm': 'pe_ttm',
-            'pb': 'pb',
-            'ps': 'ps',
-            'ps_ttm': 'ps_ttm',
-            'total_mv': 'total_mv',
-            'circ_mv': 'circ_mv'
-        },
-        'proxy_rules': proxy_rules,
-        'daily_filter_policy': local_input_paths.get('daily_filter_policy'),
-        **projected_data_contracts_for_qlib(
-            data_prep_master,
-            sample_window=sample_window,
-        ),
-        'sample_window': sample_window,
-        'local_input_paths': local_input_paths,
-        'step4_access_rule': 'Step 4 must consume Step3 data contract and fetch full formal data through factorforge_data_api, not raw S3/local path guessing.'
-    }
-
-    direct_code_contract = (
-        build_direct_code_contract_for_step3a(fsm, qlib_adapter_config)
-        if implementation_mode == 'direct_code' else {}
+    qlib_adapter_config = build_step3_qlib_adapter(
+        report_id=report_id, factor_id=factor_id, data_sources=data_sources, proxy_rules=proxy_rules,
+        local_input_paths=local_input_paths, data_prep_master=data_prep_master,
+        sample_window=sample_window,
     )
-    direct_code_ready = direct_code_contract.get('status') == 'ready'
-    implementation_plan_stub = {
-        'report_id': report_id,
-        'factor_id': factor_id,
-        'preferred_execution_mode': implementation_mode,
-        'implementation_mode': implementation_mode,
-        'candidate_paths': ['operator', 'hybrid', 'direct_code'],
-        'route_selection_basis': 'mechanism_conditioned_measurement_program',
-        'silent_route_fallback_forbidden': True,
-        'mechanism_conditioned_measurement_program': measurement_program,
-        'current_decision': 'defer_to_step3b',
-        'notes': [
-            'Step 3A 已完成 Data API contract；Step3B 只做小样本证明，Step4 负责全量正式执行',
-            '实现路线由数学对象与 measurement program 决定；不得静默切换路线，无法保证正确时必须 BLOCK'
-        ]
-    }
-    if implementation_mode == 'direct_code':
-        implementation_plan_stub.update({
-            'implementation_contract': {
-                'implementation_mode': 'direct_code',
-                'mode': 'direct_code',
-                'code_contract': direct_code_contract.get('code_contract') if direct_code_ready else None,
-                'output_schema': direct_code_contract.get('output_schema') if direct_code_ready else None,
-            },
-            'code_contract': direct_code_contract.get('code_contract') if direct_code_ready else None,
-            'source_code': direct_code_contract.get('source_code') if direct_code_ready else None,
-            'code_hash': direct_code_contract.get('code_hash') if direct_code_ready else None,
-            'code_contract_hash': direct_code_contract.get('code_contract_hash') if direct_code_ready else None,
-            'output_schema': direct_code_contract.get('output_schema') if direct_code_ready else {'columns': ['ts_code', 'trade_date', 'factor_value']},
-            'direct_code_contract_status': direct_code_contract.get('status'),
-            'direct_code_contract_blocked_reason': direct_code_contract.get('blocked_reason'),
-        })
+
+    implementation_plan_stub = build_step3_implementation_plan(
+        report_id=report_id, factor_id=factor_id, fsm=fsm, implementation_mode=implementation_mode,
+        measurement_program=measurement_program, qlib_adapter_config=qlib_adapter_config,
+    )
 
     return data_prep_master, qlib_adapter_config, implementation_plan_stub
 

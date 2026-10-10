@@ -5414,6 +5414,307 @@ def build_recomputed_factor_io_profile(
     return step4_factor_io_profile
 
 
+def resolve_step4_state_provenance(
+    *,
+    state_resolution_path,
+    state_reuse_required,
+):
+    """Resolve the declared state input only when requested; retain the same missing-state failure."""
+    state_datamart_reuse = None
+    if state_resolution_path and state_resolution_path.exists():
+        try:
+            state_datamart_reuse = build_step4_state_reuse_provenance(
+                state_resolution_path=state_resolution_path,
+                bounded_smoke=False,
+                raw_minute_full_window_scan=False,
+            )
+        except StateReuseBlock as exc:
+            raise SystemExit(str(exc)) from exc
+    elif state_reuse_required:
+        raise SystemExit(
+            f'{BLOCK_STATE_RESOLUTION_MISSING}: {state_resolution_path}'
+        )
+    return state_datamart_reuse
+
+
+def read_step4_evaluation_inputs(
+    *,
+    local_inputs,
+    daily_file,
+    minute_file,
+    exchange_calendar_file,
+    prepared_derived_state,
+    input_mode,
+    parent_diagnostics_projection,
+    read_df,
+    evo_pre_release,
+    data_api_profile,
+    run_dir,
+    dpm,
+    step4_contract,
+):
+    """Read signal and evaluation inputs once, or retain bounded parent diagnostics."""
+    import pandas as pd
+    evaluation_daily_file = Path(local_inputs.get('evaluation_daily_df_parquet') or daily_file)
+    if not evaluation_daily_file.is_absolute():
+        evaluation_daily_file = WORKSPACE / evaluation_daily_file
+    signal_daily_file = Path(local_inputs.get('signal_daily_df_parquet') or daily_file)
+    if not signal_daily_file.is_absolute():
+        signal_daily_file = WORKSPACE / signal_daily_file
+    partitioned_controller_profile = None
+    parent_diagnostics_projection_profiles: list[dict[str, Any]] = []
+    parent_daily_summary: dict[str, Any] | None = None
+    parent_factor_summary: dict[str, Any] | None = None
+    minute_df = (
+        read_df(minute_file)
+        if minute_file is not None and not prepared_derived_state
+        else (None if input_mode == 'daily_only' else pd.DataFrame())
+    )
+    exchange_calendar_df = (
+        read_df(exchange_calendar_file)
+        if exchange_calendar_file is not None else None
+    )
+    if parent_diagnostics_projection:
+        parent_daily_summary, daily_profile = stream_parent_diagnostics_summary(
+            signal_daily_file,
+            PARENT_DIAGNOSTIC_DAILY_COLUMNS,
+        )
+        parent_diagnostics_projection_profiles.append(daily_profile)
+        daily_df = signal_daily_df = None
+        shared_canonical_daily_input = (
+            evaluation_daily_file == signal_daily_file
+            or evaluation_daily_file.samefile(signal_daily_file)
+        )
+    else:
+        daily_df, signal_daily_df, shared_canonical_daily_input = read_evaluation_daily_frames(
+            evaluation_daily_file,
+            signal_daily_file,
+            read_df,
+        )
+    if evo_pre_release:
+        expected_receipt_artifacts = data_api_profile.pop(
+            '_evo_receipt_artifacts', []
+        )
+        validate_evo_pre_release_artifacts_after_read(
+            run_dir=run_dir,
+            local_inputs=local_inputs,
+            research_windows=dpm['research_windows'],
+            contract=step4_contract,
+            expected_artifacts=expected_receipt_artifacts,
+        )
+    return evaluation_daily_file, signal_daily_file, partitioned_controller_profile, parent_diagnostics_projection_profiles, parent_daily_summary, parent_factor_summary, minute_df, exchange_calendar_df, daily_df, signal_daily_df, shared_canonical_daily_input
+
+
+def check_step4_formal_reuse(
+    *,
+    parquet_existed_before_step4,
+    existing_meta,
+    expected_reuse_identity,
+    parquet_path,
+    existing_factor_source,
+    may_reuse_existing_factor,
+    prepared_derived_state,
+):
+    """Decide formal reuse before any create-only controller can run."""
+    existing_factor_reuse_gate = None
+    if parquet_existed_before_step4:
+        existing_factor_source, existing_factor_reuse_gate, may_reuse_existing_factor = resolve_existing_step4_formal_reuse(
+            existing_meta,
+            expected_reuse_identity,
+            source_artifact=str(parquet_path),
+        )
+        if existing_factor_source.get('source') == 'step3b_sample_or_legacy_factor_parquet':
+            existing_factor_reuse_gate = existing_factor_reuse_gate or {
+                'version': 'factorforge_reuse_gate_v1',
+                'source_artifact': str(parquet_path),
+            }
+            existing_factor_reuse_gate['decision'] = 'block_invalid_formal_reuse'
+            existing_factor_reuse_gate['reason'] = 'step3b_sample_proof_not_formal_factor_values'
+    if (
+        prepared_derived_state
+        and parquet_existed_before_step4
+        and not may_reuse_existing_factor
+    ):
+        # The prepared controller creates this exact formal path.  A stale,
+        # sample, or unreadable pre-existing artifact cannot be replaced as
+        # a side effect of attempting a fresh compute.
+        reuse_reason = (
+            existing_factor_reuse_gate.get('reason')
+            if isinstance(existing_factor_reuse_gate, dict)
+            else existing_factor_source.get('source') or 'unknown_provenance'
+        )
+        raise SystemExit(
+            'BLOCK_STEP4_EXISTING_FORMAL_PARQUET_REUSE_REJECTED:'
+            f'{reuse_reason}'
+        )
+    return existing_factor_source, existing_factor_reuse_gate, may_reuse_existing_factor
+
+
+def persist_step4_factor_output(
+    *,
+    result_df,
+    parent_diagnostics_projection,
+    parent_factor_summary,
+    factor_id,
+    may_reuse_existing_factor,
+    prepared_derived_state,
+    parquet_path,
+    factor_csv_policy_observed,
+    csv_path,
+    step4_factor_io_profile,
+):
+    """Validate and persist formal values with the existing ordering and CSV policy."""
+    if result_df is not None and not parent_diagnostics_projection:
+        from factor_factory.research_api import validate_factor_output
+        result_df = validate_factor_output(result_df)
+    signal_col = (
+        'factor_value'
+        if parent_factor_summary is not None
+        or (result_df is not None and 'factor_value' in result_df.columns)
+        else infer_signal_column(result_df, factor_id=factor_id)
+    )
+    # A prepared direct-code controller can retain source-component audit
+    # columns and a trailing ``warmup`` flag beside the declared standard
+    # signal.  Keep an existing family-specific signal selected by the
+    # helper, but never let its last-column fallback turn that boolean
+    # diagnostic into the formal signal.
+    if result_df is not None and signal_col == 'warmup' and 'factor_value' in result_df.columns:
+        signal_col = 'factor_value'
+    if (
+        result_df is not None
+        and {'ts_code', 'trade_date'}.issubset(result_df.columns)
+        and not may_reuse_existing_factor
+        and not parent_diagnostics_projection
+    ):
+        result_df = result_df.sort_values(
+            ['ts_code', 'trade_date'], kind='mergesort'
+        ).reset_index(drop=True)
+    if not may_reuse_existing_factor and not prepared_derived_state:
+        result_df.to_parquet(parquet_path, index=False)
+    if (
+        factor_csv_policy_observed.get('factor_csv_write_allowed')
+        and not csv_path.exists()
+        and not parent_diagnostics_projection
+    ):
+        result_df.to_csv(csv_path, index=False)
+        step4_factor_io_profile['csv_written_by_step4'] = True
+    else:
+        step4_factor_io_profile['csv_written_by_step4'] = False
+    factor_csv_policy_observed['factor_csv_written_by_step4'] = bool(
+        step4_factor_io_profile['csv_written_by_step4']
+    )
+    if factor_csv_policy_observed.get('factor_csv_write_allowed') and not step4_factor_io_profile['csv_written_by_step4']:
+        factor_csv_policy_observed['factor_csv_write_skipped_reason'] = (
+            'parent_diagnostics_projection_preserves_full_parquet_only'
+            if parent_diagnostics_projection
+            else 'step3b_csv_already_available'
+        )
+    return result_df, signal_col
+
+
+def prepare_step4_evaluation_context(
+    *,
+    fsm,
+    evo_diagnostic_contract,
+    args,
+    force_shared_context,
+    report_id,
+    factor_id,
+    implementation_mode_decision,
+    base_identity,
+    run_dir,
+    result_df,
+    daily_df,
+    signal_col,
+    parquet_path,
+    evaluation_daily_file,
+    coverage,
+    signal_daily_df,
+    signal_daily_file,
+    exchange_calendar_df,
+    dpm,
+):
+    """Build optional shared evaluation inputs without changing prices, labels or costs."""
+    web_evaluation_contract = build_step4_web_evaluation_contract(fsm, evo_diagnostic_contract)
+    shared_context_version = (
+        'factorforge_shared_evaluation_context_v2'
+        if web_evaluation_contract is not None
+        else 'factorforge_shared_evaluation_context_v1'
+    )
+    shared_context: dict[str, Any] | None = None
+    shared_context_profile: dict[str, Any] = {
+        'version': shared_context_version,
+        'enabled': False,
+        'built': False,
+        'used_by_step4': False,
+        'context_path': None,
+        'build_seconds': 0.0,
+        'invalidated_reason': 'not_enabled',
+    }
+    if shared_evaluation_context_enabled(args.enable_shared_evaluation_context) or force_shared_context:
+        shared_context = build_shared_evaluation_context(
+            report_id=report_id,
+            factor_id=factor_id,
+            implementation_mode_decision=implementation_mode_decision,
+            base_identity=base_identity,
+            run_dir=run_dir,
+            factor_df=result_df,
+            daily_df=daily_df,
+            signal_col=signal_col,
+            factor_parquet_path=parquet_path,
+            daily_input_path=evaluation_daily_file,
+            target_window=coverage.target_window,
+            effective_target_window={'start': coverage.effective_target_start, 'end': coverage.effective_target_end},
+            evaluation_contract=web_evaluation_contract,
+            signal_daily_df=signal_daily_df,
+            signal_daily_input_path=signal_daily_file,
+            exchange_calendar=exchange_calendar_df,
+            pre_release_research_windows=(
+                dpm.get('research_windows')
+                if isinstance(dpm.get('research_windows'), dict)
+                else None
+            ),
+        )
+        shared_context_profile = {
+            'version': shared_context_version,
+            'enabled': True,
+            'built': True,
+            'used_by_step4': False,
+            'context_path': ((shared_context.get('paths') or {}).get('context_json')),
+            'build_seconds': shared_context.get('build_seconds'),
+            'invalidated_reason': None,
+            'row_counts': shared_context.get('row_counts'),
+        }
+    return shared_context, shared_context_profile
+
+
+def resolve_step4_child_execution(
+    *,
+    evo_diagnostic_contract,
+    shared_context,
+    report_id,
+    args,
+):
+    """Run only the already selected child diagnostic path."""
+    evo_child_execution: dict[str, Any] | None = None
+    if evo_diagnostic_contract is not None:
+        if shared_context is None:
+            raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_SHARED_CONTEXT_REQUIRED')
+        try:
+            evo_child_execution = materialize_evo_child_execution_result(
+                workspace_root=FACTORFORGE,
+                parent_report_id=str(evo_diagnostic_contract['parent_report_id']),
+                child_report_id=report_id,
+                diagnostic_contract=evo_diagnostic_contract,
+                expected_host_trust_manifest_sha256=(
+                    args.expected_host_trust_manifest_sha256
+                ),
+            )
+        except EvoChildExecutionError as exc:
+            raise ValueError(';'.join(exc.reasons)) from exc
+    return evo_child_execution
+
+
 def main() -> None:
     global FACTORFORGE, WORKSPACE, OBJ, RUNS, _RUNTIME_MANIFEST
     ap = argparse.ArgumentParser()
@@ -5512,19 +5813,9 @@ def main() -> None:
             )
             print(json.dumps(receipt, ensure_ascii=False, sort_keys=True))
             return
-        if state_resolution_path and state_resolution_path.exists():
-            try:
-                state_datamart_reuse = build_step4_state_reuse_provenance(
-                    state_resolution_path=state_resolution_path,
-                    bounded_smoke=False,
-                    raw_minute_full_window_scan=False,
-                )
-            except StateReuseBlock as exc:
-                raise SystemExit(str(exc)) from exc
-        elif state_reuse_required:
-            raise SystemExit(
-                f'{BLOCK_STATE_RESOLUTION_MISSING}: {state_resolution_path}'
-            )
+        state_datamart_reuse = resolve_step4_state_provenance(
+            state_resolution_path=state_resolution_path, state_reuse_required=state_reuse_required,
+        )
         evo_diagnostic_contract = resolve_step4_diagnostic_contract(
             fsm, handoff, report_id=report_id,
             expected_host_trust_manifest_sha256=args.expected_host_trust_manifest_sha256,
@@ -5740,53 +6031,13 @@ def main() -> None:
         existing_factor_source = classify_existing_factor_parquet_source(existing_meta) if parquet_existed_before_step4 else {}
         may_reuse_existing_factor = False
 
-        evaluation_daily_file = Path(local_inputs.get('evaluation_daily_df_parquet') or daily_file)
-        if not evaluation_daily_file.is_absolute():
-            evaluation_daily_file = WORKSPACE / evaluation_daily_file
-        signal_daily_file = Path(local_inputs.get('signal_daily_df_parquet') or daily_file)
-        if not signal_daily_file.is_absolute():
-            signal_daily_file = WORKSPACE / signal_daily_file
-        partitioned_controller_profile = None
-        parent_diagnostics_projection_profiles: list[dict[str, Any]] = []
-        parent_daily_summary: dict[str, Any] | None = None
-        parent_factor_summary: dict[str, Any] | None = None
-        minute_df = (
-            read_df(minute_file)
-            if minute_file is not None and not prepared_derived_state
-            else (None if input_mode == 'daily_only' else pd.DataFrame())
+        (evaluation_daily_file, signal_daily_file, partitioned_controller_profile, parent_diagnostics_projection_profiles, parent_daily_summary, parent_factor_summary, minute_df, exchange_calendar_df, daily_df, signal_daily_df, shared_canonical_daily_input) = read_step4_evaluation_inputs(
+            local_inputs=local_inputs, daily_file=daily_file, minute_file=minute_file,
+            exchange_calendar_file=exchange_calendar_file, prepared_derived_state=prepared_derived_state,
+            input_mode=input_mode, parent_diagnostics_projection=parent_diagnostics_projection,
+            read_df=read_df, evo_pre_release=evo_pre_release, data_api_profile=data_api_profile,
+            run_dir=run_dir, dpm=dpm, step4_contract=step4_contract,
         )
-        exchange_calendar_df = (
-            read_df(exchange_calendar_file)
-            if exchange_calendar_file is not None else None
-        )
-        if parent_diagnostics_projection:
-            parent_daily_summary, daily_profile = stream_parent_diagnostics_summary(
-                signal_daily_file,
-                PARENT_DIAGNOSTIC_DAILY_COLUMNS,
-            )
-            parent_diagnostics_projection_profiles.append(daily_profile)
-            daily_df = signal_daily_df = None
-            shared_canonical_daily_input = (
-                evaluation_daily_file == signal_daily_file
-                or evaluation_daily_file.samefile(signal_daily_file)
-            )
-        else:
-            daily_df, signal_daily_df, shared_canonical_daily_input = read_evaluation_daily_frames(
-                evaluation_daily_file,
-                signal_daily_file,
-                read_df,
-            )
-        if evo_pre_release:
-            expected_receipt_artifacts = data_api_profile.pop(
-                '_evo_receipt_artifacts', []
-            )
-            validate_evo_pre_release_artifacts_after_read(
-                run_dir=run_dir,
-                local_inputs=local_inputs,
-                research_windows=dpm['research_windows'],
-                contract=step4_contract,
-                expected_artifacts=expected_receipt_artifacts,
-            )
         expected_reuse_identity = build_step4_reuse_identity(
             report_id=report_id,
             factor_id=factor_id,
@@ -5807,37 +6058,13 @@ def main() -> None:
                 'declared_data_identity': expected_reuse_identity['data_catalog_hash'],
                 'implementation_inputs': implementation_inputs,
             })
-        existing_factor_reuse_gate = None
-        if parquet_existed_before_step4:
-            existing_factor_source, existing_factor_reuse_gate, may_reuse_existing_factor = resolve_existing_step4_formal_reuse(
-                existing_meta,
-                expected_reuse_identity,
-                source_artifact=str(parquet_path),
-            )
-            if existing_factor_source.get('source') == 'step3b_sample_or_legacy_factor_parquet':
-                existing_factor_reuse_gate = existing_factor_reuse_gate or {
-                    'version': 'factorforge_reuse_gate_v1',
-                    'source_artifact': str(parquet_path),
-                }
-                existing_factor_reuse_gate['decision'] = 'block_invalid_formal_reuse'
-                existing_factor_reuse_gate['reason'] = 'step3b_sample_proof_not_formal_factor_values'
-        if (
-            prepared_derived_state
-            and parquet_existed_before_step4
-            and not may_reuse_existing_factor
-        ):
-            # The prepared controller creates this exact formal path.  A stale,
-            # sample, or unreadable pre-existing artifact cannot be replaced as
-            # a side effect of attempting a fresh compute.
-            reuse_reason = (
-                existing_factor_reuse_gate.get('reason')
-                if isinstance(existing_factor_reuse_gate, dict)
-                else existing_factor_source.get('source') or 'unknown_provenance'
-            )
-            raise SystemExit(
-                'BLOCK_STEP4_EXISTING_FORMAL_PARQUET_REUSE_REJECTED:'
-                f'{reuse_reason}'
-            )
+        (existing_factor_source, existing_factor_reuse_gate, may_reuse_existing_factor) = check_step4_formal_reuse(
+            parquet_existed_before_step4=parquet_existed_before_step4, existing_meta=existing_meta,
+            expected_reuse_identity=expected_reuse_identity, parquet_path=parquet_path,
+            existing_factor_source=existing_factor_source,
+            may_reuse_existing_factor=may_reuse_existing_factor,
+            prepared_derived_state=prepared_derived_state,
+        )
         if prepared_derived_state and not may_reuse_existing_factor:
             # Identity/readback checks above are intentionally completed before
             # invoking the create-only controller.  A matching Step4-owned
@@ -6042,51 +6269,14 @@ def main() -> None:
             write_json(OBJ / 'handoff' / f'handoff_to_step5__{report_id}.json', handoff_out)
             return
 
-        if result_df is not None and not parent_diagnostics_projection:
-            from factor_factory.research_api import validate_factor_output
-            result_df = validate_factor_output(result_df)
-        signal_col = (
-            'factor_value'
-            if parent_factor_summary is not None
-            or (result_df is not None and 'factor_value' in result_df.columns)
-            else infer_signal_column(result_df, factor_id=factor_id)
+        (result_df, signal_col) = persist_step4_factor_output(
+            result_df=result_df, parent_diagnostics_projection=parent_diagnostics_projection,
+            parent_factor_summary=parent_factor_summary, factor_id=factor_id,
+            may_reuse_existing_factor=may_reuse_existing_factor,
+            prepared_derived_state=prepared_derived_state, parquet_path=parquet_path,
+            factor_csv_policy_observed=factor_csv_policy_observed, csv_path=csv_path,
+            step4_factor_io_profile=step4_factor_io_profile,
         )
-        # A prepared direct-code controller can retain source-component audit
-        # columns and a trailing ``warmup`` flag beside the declared standard
-        # signal.  Keep an existing family-specific signal selected by the
-        # helper, but never let its last-column fallback turn that boolean
-        # diagnostic into the formal signal.
-        if result_df is not None and signal_col == 'warmup' and 'factor_value' in result_df.columns:
-            signal_col = 'factor_value'
-        if (
-            result_df is not None
-            and {'ts_code', 'trade_date'}.issubset(result_df.columns)
-            and not may_reuse_existing_factor
-            and not parent_diagnostics_projection
-        ):
-            result_df = result_df.sort_values(
-                ['ts_code', 'trade_date'], kind='mergesort'
-            ).reset_index(drop=True)
-        if not may_reuse_existing_factor and not prepared_derived_state:
-            result_df.to_parquet(parquet_path, index=False)
-        if (
-            factor_csv_policy_observed.get('factor_csv_write_allowed')
-            and not csv_path.exists()
-            and not parent_diagnostics_projection
-        ):
-            result_df.to_csv(csv_path, index=False)
-            step4_factor_io_profile['csv_written_by_step4'] = True
-        else:
-            step4_factor_io_profile['csv_written_by_step4'] = False
-        factor_csv_policy_observed['factor_csv_written_by_step4'] = bool(
-            step4_factor_io_profile['csv_written_by_step4']
-        )
-        if factor_csv_policy_observed.get('factor_csv_write_allowed') and not step4_factor_io_profile['csv_written_by_step4']:
-            factor_csv_policy_observed['factor_csv_write_skipped_reason'] = (
-                'parent_diagnostics_projection_preserves_full_parquet_only'
-                if parent_diagnostics_projection
-                else 'step3b_csv_already_available'
-            )
 
         coverage = summarize_step4_coverage(
             result_df=result_df, signal_daily_df=signal_daily_df,
@@ -6107,72 +6297,19 @@ def main() -> None:
             })
             run_status = 'failed'
             failure_reason = token
-        web_evaluation_contract = build_step4_web_evaluation_contract(fsm, evo_diagnostic_contract)
-        shared_context_version = (
-            'factorforge_shared_evaluation_context_v2'
-            if web_evaluation_contract is not None
-            else 'factorforge_shared_evaluation_context_v1'
+        (shared_context, shared_context_profile) = prepare_step4_evaluation_context(
+            fsm=fsm, evo_diagnostic_contract=evo_diagnostic_contract, args=args,
+            force_shared_context=force_shared_context, report_id=report_id, factor_id=factor_id,
+            implementation_mode_decision=implementation_mode_decision, base_identity=base_identity,
+            run_dir=run_dir, result_df=result_df, daily_df=daily_df, signal_col=signal_col,
+            parquet_path=parquet_path, evaluation_daily_file=evaluation_daily_file, coverage=coverage,
+            signal_daily_df=signal_daily_df, signal_daily_file=signal_daily_file,
+            exchange_calendar_df=exchange_calendar_df, dpm=dpm,
         )
-        shared_context: dict[str, Any] | None = None
-        shared_context_profile: dict[str, Any] = {
-            'version': shared_context_version,
-            'enabled': False,
-            'built': False,
-            'used_by_step4': False,
-            'context_path': None,
-            'build_seconds': 0.0,
-            'invalidated_reason': 'not_enabled',
-        }
-        if shared_evaluation_context_enabled(args.enable_shared_evaluation_context) or force_shared_context:
-            shared_context = build_shared_evaluation_context(
-                report_id=report_id,
-                factor_id=factor_id,
-                implementation_mode_decision=implementation_mode_decision,
-                base_identity=base_identity,
-                run_dir=run_dir,
-                factor_df=result_df,
-                daily_df=daily_df,
-                signal_col=signal_col,
-                factor_parquet_path=parquet_path,
-                daily_input_path=evaluation_daily_file,
-                target_window=coverage.target_window,
-                effective_target_window={'start': coverage.effective_target_start, 'end': coverage.effective_target_end},
-                evaluation_contract=web_evaluation_contract,
-                signal_daily_df=signal_daily_df,
-                signal_daily_input_path=signal_daily_file,
-                exchange_calendar=exchange_calendar_df,
-                pre_release_research_windows=(
-                    dpm.get('research_windows')
-                    if isinstance(dpm.get('research_windows'), dict)
-                    else None
-                ),
-            )
-            shared_context_profile = {
-                'version': shared_context_version,
-                'enabled': True,
-                'built': True,
-                'used_by_step4': False,
-                'context_path': ((shared_context.get('paths') or {}).get('context_json')),
-                'build_seconds': shared_context.get('build_seconds'),
-                'invalidated_reason': None,
-                'row_counts': shared_context.get('row_counts'),
-            }
-        evo_child_execution: dict[str, Any] | None = None
-        if evo_diagnostic_contract is not None:
-            if shared_context is None:
-                raise ValueError('BLOCK_FACTORFORGE_EVO_CHILD_SHARED_CONTEXT_REQUIRED')
-            try:
-                evo_child_execution = materialize_evo_child_execution_result(
-                    workspace_root=FACTORFORGE,
-                    parent_report_id=str(evo_diagnostic_contract['parent_report_id']),
-                    child_report_id=report_id,
-                    diagnostic_contract=evo_diagnostic_contract,
-                    expected_host_trust_manifest_sha256=(
-                        args.expected_host_trust_manifest_sha256
-                    ),
-                )
-            except EvoChildExecutionError as exc:
-                raise ValueError(';'.join(exc.reasons)) from exc
+        evo_child_execution = resolve_step4_child_execution(
+            evo_diagnostic_contract=evo_diagnostic_contract, shared_context=shared_context,
+            report_id=report_id, args=args,
+        )
         # Compute small output diagnostics before releasing the parent's full
         # factor frame. Custom backend processes load the persisted parquet.
         null_ratio, duplicate_ratio, sort_order_ok = summarize_step4_output_quality(

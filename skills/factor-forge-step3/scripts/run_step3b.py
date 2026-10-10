@@ -1421,6 +1421,151 @@ def load_prepared_step3b_sample_inputs(local_inputs: dict) -> tuple[dict, Path, 
     return sample_inputs, config_path.resolve(), list(calendar)
 
 
+def read_step3b_sample_frames(
+    *,
+    timer,
+    minute_path,
+    has_partitioned_controller,
+    input_mode,
+    exchange_calendar_path,
+    use_lazy_polars_parquet,
+    module_formula_ir,
+    daily_path,
+    prepared_daily,
+    local_inputs,
+):
+    """Read only the selected sample route, preserving lazy parity and sample checks."""
+    import pandas as pd
+    from factor_factory.prepared_daily_inputs import validate_sample_frames
+    lazy_polars_formula_ir = None
+    with timer.phase('read_inputs'):
+        minute_df = read_df(minute_path) if minute_path is not None and not has_partitioned_controller else (None if input_mode == 'daily_only' else pd.DataFrame())
+        exchange_calendar_df = (
+            read_df(exchange_calendar_path)
+            if exchange_calendar_path is not None else None
+        )
+        if use_lazy_polars_parquet:
+            try:
+                from factor_factory.formula.polars_evaluator import read_formula_parquet_sample_for_polars_parity
+
+                daily_df, lazy_polars_formula_ir = read_formula_parquet_sample_for_polars_parity(module_formula_ir, daily_path)
+            except ModuleNotFoundError as exc:
+                if 'BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING' in str(exc):
+                    raise SystemExit('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING') from exc
+                raise
+            except (KeyError, ValueError) as exc:
+                message = str(exc)
+                if 'BLOCK_POLARS_EXPERIMENTAL_' in message or 'BLOCK_UNSUPPORTED_FORMULA_SYNTAX' in message:
+                    raise SystemExit(message) from exc
+                raise
+        else:
+            daily_df = read_df(daily_path)
+        if prepared_daily:
+            validate_sample_frames(daily_df, exchange_calendar_df, local_inputs['step3b_sample_window'])
+    return minute_df, exchange_calendar_df, daily_df, lazy_polars_formula_ir
+
+
+def normalize_step3b_sample_result(
+    *,
+    result_df,
+    prepared_sample_calendar,
+    timer,
+    factor_id,
+    local_inputs,
+    daily_df,
+    trust_sort_contract,
+    formula_engine_profile,
+):
+    """Validate the sample calendar and preserve audit columns, zeros and sorting semantics."""
+    if result_df is None or len(result_df) == 0:
+        raise SystemExit('Step3B first-run implementation returned empty factor values')
+    from factor_factory.research_api import validate_factor_output
+    result_df = validate_factor_output(result_df)
+    if not {'ts_code', 'trade_date'}.issubset(result_df.columns):
+        raise SystemExit('Step3B first-run output must include ts_code and trade_date')
+    if prepared_sample_calendar is not None:
+        result_dates = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
+        outside = sorted(set(result_dates) - set(prepared_sample_calendar))
+        if outside:
+            raise SystemExit(
+                'BLOCK_STEP3B_PREPARED_SAMPLE_OUTPUT_OUTSIDE_CALENDAR: '
+                f'controller emitted dates outside its explicit sample calendar: {outside[:5]}'
+            )
+
+    with timer.phase('normalize_sort'):
+        # Prepared controllers intentionally expose diagnostics (including
+        # ``warmup``) beside their declared factor.  Generic last-column
+        # inference would otherwise publish that boolean diagnostic as the
+        # Step3B signal.
+        signal_col = (
+            'factor_value'
+            if 'factor_value' in result_df.columns
+            else infer_signal_column(result_df, factor_id=factor_id)
+        )
+        audit_result_df = result_df.copy()
+        audit_result_df['trade_date'] = normalize_trade_date_series(
+            audit_result_df['trade_date']
+        ).dt.strftime('%Y%m%d')
+        audit_result_df = audit_result_df.sort_values(
+            ['ts_code', 'trade_date']
+        ).reset_index(drop=True)
+        result_df = result_df[['ts_code', 'trade_date', signal_col]]
+        result_df['trade_date'] = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
+        sort_contract = extract_sort_contract(local_inputs)
+        normalize_sort_profile = validate_sort_contract_for_skip(
+            contract=sort_contract,
+            daily_df=daily_df,
+            result_df=result_df,
+            opt_in_enabled=trust_sort_contract,
+        )
+        if normalize_sort_profile.get('full_sort_skipped') is True:
+            already_sorted = True
+            result_df = result_df.reset_index(drop=True)
+        else:
+            keys = result_df[['ts_code', 'trade_date']]
+            sorted_keys = keys.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+            already_sorted = bool(keys.reset_index(drop=True).equals(sorted_keys))
+            if already_sorted:
+                result_df = result_df.reset_index(drop=True)
+            else:
+                result_df = result_df.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
+        formula_engine_profile['output_presorted'] = bool(already_sorted or formula_engine_profile.get('output_presorted') is True)
+    return result_df, audit_result_df, signal_col, normalize_sort_profile, already_sorted
+
+
+def write_step3b_sample_csv(
+    *,
+    timer,
+    csv_policy,
+    result_df,
+    step3b_cache_csv,
+):
+    """Apply the existing CSV policy to the bounded sample only."""
+    with timer.phase('write_csv'):
+        if csv_policy == 'full_csv':
+            result_df.to_csv(step3b_cache_csv, index=False)
+            csv_path = step3b_cache_csv
+            csv_sample_path = None
+            csv_rows_written = int(len(result_df))
+            csv_sample_strategy = 'full'
+            full_csv_available = True
+        elif csv_policy == 'sample_csv':
+            sample_df = deterministic_csv_sample(result_df)
+            sample_df.to_csv(step3b_cache_csv, index=False)
+            csv_path = None
+            csv_sample_path = step3b_cache_csv
+            csv_rows_written = int(len(sample_df))
+            csv_sample_strategy = 'head_tail'
+            full_csv_available = False
+        else:
+            csv_path = None
+            csv_sample_path = None
+            csv_rows_written = 0
+            csv_sample_strategy = 'none'
+            full_csv_available = False
+    return csv_path, csv_sample_path, csv_rows_written, csv_sample_strategy, full_csv_available
+
+
 def generate_first_run_factor_values(
     report_id: str,
     factor_id: str,
@@ -1545,30 +1690,12 @@ def generate_first_run_factor_values(
     )
     lazy_polars_formula_ir = None
 
-    with timer.phase('read_inputs'):
-        minute_df = read_df(minute_path) if minute_path is not None and not has_partitioned_controller else (None if input_mode == 'daily_only' else pd.DataFrame())
-        exchange_calendar_df = (
-            read_df(exchange_calendar_path)
-            if exchange_calendar_path is not None else None
-        )
-        if use_lazy_polars_parquet:
-            try:
-                from factor_factory.formula.polars_evaluator import read_formula_parquet_sample_for_polars_parity
-
-                daily_df, lazy_polars_formula_ir = read_formula_parquet_sample_for_polars_parity(module_formula_ir, daily_path)
-            except ModuleNotFoundError as exc:
-                if 'BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING' in str(exc):
-                    raise SystemExit('BLOCK_POLARS_EXPERIMENTAL_DEPENDENCY_MISSING') from exc
-                raise
-            except (KeyError, ValueError) as exc:
-                message = str(exc)
-                if 'BLOCK_POLARS_EXPERIMENTAL_' in message or 'BLOCK_UNSUPPORTED_FORMULA_SYNTAX' in message:
-                    raise SystemExit(message) from exc
-                raise
-        else:
-            daily_df = read_df(daily_path)
-        if prepared_daily:
-            validate_sample_frames(daily_df, exchange_calendar_df, local_inputs['step3b_sample_window'])
+    (minute_df, exchange_calendar_df, daily_df, lazy_polars_formula_ir) = read_step3b_sample_frames(
+        timer=timer, minute_path=minute_path, has_partitioned_controller=has_partitioned_controller,
+        input_mode=input_mode, exchange_calendar_path=exchange_calendar_path,
+        use_lazy_polars_parquet=use_lazy_polars_parquet, module_formula_ir=module_formula_ir,
+        daily_path=daily_path, prepared_daily=prepared_daily, local_inputs=local_inputs,
+    )
     with timer.phase('sample_limit'):
         daily_df, daily_limit_profile = limit_step3b_sample_frame(
             daily_df,
@@ -1648,59 +1775,11 @@ def generate_first_run_factor_values(
                 raise SystemExit(message) from exc
             raise
     formula_engine_profile['adaptive_selector'] = adaptive_selector_profile
-    if result_df is None or len(result_df) == 0:
-        raise SystemExit('Step3B first-run implementation returned empty factor values')
-    from factor_factory.research_api import validate_factor_output
-    result_df = validate_factor_output(result_df)
-    if not {'ts_code', 'trade_date'}.issubset(result_df.columns):
-        raise SystemExit('Step3B first-run output must include ts_code and trade_date')
-    if prepared_sample_calendar is not None:
-        result_dates = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
-        outside = sorted(set(result_dates) - set(prepared_sample_calendar))
-        if outside:
-            raise SystemExit(
-                'BLOCK_STEP3B_PREPARED_SAMPLE_OUTPUT_OUTSIDE_CALENDAR: '
-                f'controller emitted dates outside its explicit sample calendar: {outside[:5]}'
-            )
-
-    with timer.phase('normalize_sort'):
-        # Prepared controllers intentionally expose diagnostics (including
-        # ``warmup``) beside their declared factor.  Generic last-column
-        # inference would otherwise publish that boolean diagnostic as the
-        # Step3B signal.
-        signal_col = (
-            'factor_value'
-            if 'factor_value' in result_df.columns
-            else infer_signal_column(result_df, factor_id=factor_id)
-        )
-        audit_result_df = result_df.copy()
-        audit_result_df['trade_date'] = normalize_trade_date_series(
-            audit_result_df['trade_date']
-        ).dt.strftime('%Y%m%d')
-        audit_result_df = audit_result_df.sort_values(
-            ['ts_code', 'trade_date']
-        ).reset_index(drop=True)
-        result_df = result_df[['ts_code', 'trade_date', signal_col]]
-        result_df['trade_date'] = normalize_trade_date_series(result_df['trade_date']).dt.strftime('%Y%m%d')
-        sort_contract = extract_sort_contract(local_inputs)
-        normalize_sort_profile = validate_sort_contract_for_skip(
-            contract=sort_contract,
-            daily_df=daily_df,
-            result_df=result_df,
-            opt_in_enabled=trust_sort_contract,
-        )
-        if normalize_sort_profile.get('full_sort_skipped') is True:
-            already_sorted = True
-            result_df = result_df.reset_index(drop=True)
-        else:
-            keys = result_df[['ts_code', 'trade_date']]
-            sorted_keys = keys.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
-            already_sorted = bool(keys.reset_index(drop=True).equals(sorted_keys))
-            if already_sorted:
-                result_df = result_df.reset_index(drop=True)
-            else:
-                result_df = result_df.sort_values(['ts_code', 'trade_date']).reset_index(drop=True)
-        formula_engine_profile['output_presorted'] = bool(already_sorted or formula_engine_profile.get('output_presorted') is True)
+    (result_df, audit_result_df, signal_col, normalize_sort_profile, already_sorted) = normalize_step3b_sample_result(
+        result_df=result_df, prepared_sample_calendar=prepared_sample_calendar, timer=timer,
+        factor_id=factor_id, local_inputs=local_inputs, daily_df=daily_df,
+        trust_sort_contract=trust_sort_contract, formula_engine_profile=formula_engine_profile,
+    )
 
     run_dir = RUNS / report_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1728,28 +1807,9 @@ def generate_first_run_factor_values(
         result_df.to_parquet(step3b_cache_parquet, index=False)
         if audit_columns:
             audit_result_df.to_parquet(step3b_audit_parquet, index=False)
-    with timer.phase('write_csv'):
-        if csv_policy == 'full_csv':
-            result_df.to_csv(step3b_cache_csv, index=False)
-            csv_path = step3b_cache_csv
-            csv_sample_path = None
-            csv_rows_written = int(len(result_df))
-            csv_sample_strategy = 'full'
-            full_csv_available = True
-        elif csv_policy == 'sample_csv':
-            sample_df = deterministic_csv_sample(result_df)
-            sample_df.to_csv(step3b_cache_csv, index=False)
-            csv_path = None
-            csv_sample_path = step3b_cache_csv
-            csv_rows_written = int(len(sample_df))
-            csv_sample_strategy = 'head_tail'
-            full_csv_available = False
-        else:
-            csv_path = None
-            csv_sample_path = None
-            csv_rows_written = 0
-            csv_sample_strategy = 'none'
-            full_csv_available = False
+    (csv_path, csv_sample_path, csv_rows_written, csv_sample_strategy, full_csv_available) = write_step3b_sample_csv(
+        timer=timer, csv_policy=csv_policy, result_df=result_df, step3b_cache_csv=step3b_cache_csv,
+    )
     phase_seconds = timer.finish()
     formula_engine_profile['compute_factor_seconds'] = float(phase_seconds.get('compute_factor') or 0.0)
     formula_engine_profile['normalize_sort_seconds'] = float(phase_seconds.get('normalize_sort') or 0.0)

@@ -138,9 +138,16 @@ def execute_ready(ledger: SearchLedger, campaign_id: str, ticket_id: str) -> dic
     except Exception as exc:
         code, error = None, "native launch failed: " + type(exc).__name__
     elapsed = time.monotonic() - start
+    finished_at = now()
+    master_path = Path(r["workspace_root"]) / "objects/factor_run_master" / f"factor_run_master__{r['report_id']}.json"
+    captured = []
+    for path in (proof_path, master_path, Path(r["metrics_path"])):
+        if path.is_file():
+            captured.append(file_ref(path))
     receipt = {"contract_version": "factor_search_execution_receipt_v1", "ticket_id": ticket_id,
                "request_hash": digest(r), "command": argv, "cwd": r["repo_root"],
-               "started_at": started_at, "finished_at": now(), "elapsed_seconds": elapsed, "returncode": code}
+               "started_at": started_at, "finished_at": finished_at, "elapsed_seconds": elapsed, "returncode": code,
+               "output_refs": captured}
     receipt_path = out / "execution_receipt.json"
     write_once(receipt_path, receipt)
     if not proof_path.exists():

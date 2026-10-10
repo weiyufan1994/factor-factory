@@ -42,6 +42,8 @@
 持久化在一个事务存储中；同候选/协议有唯一动作键。完成结果回放不新增 trial。
 派发前中断可使用原 ticket；派发后结果未知必须先 reconcile，不能自动盲重试。
 失败、未知完成和中断保留占用，不通过换 run id 退回预算。
+预算来源按 canonical 路径归一，`..` 路径别名不能创建新预算。同候选/同开发协议
+即使修改评分规则也不允许重新执行；重评分应引用已有结果，不增加独立证据。
 
 ## 接入与验收
 
@@ -61,6 +63,11 @@ Ultimate 的默认执行路径。主研究员是上下文、预算和原生准�
 只能通过 `CandidateProposer.propose(context, max_proposals, seed)` 返回提议。
 这是同一可信本地主机中的研究接口，不是隔离任意 Python 插件的操作系统沙箱。
 要接外部模型，宿主只发送 `proposer_context()` 返回的公开投影，不把工作目录授予模型。
+外部模型返回 `public_derivation` 文本，宿主将其保存为有哈希的 JSON 并补全
+`public_derivation_ref`；`contract_version/context_hash/candidate_hash` 可由宿主计算。
+模型仍需返回 proposal_id、parent_candidate_hash、proposer、mutation_class、program、
+semantics、changes、expected_metric_signature、falsifiers、kill_criteria 和 estimated_cost。
+外部提案内容只是研究建议，保存推导不等于 Step2 或代码审查通过。
 
 主研究员先冻结 `factor_search_context_v1`：绑定原生 Step2/measurement/Council、
 原生 `research_conjecture` 与 `research_state`、开发数据范围、单次两阶段成本上限、
@@ -91,6 +98,9 @@ Step3B run/validate、实际 manifest/spec/handoff/input 绑定和代码审查�
 不把这些路线“猜成”已验证数据，也不改造现有 Data API。默认注册的指标适配是
 原生 self-quant `rank_ic_mean`（无量纲、coverage/rank_ic_count）；其他指标需原生
 payload 的明确单位字段，不能把 Rank IC 分数解释为扣费账户收益。
+标准 Step3 的 snapshot_note、覆盖信息等元数据原样保留；prepared_daily 的 full/sample
+选择复用原生 helper。主日线/分钟相对路径按原生 active_root.parent 解析，额外命名
+输入按显式 factor workspace 解析；不会试探其他目录来“找到一个可用文件”。
 
 ## 中断与证据
 
@@ -99,6 +109,10 @@ payload 的明确单位字段，不能把 Rank IC 分数解释为扣费账户收
 全部 compute 预留，不产奖励。worker 在启动前原子置 RUNNING，重复调用不会重跑。
 若进程在落地完整 receipt 前死亡，保持在途等待宿主核对进程和成果；接口不推断
 “没收到结果就没执行”。完整 result 已落地时，后续 tick 会回读并只记一次。
+完成结果要求 worker 的退出码为 0，固定 argv/cwd 匹配；UTC 区间与单调时钟耗时
+最多允许 50ms 差异，拒绝未来时间。所有原生命令必须在本次 worker 区间内（兼容旧
+秒级时间戳的 1s 精度），proof/run-master/metrics 必须与 worker 捕获哈希一致且在
+本次执行开始后写入。候选分数不能由旧成果配一份新的完成声明产生。
 
 SHA 验证流式读取大文件，进程内缓存用 inode/size/mtime/ctime 共同约束，变化即重算；
 控制循环不反复加载分钟表。旧同步 MCTS 和原生 Step2–6 均不修改。

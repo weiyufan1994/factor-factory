@@ -5,7 +5,7 @@ import json
 from typing import Any
 
 from .contracts import (CandidateProposer, NativeExecutor, SearchError, bound_json,
-                        digest, reservation_cost)
+                        candidate_hash, digest, file_ref, reservation_cost, text, PROPOSAL_VERSION)
 from .ledger import SearchLedger
 from .native import collect_result
 from .planner import plan_next
@@ -58,10 +58,32 @@ class ResearchSearchController:
             proposals = provider.propose(context, max_proposals=limit - len(snapshot["proposals"]), seed=snapshot["context"]["seed"])
             if not isinstance(proposals, (list, tuple)) or len(proposals) > limit:
                 raise SearchError("provider must return a bounded batch")
-            return self.ledger.register(self.campaign_id, proposals)
+            return self.ledger.register(self.campaign_id, [self._materialize_proposal(p, snapshot["context"]) for p in proposals])
         except Exception as exc:
             self.ledger.event(self.campaign_id, "proposer_failed", {"error_type": type(exc).__name__})
             raise
+
+    def _materialize_proposal(self, raw: dict, context: dict) -> dict:
+        """Persist public derivation content on the host; models need no paths."""
+        from .executor import write_once
+        p = dict(raw)
+        if "public_derivation" in p:
+            if "public_derivation_ref" in p:
+                raise SearchError("provide derivation content or an existing host ref, not both")
+            content = text(p.pop("public_derivation"), "public derivation")
+            if len(content.encode("utf-8")) > 65536:
+                raise SearchError("public derivation exceeds 64 KiB")
+            record = {"contract_version": "factor_search_public_derivation_v1", "context_hash": digest(context),
+                      "proposer": p.get("proposer"), "public_derivation": content}
+            path = self.ledger.root / "objects/research_search/derivations" / (digest(record) + ".json")
+            write_once(path, record)
+            p["public_derivation_ref"] = file_ref(path)
+        expected = {"contract_version": PROPOSAL_VERSION, "context_hash": digest(context), "candidate_hash": candidate_hash(p)}
+        for key, value in expected.items():
+            if key in p and p[key] != value:
+                raise SearchError("provider supplied inconsistent " + key)
+            p[key] = value
+        return p
 
     def tick(self) -> dict:
         snapshot = self.ledger.snapshot(self.campaign_id)

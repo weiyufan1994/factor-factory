@@ -6,6 +6,7 @@ continues its pinned Ultimate entry at Step4 and collects Step4/5 evidence.
 """
 from __future__ import annotations
 
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -23,6 +24,46 @@ def native_source_pin(repo_root: str | Path) -> dict:
                     and "__pycache__" not in path.parts})
     return {"contract_version": "factor_search_native_source_pin_v1", "repo_root": str(root),
             "entry_refs": [file_ref(path) for path in paths]}
+
+
+def bound_native_input_paths(local: dict, request: Mapping[str, Any], protocol: dict) -> list[Path]:
+    """Use the existing full/sample and auxiliary selection semantics.
+
+    Native legacy daily/minute selectors are relative to active_root.parent;
+    explicit auxiliary inputs use the factor workspace itself. Metadata does
+    not select an executable input and is retained without rewriting Step3.
+    """
+    from factor_factory.implementation_runtime import named_input_bindings
+    from factor_factory.prepared_daily_inputs import is_prepared_daily, sample_inputs, validate_paths
+    root = Path(request["workspace_root"]).resolve()
+    primary_base = root.parent
+    if local.get("input_mode") not in {"daily_only", "price_volume_minute", "minute_and_daily"}:
+        raise SearchError("native input mode requires a dedicated binding adapter")
+    for key in ("minute_streaming_query", "derived_state_root", "step3b_derived_state_root",
+                "evaluation_daily_df_parquet", "signal_daily_df_parquet"):
+        if local.get(key):
+            raise SearchError("dynamic native input route requires a dedicated binding adapter")
+    selections = [local]
+    try:
+        if is_prepared_daily(local):
+            validate_paths(local, primary_base, additional_workspace=root)
+            selections.append(sample_inputs(local))
+        selected = []
+        for inputs in selections:
+            daily = inputs.get("daily_df_parquet") or inputs.get("daily_df_csv")
+            minute = inputs.get("minute_df_parquet") or inputs.get("minute_df_csv")
+            calendar = inputs.get("exchange_calendar_parquet")
+            if not daily or (inputs["input_mode"] in {"price_volume_minute", "minute_and_daily"} and not minute):
+                raise SearchError("native materialized daily/minute selection is incomplete")
+            selected.extend((primary_base / path).resolve() for path in (daily, minute, calendar) if path)
+            selected.extend((root / path).resolve() for path in named_input_bindings(inputs).values())
+    except (TypeError, ValueError, OSError) as exc:
+        raise SearchError("invalid native input selection: " + str(exc)) from exc
+    permitted = {Path(ref["path"]).resolve() for ref in protocol["input_refs"]}
+    permitted.add(Path(protocol["calendar_ref"]["path"]).resolve())
+    if not set(selected) <= permitted:
+        raise SearchError("native input not in frozen development manifest")
+    return sorted(set(selected))
 
 
 def _native_proof(ref, request, names):
@@ -158,18 +199,10 @@ def validate_request(context: Mapping[str, Any], proposal: Mapping[str, Any], re
     local = transfer.get("local_input_paths") or dpm.get("local_input_paths") or {}
     if not local or data.get("native_local_inputs") != local:
         raise SearchError("actual native input selection differs from data binding")
-    paths = {v["path"] for v in protocol["input_refs"]} | {protocol["calendar_ref"]["path"]}
-    allowed = {"input_mode", "daily_df_csv", "daily_df_parquet", "minute_df_csv", "minute_df_parquet",
-               "exchange_calendar_parquet", "formula_input_dataset"}
-    if set(local) - allowed or local.get("input_mode") not in {"daily_only", "price_volume_minute", "minute_and_daily"}:
-        raise SearchError("native input route needs a dedicated binding adapter; v1 supports materialized daily/minute files")
-    if not any(local.get(k) for k in ("daily_df_csv", "daily_df_parquet")):
-        raise SearchError("native daily file missing")
-    for key, value in local.items():
-        if key.endswith(("_csv", "_parquet")) and value not in paths:
-            raise SearchError("native input not in frozen development manifest")
+    bound_native_input_paths(local, r, protocol)
+    from factor_factory.prepared_daily_inputs import is_prepared_daily
     for obj in (dpm, transfer, local):
-        if obj.get("research_windows") or (obj.get("step4_data_contract") or {}).get("full_queries"):
+        if obj.get("research_windows") or ((obj.get("step4_data_contract") or {}).get("full_queries") and not is_prepared_daily(local)):
             raise SearchError("dynamic rematerialization/heldout route requires a dedicated binding adapter")
     metrics = Path(text(r["metrics_path"], "metrics_path"))
     if not metrics.is_absolute() or not metrics.resolve().is_relative_to(root.resolve()):
@@ -183,7 +216,7 @@ def validate_preparation(request: Mapping[str, Any], ticket: Mapping[str, Any]) 
     if receipt.get("ticket_id") != ticket["ticket_id"]:
         raise SearchError("preparation must bind the reserved ticket")
     started, finished = timestamp(receipt.get("started_at")), timestamp(receipt.get("finished_at"))
-    if started < timestamp(ticket["created_at"]) or finished < started:
+    if started < timestamp(ticket["created_at"]) or finished < started or finished > datetime.now(timezone.utc):
         raise SearchError("preparation occurred before the trial reservation")
     cost = number(receipt.get("preparation_cost_seconds"), "preparation cost", minimum=0)
     if cost > ticket["reserved_compute_cost"] or cost > (finished - started).total_seconds():
@@ -280,20 +313,51 @@ def collect_result(context: Mapping[str, Any], proposal: Mapping[str, Any], tick
     if status == "FAILED_UNKNOWN_COST" and cost is not None:
         raise SearchError("unknown cost must remain null")
     receipt = bound_json(result["execution_receipt_ref"], root=request["workspace_root"])
-    if (receipt.get("contract_version") != "factor_search_execution_receipt_v1"
+    receipt_keys = {"contract_version", "ticket_id", "request_hash", "command", "cwd", "started_at", "finished_at",
+                    "elapsed_seconds", "returncode", "output_refs"}
+    if (set(receipt) != receipt_keys or receipt.get("contract_version") != "factor_search_execution_receipt_v1"
             or receipt.get("ticket_id") != ticket["ticket_id"] or receipt.get("request_hash") != digest(request)
+            or receipt.get("cwd") != request["repo_root"]
             or receipt.get("command") != command_for_ticket(ticket, result["proof_ref"]["path"])
             or timestamp(receipt.get("started_at")) < timestamp(bound_json(request["readiness_ref"])["finished_at"])):
         raise SearchError("native execution receipt identity/command/order mismatch")
-    if cost is not None and cost != preparation_cost + number(receipt.get("elapsed_seconds"), "execution elapsed", minimum=0):
+    started, finished = timestamp(receipt["started_at"]), timestamp(receipt["finished_at"])
+    if not started <= finished <= datetime.now(timezone.utc):
+        raise SearchError("native execution receipt has an invalid/future time interval")
+    elapsed = receipt["elapsed_seconds"]
+    if elapsed is not None:
+        elapsed = number(elapsed, "execution elapsed", minimum=0)
+        # Both timestamps and monotonic time come from this worker. Allow only
+        # 50 ms of wall-clock adjustment/bookkeeping, not caller-defined slack.
+        if abs((finished - started).total_seconds() - elapsed) > .05:
+            raise SearchError("native wall and monotonic elapsed time disagree")
+    if cost is not None and (elapsed is None or cost != preparation_cost + elapsed):
         raise SearchError("total cost must include native preparation and execution receipts")
     proof = bound_json(result["proof_ref"], root=request["workspace_root"])
     if proof.get("report_id") != request["report_id"]:
         raise SearchError("native failure proof report mismatch")
     metric_value = score_value = increment = None
     if status == "COMPLETED":
+        if type(receipt["returncode"]) is not int or receipt["returncode"] != 0 or elapsed is None or elapsed <= 0:
+            raise SearchError("successful native execution requires exit zero and positive measured duration")
+        if receipt["output_refs"] != [result[k] for k in ("proof_ref", "run_master_ref", "metrics_ref")]:
+            raise SearchError("result artifacts differ from the native worker capture")
         _native_proof(result["proof_ref"], request,
                       ("run_step4", "validate_step4", "run_step5", "validate_step5"))
+        command_seconds = 0.0
+        # Historical wrappers may serialize UTC command timestamps to seconds.
+        precision = timedelta(seconds=1)
+        for command in proof["commands"]:
+            begin, end = timestamp(command["started_at_utc"]), timestamp(command["finished_at_utc"])
+            if not started - precision <= begin <= end <= finished + precision:
+                raise SearchError("native proof command is outside this execution window")
+            command_seconds += (end - begin).total_seconds()
+        if command_seconds > elapsed + 1:
+            raise SearchError("execution cost omits native command time")
+        for ref in receipt["output_refs"]:
+            artifact = verify_ref(ref, root=request["workspace_root"])
+            if artifact.stat().st_mtime_ns < int(started.timestamp() * 1e9):
+                raise SearchError("native result artifact predates this execution")
         master = bound_json(result["run_master_ref"], root=request["workspace_root"])
         if master.get("report_id") != request["report_id"]:
             raise SearchError("native run-master report mismatch")

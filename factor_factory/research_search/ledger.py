@@ -14,7 +14,7 @@ import sqlite3
 from typing import Any, Mapping
 
 from .contracts import (PENDING, SearchError, bound_json, canonical, digest,
-                        reservation_cost, validate_context, validate_proposal)
+                        file_ref, reservation_cost, validate_context, validate_proposal)
 from .native import validate_request, validate_preparation
 
 
@@ -51,8 +51,10 @@ class SearchLedger:
         if Path(c["workspace_root"]).resolve() != self.root:
             raise SearchError("ledger workspace/context mismatch")
         authority = bound_json(c["budget_authority"])
-        budget_key = digest({"root": str(self.root), "source": authority["source_authority_ref"]["path"]})
-        limits = {"source": authority["source_authority_ref"], "state": authority["state_ref"],
+        source_identity = file_ref(Path(authority["source_authority_ref"]["path"]).resolve())
+        state_identity = file_ref(Path(authority["state_ref"]["path"]).resolve())
+        budget_key = digest({"root": str(self.root), "source": source_identity["path"]})
+        limits = {"source": source_identity, "state": state_identity,
                   "trial_budget": authority["trial_budget"], "trials_used": authority["trials_used"],
                   "compute_budget": authority["compute_budget"], "execution_cost_policy": authority["execution_cost_policy"]}
         with self.transaction() as db:
@@ -199,7 +201,7 @@ class SearchLedger:
                 raise SearchError("campaign revision changed; replan without dispatch")
             for prior in db.execute("SELECT t.ticket_json,c.context_json FROM tickets t JOIN campaigns c ON c.id=t.campaign_id WHERE c.budget_id=? AND t.candidate_hash=?", (row["budget_id"], candidate)):
                 prior_context = json.loads(prior["context_json"])
-                if prior_context["development_protocol"] == c["development_protocol"] and prior_context["score_contract"] == c["score_contract"]:
+                if prior_context["development_protocol"]["sha256"] == c["development_protocol"]["sha256"]:
                     raise SearchError("same candidate/protocol already has a shared-budget ticket; use its original campaign")
             active = db.execute("SELECT id FROM tickets WHERE campaign_id=? AND feedback_json IS NULL", (campaign,)).fetchone()
             if active:

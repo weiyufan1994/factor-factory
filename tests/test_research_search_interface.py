@@ -37,7 +37,9 @@ def stamp(seconds=0):
 
 
 @pytest.fixture
-def case(tmp_path):
+def case(tmp_path, monkeypatch):
+    # Synthetic chronology leaves enough past time for worker-receipt probes.
+    monkeypatch.setattr("factor_factory.research_search.ledger.now", lambda: stamp(-600))
     root = tmp_path / "study"
     root.mkdir()
     conj, state = valid_conjecture(), valid_state()
@@ -119,7 +121,7 @@ def ready(case, ticket):
     root = case["tmp"] / "child"
     root.mkdir(exist_ok=True)
     rid = c["report_id"] + "_CHILD"
-    started = stamp()
+    started = stamp(-500)
     spec = put(root / "spec.json", {"report_id": rid})
     code = root / "implementation.py"
     code.write_text("raise RuntimeError('Never execute a unit fixture as a market implementation')\n")
@@ -132,10 +134,10 @@ def ready(case, ticket):
     log = root / "tests.log"
     log.write_text("Synthetic fixture reviewed; not a real review or test invocation\n")
     files = [{"role": role, **ref} for role, ref in (("spec", spec), ("implementation", impl))]
-    reviewed = stamp(-10)
+    reviewed = stamp(-400)
     review = put(root / "objects/research_journal" / f"code_review__{rid}.json", {"report_id": rid, "author_id": "fixture-author", "reviewer_id": "fixture-reviewer",
         "reviewed_at": reviewed, "decision": "proceed", "summary": "Explicit synthetic protocol fixture", "findings": [],
-        "reviewed_files": files, "post_review_tests": {"status": "PASS", "started_at": stamp(-9), "completed_at": stamp(-8),
+        "reviewed_files": files, "post_review_tests": {"status": "PASS", "started_at": stamp(-390), "completed_at": stamp(-380),
               "evidence": [file_ref(log)], "tested_files": files}})
     protocol = read_json(c["development_protocol"]["path"])
     binding = put(root / "binding.json", {**protocol, "development_protocol_sha256": c["development_protocol"]["sha256"], "native_local_inputs": local})
@@ -145,7 +147,7 @@ def ready(case, ticket):
          "python_ref": file_ref(Path(sys.executable).resolve()), "repo_pin_ref": pin,
          "manifest_ref": manifest, "spec_ref": spec, "implementation_ref": impl, "handoff_ref": transfer, "data_prep_ref": prep,
          "data_binding_ref": binding, "metrics_path": str(root / "metrics.json")}
-    finished = stamp()
+    finished = stamp(-300)
     r["step3_proof_ref"] = put(root / "step3.json", proof(r, ["run_step3b", "validate_step3b"], started, finished))
     r["readiness_ref"] = put(root / "ready.json", {"ticket_id": ticket["ticket_id"], "candidate_hash": p["candidate_hash"],
         "context_hash": digest(c), "decision": "proceed", "mutation_class": p["mutation_class"], "base_source_refs": c["source_refs"],
@@ -159,7 +161,9 @@ def ready(case, ticket):
 def result(case, ticket, *, value=.3, cost=1, status="COMPLETED"):
     r, c = ticket["native_request"], case["context"]
     root = Path(r["workspace_root"])
-    native_proof = proof(r, ["run_step4", "validate_step4", "run_step5", "validate_step5"], stamp(), stamp())
+    started = stamp(-200)
+    finished = (datetime.fromisoformat(started) + timedelta(seconds=cost or 0)).isoformat()
+    native_proof = proof(r, ["run_step4", "validate_step4", "run_step5", "validate_step5"], started, finished)
     if status != "COMPLETED":
         native_proof.update(status="FAIL", is_execution_complete=False)
     pr = put(root / "result-proof.json", native_proof)
@@ -167,7 +171,9 @@ def result(case, ticket, *, value=.3, cost=1, status="COMPLETED"):
         "metric": {"value": value, "n": 30, "unit": "dimensionless"}})
     master = put(root / "run.json", {"report_id": r["report_id"], "evaluation_results": {"backend_runs": [{"payload_path": metric["path"]}]}})
     receipt = put(root / "execution.json", {"contract_version": "factor_search_execution_receipt_v1", "ticket_id": ticket["ticket_id"],
-        "request_hash": digest(r), "command": command_for_ticket(ticket, pr["path"]), "started_at": stamp(), "elapsed_seconds": cost})
+        "request_hash": digest(r), "command": command_for_ticket(ticket, pr["path"]), "cwd": r["repo_root"],
+        "started_at": started, "finished_at": finished, "elapsed_seconds": cost,
+        "returncode": 0 if status == "COMPLETED" else 1, "output_refs": [pr, master, metric]})
     return put(root / "result.json", {"contract_version": "factor_search_native_result_v1", "ticket_id": ticket["ticket_id"],
         "candidate_hash": ticket["candidate_hash"], "context_hash": digest(c), "request_hash": digest(r), "split": "development",
         "data_kind": "engineering_fixture", "status": status, "actual_cost": cost, "proof_ref": pr,
@@ -457,3 +463,150 @@ def test_revision_action_returns_to_step2(case):
     out = case["controller"].tick()
     assert next_ticket["state"] == "RESERVED"
     assert read_json(out["action_ref"]["path"])["entry_step"] == "2"
+
+
+def test_score_change_cannot_repeat_the_same_candidate_protocol(case):
+    dispatch(case)
+    c = deepcopy(case["context"])
+    c["campaign_id"] = "rescore"
+    c["score_contract"]["scale"] = 2
+    authority = read_json(c["budget_authority"]["path"])
+    authority["campaign_id"] = c["campaign_id"]
+    c["budget_authority"] = put(case["root"] / "rescore-budget.json", authority)
+    p = deepcopy(case["proposal"])
+    p["context_hash"] = digest(c)
+    case["ledger"].create_campaign(c)
+    case["ledger"].register("rescore", [p])
+    with pytest.raises(SearchError, match="shared-budget"):
+        ResearchSearchController(case["ledger"], "rescore", FileNativeExecutor(case["root"])).tick()
+
+
+def test_native_budget_alias_cannot_reset_shared_usage(case):
+    dispatch(case)
+    c = deepcopy(case["context"])
+    c["campaign_id"] = "alias"
+    a = read_json(c["budget_authority"]["path"])
+    path = Path(a["source_authority_ref"]["path"])
+    a["source_authority_ref"] = file_ref(path.parent / ".." / path.parent.name / path.name)
+    a["campaign_id"] = "alias"
+    protocol = read_json(c["development_protocol"]["path"])
+    split = read_json(protocol["split_manifest_ref"]["path"])
+    split["source_conjecture_ref"] = a["source_authority_ref"]
+    protocol["split_manifest_ref"] = put(case["root"] / "alias-split.json", split)
+    c["development_protocol"] = put(case["root"] / "alias-protocol.json", protocol)
+    a["development_protocol_sha256"] = c["development_protocol"]["sha256"]
+    c["budget_authority"] = put(case["root"] / "alias-budget.json", a)
+    case["ledger"].create_campaign(c)
+    assert case["ledger"].snapshot("alias")["remaining_trials"] == 4
+    assert case["ledger"].snapshot("alias")["remaining_compute"] == 540
+
+
+@pytest.mark.parametrize("mutation", ["future", "missing_finish", "wrong_cwd", "failed_process", "zero_time",
+                                    "old_proof", "old_metrics", "capture_mismatch"])
+def test_completion_must_match_this_worker_timeline_and_capture(case, mutation):
+    t = ready(case, dispatch(case))
+    t = case["ledger"].transition(t["ticket_id"], {"READY"}, "RUNNING")
+    ref = result(case, t)
+    obj = read_json(ref["path"])
+    receipt = read_json(obj["execution_receipt_ref"]["path"])
+    if mutation == "future":
+        receipt["started_at"] = "2099-01-01T00:00:00+00:00"
+    elif mutation == "missing_finish":
+        receipt.pop("finished_at")
+    elif mutation == "wrong_cwd":
+        receipt["cwd"] = str(case["root"])
+    elif mutation == "failed_process":
+        receipt["returncode"] = 42
+    elif mutation == "zero_time":
+        receipt["elapsed_seconds"] = obj["actual_cost"] = 0
+    elif mutation == "capture_mismatch":
+        receipt["output_refs"] = []
+    elif mutation == "old_metrics":
+        import os
+        os.utime(obj["metrics_ref"]["path"], (946684800, 946684800))
+    else:
+        pr = read_json(obj["proof_ref"]["path"])
+        for row in pr["commands"]:
+            row["started_at_utc"] = row["finished_at_utc"] = "2000-01-01T00:00:00+00:00"
+        obj["proof_ref"] = put(Path(obj["proof_ref"]["path"]), pr)
+        receipt["output_refs"][0] = obj["proof_ref"]
+    obj["execution_receipt_ref"] = put(Path(obj["execution_receipt_ref"]["path"]), receipt)
+    with pytest.raises(SearchError):
+        case["ledger"].record_feedback(t["ticket_id"], put(Path(ref["path"]), obj))
+
+
+def test_external_proposer_supplies_content_without_filesystem_access(case):
+    class PublicOnly:
+        def propose(self, context, *, max_proposals, seed):
+            row = deepcopy(case["proposal"])
+            for k in ("contract_version", "candidate_hash", "context_hash", "public_derivation_ref"):
+                row.pop(k)
+            row.update(proposal_id="external", parent_candidate_hash=context["root_candidate_hash"],
+                       mutation_class="measurement_variant", changes=["observation_map"],
+                       public_derivation="Use the public hypothesis to test a revised measurement; no private data accessed.")
+            row["program"]["expression"] = "close + open"
+            row["semantics"]["observation_map"] = "Revised public measurement"
+            return [row]
+    registered = case["controller"].propose(PublicOnly())["registered"]
+    assert len(registered) == 1
+    rows = case["ledger"].snapshot("search-1")["proposals"]
+    p = next(json.loads(r["proposal_json"]) for r in rows if r["candidate_hash"] == registered[0])
+    record = read_json(p["public_derivation_ref"]["path"])
+    assert record["public_derivation"].startswith("Use the public hypothesis")
+
+
+def test_native_input_metadata_and_legacy_relative_base_are_preserved(case):
+    import os
+    from factor_factory.research_search.native import bound_native_input_paths
+    root = case["tmp"] / "native"
+    root.mkdir()
+    request = {"workspace_root": str(root)}
+    target = case["root"] / "data.csv"
+    local = {"input_mode": "daily_only", "daily_df_csv": os.path.relpath(target, root.parent),
+             "snapshot_note": "Ordinary materialized metadata", "preferred_daily_format": "csv",
+             "daily_filter_summary": {}, "data_api_resolution": {}}
+    protocol = read_json(case["context"]["development_protocol"]["path"])
+    assert bound_native_input_paths(local, request, protocol) == [target.resolve()]
+    # No heuristic search in alternate neighbouring roots when native resolution disagrees.
+    local["daily_df_csv"] = os.path.relpath(target, root)
+    with pytest.raises(SearchError, match="not in frozen"):
+        bound_native_input_paths(local, request, protocol)
+
+
+def test_real_prepared_daily_sample_consumer_with_full_sample_selectors(tmp_path, monkeypatch):
+    import importlib.util
+    import os
+    import pandas as pd
+    from factor_factory.research_search.native import bound_native_input_paths
+    from factor_factory.prepared_daily_inputs import validate_full_scope
+    root = tmp_path / "prepared"
+    root.mkdir()
+    monkeypatch.setenv("FACTORFORGE_ROOT", str(root))
+    monkeypatch.setenv("FACTORFORGE_LOCAL_IS_ONLY", "1")
+    for key in ("FACTORFORGE_FACTOR_WORKSPACE", "FACTORFORGE_SHARED_EVALUATION_CONTEXT"):
+        monkeypatch.delenv(key, raising=False)
+    days = ["20200102", "20200103", "20200106"]
+    frame = pd.DataFrame({"trade_date": days, "ts_code": ["000001.SZ"] * 3, "open": [1., 2., 3.], "close": [2., 4., 6.]})
+    frames = {"full": frame, "sample": frame.iloc[:2], "calendar": pd.DataFrame({"trade_date": days}),
+              "sample_calendar": pd.DataFrame({"trade_date": days[:2]})}
+    for name, values in frames.items():
+        values.to_parquet(root / (name + ".parquet"), index=False)
+    rel = lambda name: os.path.relpath(root / (name + ".parquet"), root.parent)
+    local = {"input_mode": "daily_only", "prepared_input_kind": "prepared_daily_v1",
+             "daily_df_parquet": rel("full"), "step3b_daily_df_parquet": rel("sample"),
+             "exchange_calendar_parquet": rel("calendar"), "step3b_exchange_calendar_parquet": rel("sample_calendar"),
+             "sample_window_actual": {"start": days[0], "end": days[-1]}, "step3b_sample_window": {"start": days[0], "end": days[1]},
+             "snapshot_note": "Engineering fixture; native prepared full/sample selectors"}
+    protocol = {"input_refs": [file_ref(root / (name + ".parquet")) for name in frames], "calendar_ref": file_ref(root / "calendar.parquet")}
+    assert len(bound_native_input_paths(local, {"workspace_root": str(root)}, protocol)) == 4
+    assert validate_full_scope(local, root.parent)["session_count"] == 3
+    spec = importlib.util.spec_from_file_location("search_prepared_native_step3", REPO / "skills/factor-forge-step3/scripts/run_step3b.py")
+    stage = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(stage)
+    impl = root / "factor.py"
+    impl.write_text("def compute_factor(daily_df, minute_df=None):\n    return daily_df[['ts_code','trade_date']].assign(factor_value=daily_df.close-daily_df.open)\n")
+    sample = stage.generate_first_run_factor_values("SEARCH_PREPARED_FIXTURE", "SEARCH_PREPARED_FIXTURE", impl,
+                        local, {"scope": "engineering_fixture"}, csv_output_policy="no_csv")
+    assert sample["is_formal_factor_values"] is False
+    actual = pd.read_parquet(root / "runs/SEARCH_PREPARED_FIXTURE/step3b_sample_factor_values__SEARCH_PREPARED_FIXTURE.parquet")
+    assert actual["factor_value"].tolist() == [1., 2.]

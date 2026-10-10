@@ -1,10 +1,8 @@
 from __future__ import annotations
 
-import ast
 import math
 import os
 import re
-from fractions import Fraction
 from typing import Any
 
 from .transient_impact import has_explicit_transient_impact_model as _has_explicit_transient_impact_model

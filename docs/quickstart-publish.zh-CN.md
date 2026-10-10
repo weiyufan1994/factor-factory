@@ -34,7 +34,7 @@ python -m pip check
 
 `console` 目前是保留的依赖分组名，包含 PDF/历史证明解析依赖，不表示启动 Web Console。纯 DataFrame 使用者安装框架 wheel 或 `pip install .` 即可；Step4 增加 `.[step4]`，明确选择 Qlib 时才安装 `.[qlib]`。
 
-`packaging/constraints-tested-macos.txt` 记录作者已测 macOS 环境的第三方版本，可在相同测试环境安装时加 `-c` 使用；它不是所有平台已通过的声明。依赖未缓存时安装需要网络；研究包没有自动下载行情、安装 Qlib或连接服务的步骤。
+第三方版本按实际测试环境记录：`packaging/constraints-tested-macos.txt` 对应 macOS Python 3.13，`packaging/constraints-tested-macos-py311.txt` 对应 macOS Python 3.11。在相同环境安装时可加 `-c` 使用；3.13 清单不能直接用于 3.11，也不是所有平台已通过的声明。依赖未缓存时安装需要网络；研究包没有自动下载行情、安装 Qlib 或连接服务的步骤。
 
 ## 三个手算例子
 

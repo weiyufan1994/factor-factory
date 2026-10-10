@@ -121,3 +121,8 @@ SHA 验证流式读取大文件，进程内缓存用 inode/size/mtime/ctime 共�
 已经选定的 prepared 输入。兼容修复让 Step4 显式传递本次 evaluation_daily_file 与
 SHA256；指标 consumer 对同一个打开的文件校验并读取，文件缺失、变化或读取期间
 被改写都会失败。未传显式选择的独立旧调用继续使用原有快照规则；指标定义不变。
+
+宿主准备 Step2/3 与 native worker 均须使用 child-workspace 本地的
+`FACTORFORGE_ADVISORY_ROOT`；可复用 `native_worker_environment(workspace_root)`。
+worker 固定该路由并拒绝知识目录通过符号链接越界。失败/未完成运行的原生 episode
+和索引保留在本研究空间、等待审阅，不隐式导出到 repo-root 共享索引。

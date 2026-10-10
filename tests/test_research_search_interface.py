@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -353,6 +354,48 @@ def test_actual_native_worker_rejection_is_retained_and_not_retried(case):
         execute_ready(case["ledger"], "search-1", t["ticket_id"])
     f = case["controller"].tick()["feedback"]
     assert f["candidate_score"] is None and f["status"] == "FAILED_KNOWN_COST"
+
+
+def test_worker_advisory_environment_keeps_real_failure_maintenance_local(tmp_path, monkeypatch):
+    from factor_factory.research_search.executor import native_worker_environment
+    from factor_factory.research_knowledge_maintenance import record_local_research_episode, refresh_episode_maintenance
+    root, repo = tmp_path / "native", tmp_path / "repo"
+    root.mkdir(); repo.mkdir()
+    marker = repo / "must-stay-unchanged.txt"
+    marker.write_text("original repository\n")
+    monkeypatch.setenv("FACTORFORGE_ADVISORY_ROOT", str(tmp_path / "shared-advisory"))
+    env = native_worker_environment(root)
+    for key in list(os.environ):
+        if key.startswith("FACTORFORGE_"):
+            monkeypatch.delenv(key)
+    for key, value in env.items():
+        if key.startswith("FACTORFORGE_"):
+            monkeypatch.setenv(key, value)
+    assert env["FACTORFORGE_ADVISORY_ROOT"] == str(root / "knowledge/local_advisory")
+    # Explicit test input to the real maintenance consumers, not a native-run proof.
+    record = record_local_research_episode(
+        proof={"status": "FAIL", "commands": [{"name": "validate_step4", "status": "FAIL", "returncode": 1}]},
+        workspace=root, repo_root=repo, report_id="SYNTHETIC_FAILED_SEARCH", dry_run=False, local_is_only=True,
+    )
+    assert record["status"] == "RECORDED" and record["export_status"] == "PENDING_REVIEW"
+    maintenance = refresh_episode_maintenance(workspace=root, repo_root=repo, report_id="SYNTHETIC_FAILED_SEARCH")
+    assert maintenance["shared_status"] == "PENDING_REVIEW"
+    assert maintenance["dispatch_status"] == "NOT_DISPATCHED"
+    assert Path(maintenance["workspace_index"]).is_relative_to(root)
+    assert list(repo.rglob("*")) == [marker]
+    assert marker.read_text() == "original repository\n"
+
+
+def test_advisory_symlink_escape_blocks_before_worker_claim(case):
+    t = ready(case, dispatch(case))
+    root = Path(t["native_request"]["workspace_root"])
+    outside = case["tmp"] / "shared-knowledge"
+    outside.mkdir()
+    (root / "knowledge").symlink_to(outside, target_is_directory=True)
+    with pytest.raises(SearchError, match="inside the child workspace"):
+        execute_ready(case["ledger"], "search-1", t["ticket_id"])
+    assert case["ledger"].ticket("search-1", t["ticket_id"])["state"] == "READY"
+    assert list(outside.iterdir()) == []
 
 
 def test_cli_and_file_dispatch_are_idempotent(case):

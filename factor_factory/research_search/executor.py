@@ -76,6 +76,21 @@ def execution_dir(ticket: Mapping[str, Any]) -> Path:
     return Path(ticket["native_request"]["workspace_root"]) / "objects/research_search/executions" / ticket["ticket_id"]
 
 
+def native_worker_environment(workspace_root: str | Path) -> dict[str, str]:
+    """Use native local advisory routing instead of the repository fallback."""
+    root = Path(workspace_root).resolve(strict=True)
+    for relative in ("knowledge", "knowledge/retrieval", "knowledge/maintenance",
+                     "knowledge/research_episodes", "knowledge/local_advisory"):
+        target = root / relative
+        if target.is_symlink() or not target.resolve().is_relative_to(root):
+            raise SearchError("native advisory storage must stay inside the child workspace")
+    env = {k: v for k, v in os.environ.items() if not k.startswith("FACTORFORGE_")}
+    env.update(FACTORFORGE_FACTOR_WORKSPACE=str(root), FACTORFORGE_LOCAL_IS_ONLY="1",
+               FACTORFORGE_ADVISORY_ROOT=str(root / "knowledge/local_advisory"),
+               PYTHONDONTWRITEBYTECODE="1")
+    return env
+
+
 def reconcile_dispatch(ledger: SearchLedger, campaign: str, ticket_id: str) -> dict:
     """File publication is idempotent; this never repeats a native computation."""
     ticket = ledger.ticket(campaign, ticket_id)
@@ -116,15 +131,13 @@ def execute_ready(ledger: SearchLedger, campaign_id: str, ticket_id: str) -> dic
     costs = bound_json(c["budget_authority"])["execution_cost_policy"]
     if prep_cost > costs["preparation_seconds"]:
         raise SearchError("preparation exceeded its frozen stage allowance")
+    env = native_worker_environment(r["workspace_root"])
     ticket = ledger.transition(ticket_id, {"READY"}, "RUNNING")
     out = execution_dir(ticket)
     out.mkdir(parents=True, exist_ok=True)
     proof_path = out / "native_proof.json"
     argv = command_for_ticket(ticket, proof_path)
     started_at, start = now(), time.monotonic()
-    env = {k: v for k, v in os.environ.items() if not k.startswith("FACTORFORGE_")}
-    env.update(FACTORFORGE_FACTOR_WORKSPACE=r["workspace_root"], FACTORFORGE_LOCAL_IS_ONLY="1",
-               PYTHONDONTWRITEBYTECODE="1")
     error = ""
     try:
         with (out / "stdout.log").open("wb") as stdout, (out / "stderr.log").open("wb") as stderr:

@@ -72,9 +72,15 @@ def main() -> None:
 
     def score(candidate):
         compiled = compile_candidate(candidate, scope, available_columns=list(frame.columns))
-        values = compute_candidate(compiled, {"daily_df": frame}).factor_value
-        errors = (values - target).loc[common_start:].dropna()
-        return -float((errors * errors).mean()) if len(errors) else -1_000_000.0
+        values = compute_candidate(compiled, {"daily_df": frame}).factor_value.loc[common_start:]
+        target_window = target.loc[common_start:]
+        if (not values.index.equals(target_window.index)
+                or len(values) != 2 * (len(dates) - max(scope.allowed_windows) * scope.max_depth)
+                or not np.isfinite(values.to_numpy()).all()
+                or not np.isfinite(target_window.to_numpy()).all()):
+            raise ValueError("fixed common evaluation window must be complete and finite")
+        errors = values - target_window
+        return -float((errors * errors).mean())
 
     gp = run_expression_gp(scope, evaluator=score, seed=11, population_size=8, generations=3)
     mcts = run_expression_mcts(scope, evaluator=score, seed=11, iterations=32)

@@ -122,6 +122,33 @@ def test_new_response_with_matching_induction_delta_can_reach_evaluator():
     assert result.expansions[0].successor.response_structure == "affine three-lag kernel"
 
 
+def test_old_induction_record_with_historical_delta_cannot_be_reused():
+    record = replace(
+        approved_scope().induction_record,
+        record_id="already-bound", parent_delta=("an earlier mechanism change",),
+    )
+    state = MechanismState(**{**_state().__dict__, "induction_record_hash": record.record_hash})
+    action = ResearchAction(
+        "reuse-old", "deepen", "explore", 1.0, "attempt to reuse old induction",
+        mechanism="a changed mechanism", induction_record=record)
+    calls = []
+    result = run_mechanism_mcts(
+        initial_state=state, actions=(action,), evaluator=lambda *args: calls.append(args),
+        protocol_id="disc-v1", seed=5, total_budget=1.0, max_expansions=1)
+    assert calls == []
+    assert result.expansions[0].successor.status == "needs_induction"
+
+
+def test_repeated_existing_assumption_does_not_require_new_induction():
+    action = ResearchAction(
+        "repeat-known", "estimate", "exploit", 1.0, "estimate under an existing premise",
+        add_assumptions=("x is observed by t",), add_unknowns=("coefficient precision",))
+    child = apply_research_action(_state(), action)
+    assert child.status == "active"
+    assert child.assumptions == _state().assumptions
+    assert "coefficient precision" in child.unknowns
+
+
 def test_mismatched_equivalence_and_expression_score_cannot_change_mechanism():
     action = _conditional_actions()[0]
     result = run_mechanism_mcts(

@@ -158,9 +158,10 @@ def apply_research_action(state: MechanismState, action: ResearchAction) -> Mech
         (action.response_structure and action.response_structure != state.response_structure)
         or (action.response_family and action.response_family != state.response_family)
     )
+    new_assumptions = tuple(row for row in action.add_assumptions if row not in state.assumptions)
     changes_economics = bool(
         (action.mechanism and action.mechanism != state.mechanism)
-        or action.add_assumptions
+        or new_assumptions
     )
     requires_induction = changes_response or changes_economics
     if requires_induction and action.induction_record is None:
@@ -169,10 +170,13 @@ def apply_research_action(state: MechanismState, action: ResearchAction) -> Mech
     if requires_induction:
         assert action.induction_record is not None
         expected_family = action.response_family or state.response_family
+        if action.induction_record.record_hash == state.induction_record_hash:
+            return replace(state, state_id=f"{state.state_id}/{action.action_id}", status="needs_induction",
+                           depth=state.depth + 1)
         if (not action.induction_record.parent_delta
                 or action.induction_record.response_family != expected_family):
             raise ValueError("changed economics or response requires a matching induction delta")
-    assumptions = tuple(dict.fromkeys(state.assumptions + action.add_assumptions))
+    assumptions = tuple(dict.fromkeys(state.assumptions + new_assumptions))
     unknowns = tuple(row for row in state.unknowns if row not in set(action.resolve_unknowns))
     unknowns = tuple(dict.fromkeys(unknowns + action.add_unknowns))
     successor = MechanismState(

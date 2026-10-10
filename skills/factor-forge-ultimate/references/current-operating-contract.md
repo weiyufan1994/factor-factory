@@ -7,6 +7,21 @@ presence in the source tree does not make them local prerequisites.
 
 ## Workspace and evidence
 
+For a new study, run the existing initializer from this checkout or unpacked
+source tree. Choose a writable research home outside the installed package:
+
+```sh
+python3 scripts/init_factor_research_workspace.py \
+  --factor-id <factor_id> --research-id <research_id> --report-id <report_id> \
+  --factorforge-root /path/to/research-home --implementation-mode direct_code
+```
+
+Use the printed `workspace_root` as `--factor-workspace`, not the research home
+or package directory. The initializer creates layout and identity only; it does
+not author source understanding, a specification, review or research results.
+For an existing study, read its manifest and resume instead of initializing a
+new identity. Select operator/direct-code/hybrid from the intended mathematics.
+
 Inspect repository status and choose one declared
 `factor_research/<factor_id>/<research_id>/` workspace. Validate the manifest and
 keep code, Step artifacts, runtime copies, reports, Council and local knowledge

@@ -78,6 +78,8 @@ python scripts/run_factorforge_ultimate.py --help-all
 
 实际研究使用单独工作区、用户指定 IS 范围和已有 Data API/catalog。普通本地 IS 走 `--local-is-only`，不要求部署 Host/SoD。改变经济机制或估计对象时回到 Step2；Step3 代码先经真实评审再执行。新普通研究 V2 允许一条充分的推导/证伪和有理由停止，旧研究保留原解释。
 
+新研究工作区的创建命令和 Step3B→评审→Step4 的恢复顺序见源码根下 `skills/factor-forge-ultimate/references/current-operating-contract.md`。工作区放在自己的研究目录，包目录只作代码来源。三个手算例子只检查 SDK；它们不会创建一项已完成的 Ultimate 研究。
+
 ## 知识读取与搜索
 
 ```bash

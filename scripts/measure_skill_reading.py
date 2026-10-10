@@ -29,10 +29,17 @@ def guidance_bytes(root: Path, path: str, ref: str | None = None) -> bytes:
 def measure(root: Path, selection: dict[str, Any], *, baseline: str,
             opened: dict[str, Any] | None = None) -> dict[str, Any]:
     """Paths are an explicit scenario plan, not inferred mandatory-link closure."""
-    revision = subprocess.check_output(
-        ["git", "rev-parse", "--verify", "--end-of-options", f"{baseline}^{{commit}}"],
-        cwd=root, text=True,
-    ).strip()
+    try:
+        revision = subprocess.check_output(
+            ["git", "rev-parse", "--verify", "--end-of-options", f"{baseline}^{{commit}}"],
+            cwd=root, text=True, stderr=subprocess.PIPE,
+        ).strip()
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError(
+            "Before/after reading measurement needs a Git development checkout "
+            f"containing baseline {baseline!r}. An unpacked delivery has no Git "
+            "history; run this tool in the source checkout, not the delivery."
+        ) from exc
     cache: dict[tuple[str | None, str], int] = {}
 
     def size(path: str, version: str) -> int:
@@ -115,7 +122,10 @@ def main() -> None:
     root = args.root.resolve()
     config = json.loads((root / "packaging/research-skills.json").read_text(encoding="utf-8"))
     opened = json.loads(args.opened_guidance_log.read_text(encoding="utf-8")) if args.opened_guidance_log else None
-    result = measure(root, config, baseline=args.baseline or config["baseline_ref"], opened=opened)
+    try:
+        result = measure(root, config, baseline=args.baseline or config["baseline_ref"], opened=opened)
+    except ValueError as exc:
+        parser.error(str(exc))
     content = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)

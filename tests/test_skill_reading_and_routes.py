@@ -72,3 +72,27 @@ def test_counting_deduplicates_paths_and_keeps_observed_reading_separate(tmp_pat
 def test_missing_guidance_is_not_silently_omitted(tmp_path):
     with pytest.raises(FileNotFoundError):
         guidance_bytes(tmp_path, "missing.md")
+
+
+def test_measurement_without_git_history_reports_required_source_checkout(tmp_path):
+    with pytest.raises(ValueError, match="Git development checkout"):
+        measure(tmp_path, {}, baseline="HEAD")
+
+
+def test_measurement_cli_without_git_exits_without_writing_result(tmp_path):
+    import sys
+
+    (tmp_path / "packaging").mkdir()
+    (tmp_path / "packaging/research-skills.json").write_text(
+        json.dumps({"baseline_ref": "HEAD"}), encoding="utf-8"
+    )
+    output = tmp_path / "measurement.json"
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/measure_skill_reading.py"),
+         "--root", str(tmp_path), "--output", str(output)],
+        capture_output=True, text=True,
+    )
+    assert result.returncode == 2
+    assert "Git development checkout" in result.stderr
+    assert "Traceback" not in result.stderr
+    assert not output.exists()

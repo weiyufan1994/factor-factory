@@ -290,11 +290,14 @@ class TwoLevelCandidateProposer:
             "proposal_id": "ast-" + candidate.root.node_hash[:20],
             "parent_candidate_hash": parent_hash,
             "proposer": {"kind": "d05_two_level_ast", "version": "1", "seed": seed},
-            "mutation_class": "implementation_equivalent",
+            # A different complete expression is a reviewed-family estimator
+            # proposal, not a numerically equivalent implementation. The
+            # existing executor therefore routes it back through Step2.
+            "mutation_class": "measurement_variant",
             "program": {"mode": "operator", "expression": candidate.expression,
                         "required_inputs": [row.name for row in self.binding.scope.allowed_fields]},
             "semantics": dict(parent["semantics"]),
-            "changes": ["implementation"],
+            "changes": ["observation_map", "implementation"],
             "public_derivation": canonical({
                 "induction_record_hash": self.binding.scope.induction_record.record_hash,
                 "induction_scope_hash": self.binding.scope.scope_hash,

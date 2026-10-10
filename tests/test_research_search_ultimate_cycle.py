@@ -181,9 +181,10 @@ def test_generated_ast_children_use_existing_proposer_and_ledger_path(case):
     assert len(children) == 3
     for row in children:
         proposal = __import__("json").loads(row["proposal_json"])
-        assert proposal["mutation_class"] == "implementation_equivalent"
+        assert proposal["mutation_class"] == "measurement_variant"
         assert proposal["parent_candidate_hash"] == reviewed["proposal"]["candidate_hash"]
         assert proposal["semantics"] == reviewed["proposal"]["semantics"]
+        assert proposal["changes"] == ["observation_map", "implementation"]
     count = len(snapshot["proposals"])
     recovered = TwoLevelCandidateProposer(binding, population_size=3)
     assert reviewed["controller"].propose(recovered) == {"registered": [], "duplicates": []}
@@ -216,7 +217,7 @@ def test_pending_is_not_scored_and_terminal_native_metric_becomes_step6_material
             reviewed["controller"], replace(binding, context_hash="0" * 64))
 
 
-def test_feedback_changes_parent_lineage_and_formula_runs_standard_factor(case):
+def test_feedback_generates_formula_and_routes_novel_ast_back_to_step2(case):
     reviewed, ticket, declaration = _reviewed_case(case)
     binding = bind_reviewed_step2_scope(reviewed["context"], reviewed["proposal"], ticket, declaration)
     running = reviewed["ledger"].transition(ticket["ticket_id"], {"READY"}, "RUNNING")
@@ -228,7 +229,9 @@ def test_feedback_changes_parent_lineage_and_formula_runs_standard_factor(case):
                  for row in snapshot["proposals"]}
     child_reservation = reviewed["controller"].tick()
     assert child_reservation["state"] == "RESERVED"
-    assert reviewed["controller"].tick()["state"] == "WAITING_PREPARATION"
+    dispatch = reviewed["controller"].tick()
+    assert dispatch["state"] == "WAITING_PREPARATION"
+    assert read_json(dispatch["action_ref"]["path"])["entry_step"] == "2"
     child_ticket = reviewed["ledger"].ticket("b3-cycle", child_reservation["ticket_id"])
     child = proposals[child_ticket["candidate_hash"]]
     assert child["parent_candidate_hash"] == reviewed["proposal"]["candidate_hash"]
@@ -240,23 +243,6 @@ def test_feedback_changes_parent_lineage_and_formula_runs_standard_factor(case):
     values = FormulaFactor(child["program"]["expression"], name="b3-synthetic")({"daily_df": frame})
     assert len(values) == len(frame)
     assert values.index.is_unique
-    raw_metric = float(values.factor_value.fillna(0).abs().mean())
-    derived_metric = 0.5 + raw_metric / (2 * (1 + raw_metric))
-
-    child_ticket = _ready(reviewed, child_ticket, child, declaration=declaration)
-    child_running = reviewed["ledger"].transition(child_ticket["ticket_id"], {"READY"}, "RUNNING")
-    child_feedback = reviewed["ledger"].record_feedback(
-        child_ticket["ticket_id"], result(reviewed, child_running, value=derived_metric))
-    assert child_feedback["candidate_score"] == pytest.approx(derived_metric)
-
-    next_generation = reviewed["controller"].propose(
-        TwoLevelCandidateProposer(binding, population_size=1))["registered"]
-    assert len(next_generation) == 1
-    final_snapshot = reviewed["ledger"].snapshot("b3-cycle")
-    final = next(__import__("json").loads(row["proposal_json"])
-                 for row in final_snapshot["proposals"]
-                 if row["candidate_hash"] == next_generation[0])
-    assert final["parent_candidate_hash"] == child["candidate_hash"]
 
 
 def test_unreviewed_or_unadmitted_scope_fails_before_generation(case):

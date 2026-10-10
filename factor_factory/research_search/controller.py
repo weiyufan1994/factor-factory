@@ -42,7 +42,11 @@ class ResearchSearchController:
                 "candidates": [{k: p[k] for k in ("candidate_hash", "parent_candidate_hash", "program", "semantics",
                                                   "expected_metric_signature", "falsifiers", "kill_criteria")} for p in proposals],
                 "development_feedback": [{k: f[k] for k in ("candidate_hash", "status", "candidate_score",
-                                                             "learning_increment", "actual_cost", "data_kind")} for f in self._feedback(snapshot)]}
+                                                             "learning_increment", "actual_cost", "data_kind")} for f in self.verified_feedback(snapshot)]}
+
+    def verified_feedback(self, snapshot: dict | None = None) -> list[dict]:
+        """Return replay-verified terminal feedback; pending tickets are absent."""
+        return self._feedback(snapshot or self.ledger.snapshot(self.campaign_id))
 
     def propose(self, provider: CandidateProposer) -> dict:
         context = self.proposer_context()

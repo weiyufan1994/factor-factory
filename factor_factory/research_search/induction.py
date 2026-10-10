@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import re
 from typing import Iterable
 
 
@@ -93,9 +94,9 @@ class FieldSpec:
 class ForwardInductionRecord:
     """Public, auditable content consumed before expression search.
 
-    B1 intentionally accepts only ``synthetic_fixture``. Production Step2/Step6
-    review binding is deferred to the later integration batch, so this slice
-    cannot promote an unreviewed payload by setting a boolean or status string.
+    Synthetic fixtures carry no review authority. A production Step2 record is
+    accepted only with the content hash created by the native review-binding
+    adapter; a caller cannot promote an unreviewed payload with a status flag.
     """
 
     record_id: str
@@ -112,10 +113,11 @@ class ForwardInductionRecord:
     falsifiers: tuple[str, ...]
     review_decision: str
     data_exposure: str
+    review_binding_hash: str | None = None
 
     def __post_init__(self) -> None:
-        if self.origin != "synthetic_fixture":
-            raise ValueError("B1 induction records are synthetic fixtures only")
+        if self.origin not in {"synthetic_fixture", "step2_review"}:
+            raise ValueError("unsupported induction record origin")
         if self.review_decision != "proceed":
             raise ValueError("only a proceed induction record can define search scope")
         if self.response_constraint != "causal_affine":
@@ -131,8 +133,13 @@ class ForwardInductionRecord:
         allowed = {"field", "constant", "plus", "minus", "multiply", "divide", "delay", "mean"}
         if not set(self.grammar_productions).issubset(allowed):
             raise ValueError("induction grammar contains unsupported productions")
-        if self.origin == "synthetic_fixture" and self.data_exposure != "synthetic_only":
-            raise ValueError("synthetic induction records cannot authorize market data")
+        if self.origin == "synthetic_fixture":
+            if self.data_exposure != "synthetic_only" or self.review_binding_hash is not None:
+                raise ValueError("synthetic induction records cannot carry reviewed data authority")
+        elif (self.data_exposure != "development_only"
+              or not isinstance(self.review_binding_hash, str)
+              or not re.fullmatch(r"[0-9a-f]{64}", self.review_binding_hash)):
+            raise ValueError("Step2 induction requires a bound review hash and development-only scope")
 
     @property
     def record_hash(self) -> str:
@@ -147,6 +154,7 @@ class ForwardInductionRecord:
             "grammar_productions": list(self.grammar_productions), "conclusions": list(self.conclusions),
             "falsifiers": list(self.falsifiers), "review_decision": self.review_decision,
             "data_exposure": self.data_exposure,
+            "review_binding_hash": self.review_binding_hash,
         }
 
 

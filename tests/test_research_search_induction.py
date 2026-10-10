@@ -34,7 +34,7 @@ def test_induction_needs_substantive_public_content_and_step2_adapter():
             response_family="family", response_constraint="causal_affine",
             grammar_productions=("field",), conclusions=(), falsifiers=(),
             review_decision="proceed", data_exposure="synthetic_only")
-    with pytest.raises(ValueError, match="synthetic fixtures only"):
+    with pytest.raises(ValueError, match="bound review hash"):
         ForwardInductionRecord(
             record_id="not-reviewed", origin="step2_review", source_ref="file-ref",
             assumptions=("a",), key_derivation_steps=("d",), parent_delta=(), observation_map="map",

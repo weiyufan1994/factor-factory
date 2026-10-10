@@ -71,6 +71,44 @@ def _shared_context_env_path() -> Path | None:
     return Path(raw).expanduser()
 
 
+def _selected_daily_snapshot() -> tuple[Path, str, str] | None:
+    """Read Step4's explicit selection; invalid bindings never use a fallback."""
+    raw = os.getenv('FACTORFORGE_EVALUATION_DAILY_INPUT_PATH')
+    expected = os.getenv('FACTORFORGE_EVALUATION_DAILY_INPUT_SHA256')
+    if raw is None and expected is None:
+        return None  # Historical standalone calls retain their snapshot contract.
+    if not raw or not expected:
+        raise ValueError('explicit evaluation daily input requires path and SHA256')
+    path = Path(raw)
+    if not path.is_absolute() or path.suffix.lower() not in {'.parquet', '.csv'}:
+        raise ValueError('explicit evaluation daily input requires an absolute parquet/csv path')
+    if not path.is_file():
+        raise FileNotFoundError(f'explicit evaluation daily input missing: {path}')
+    return path, path.suffix.lower().removeprefix('.'), expected
+
+
+def _load_selected_daily_snapshot(selection: tuple[Path, str, str], columns: list[str]) -> pd.DataFrame:
+    path, fmt, expected = selection
+    # Hash and read the same open file, not two path resolutions. Replacing
+    # the pathname cannot substitute another file between these operations;
+    # an in-place write during hashing/reading is detected before returning.
+    with path.open('rb') as stream:
+        before = os.fstat(stream.fileno())
+        digest = hashlib.sha256()
+        for block in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(block)
+        if digest.hexdigest() != expected:
+            raise ValueError('explicit evaluation daily input SHA256 mismatch')
+        stream.seek(0)
+        frame = (pd.read_parquet(stream, columns=columns) if fmt == 'parquet'
+                 else pd.read_csv(stream, usecols=columns))
+        after = os.fstat(stream.fileno())
+    identity = lambda stat: (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+    if identity(before) != identity(after):
+        raise ValueError('explicit evaluation daily input changed during read')
+    return frame
+
+
 def _validate_shared_context_identity(report_id: str, context: dict[str, Any]) -> tuple[bool, str | None]:
     context_version = context.get('version')
     if context_version not in {
@@ -91,6 +129,12 @@ def _validate_shared_context_identity(report_id: str, context: dict[str, Any]) -
     daily_path = Path(daily_path_raw).expanduser() if daily_path_raw else None
     if not daily_path or not daily_path.exists():
         return False, 'daily_input_path_missing'
+    selected_raw = os.getenv('FACTORFORGE_EVALUATION_DAILY_INPUT_PATH')
+    if selected_raw and (
+        daily_path.resolve() != Path(selected_raw).resolve()
+        or context.get('daily_input_hash') != os.getenv('FACTORFORGE_EVALUATION_DAILY_INPUT_SHA256')
+    ):
+        return False, 'daily_input_selection_mismatch'
     if not factor_path.exists():
         return False, 'factor_values_path_missing'
     if context.get('factor_values_hash') != _sha256_file(factor_path):
@@ -678,6 +722,7 @@ def _build_quality_warnings(
 
 def run_self_quant_quick(report_id: str) -> dict[str, Any]:
     timer = PhaseTimer()
+    selected_daily = _selected_daily_snapshot()
     web_tradeable_timing = _uses_tradeable_web_timing(report_id)
     calendar_path = os.environ.get('FACTORFORGE_EXCHANGE_CALENDAR_PATH')
     calendar_dates = None
@@ -705,8 +750,13 @@ def run_self_quant_quick(report_id: str) -> dict[str, Any]:
         with timer.phase('load_daily_snapshot'):
             if web_tradeable_timing and calendar_dates is None:
                 raise ValueError('executable web timing fallback requires an explicit exchange calendar')
-            daily_snapshot_path, daily_snapshot_format = resolve_daily_snapshot_path(report_id)
-            daily_df = load_daily_snapshot(report_id, columns=['ts_code', 'trade_date', 'close', 'pct_chg'])
+            columns = ['ts_code', 'trade_date', 'close', 'pct_chg']
+            if selected_daily is None:
+                daily_snapshot_path, daily_snapshot_format = resolve_daily_snapshot_path(report_id)
+                daily_df = load_daily_snapshot(report_id, columns=columns)
+            else:
+                daily_snapshot_path, daily_snapshot_format, _ = selected_daily
+                daily_df = _load_selected_daily_snapshot(selected_daily, columns)
             daily_df = build_forward_return_frame(
                 daily_df.rename(columns={'ts_code': 'code'}),
                 instrument_col='code',

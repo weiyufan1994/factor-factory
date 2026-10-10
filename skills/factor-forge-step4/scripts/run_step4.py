@@ -1860,6 +1860,7 @@ def write_backend_payloads(
     shared_context: dict[str, Any] | None = None,
     factor_parquet_path: Path | None = None,
     exchange_calendar_path: Path | None = None,
+    evaluation_daily_path: Path | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     # Builtin adapters and custom adapters share one payload contract.
     updated: list[dict[str, Any]] = []
@@ -1876,6 +1877,14 @@ def write_backend_payloads(
         p.parent.mkdir(parents=True, exist_ok=True)
         backend = item.get('backend')
         backend_cfg = dict(item.get('backend_config')) if isinstance(item.get('backend_config'), dict) else {}
+        if backend == 'self_quant_analyzer' and evaluation_daily_path is not None:
+            # The evaluator must consume the same selected price input as
+            # Step4, including prepared-daily files outside legacy snapshots.
+            selected_daily = evaluation_daily_path.resolve(strict=True)
+            raw_env = dict(backend_cfg.get('env') or {})
+            raw_env['FACTORFORGE_EVALUATION_DAILY_INPUT_PATH'] = str(selected_daily)
+            raw_env['FACTORFORGE_EVALUATION_DAILY_INPUT_SHA256'] = sha256_file(selected_daily)
+            backend_cfg['env'] = raw_env
         shared_context_path = ((shared_context or {}).get('paths') or {}).get('context_json')
         if shared_context_path:
             raw_env = dict(backend_cfg.get('env')) if isinstance(backend_cfg.get('env'), dict) else {}
@@ -6335,6 +6344,7 @@ def main() -> None:
             backend_runs,
             manifest_path_arg=manifest_path_arg,
             exchange_calendar_path=exchange_calendar_file,
+            evaluation_daily_path=evaluation_daily_file,
             shared_context=shared_context,
             factor_parquet_path=parquet_path,
         )

@@ -28,9 +28,10 @@ def test_help_preserves_full_parser_but_prioritizes_research():
     assert parse_args(args).start_step == "3"
 
 
-def _process(code, tmp_path):
+def _process(code, tmp_path, *, env_additions=None):
     env = {k: v for k, v in os.environ.items() if not k.startswith("FACTORFORGE_")}
     env.update(PYTHONDONTWRITEBYTECODE="1", PYTHONPATH=str(REPO))
+    env.update(env_additions or {})
     completed = subprocess.run(
         [sys.executable, "-B", "-c", code], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=60,
@@ -89,3 +90,39 @@ try:
 except SystemExit as exc:
     assert exc.code == 0
 ''', tmp_path)
+
+
+def test_real_step4_computation_and_backend_keep_hosted_modules_unloaded(tmp_path):
+    """Fresh parent and real backend child, using the existing synthetic study.
+
+    This covers Step4 computation/evaluation, not an independent Step2/6 review
+    or a complete Ultimate research acceptance. Only temporary input/output
+    paths and environment are selected by the fixture; the backend is not mocked.
+    """
+    hook = tmp_path / 'python-startup'
+    hook.mkdir()
+    trace = tmp_path / 'processes.txt'
+    (hook / 'sitecustomize.py').write_text(BOUNDARY + f'''
+import os
+def record_boundary_event(event, args):
+    if event == "exec" and getattr(args[0], "co_filename", "").endswith("pfvv_monthly_step4_backend_v1.py"):
+        with open({str(trace)!r}, "a") as stream:
+            stream.write("backend " + str(os.getpid()) + "\\n")
+sys.addaudithook(record_boundary_event)
+with open({str(trace)!r}, "a") as stream:
+    stream.write("guard " + str(os.getpid()) + "\\n")
+''')
+    _process('''
+from pathlib import Path
+from pytest import MonkeyPatch
+from tests.test_pfvv_step4_pipeline_integration import (
+    test_prepared_pfvv_controller_reaches_current_step4_output_and_monthly_backend,
+)
+with MonkeyPatch.context() as patch:
+    test_prepared_pfvv_controller_reaches_current_step4_output_and_monthly_backend(Path.cwd(), patch)
+''', tmp_path, env_additions={'PYTHONPATH': os.pathsep.join([str(hook), str(REPO)])})
+    observed = [row.split() for row in trace.read_text().splitlines()]
+    guards = {pid for kind, pid in observed if kind == 'guard'}
+    backends = {pid for kind, pid in observed if kind == 'backend'}
+    assert len(guards) >= 2
+    assert len(backends) == 1 and backends <= guards

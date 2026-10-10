@@ -131,11 +131,17 @@ def test_operator_direct_hybrid_compute_and_metric_consumers_agree(tmp_path, mon
         if mode == "operator":
             source = generate_pandas_formula_code(report_id=report_id, factor_id=report_id, formula_ir=formula)
         elif mode == "direct_code":
-            source = stage3.ensure_direct_code_keyword_adapter(
+            source = (
                 "import numpy as np\n"
-                "def compute_factor(daily_df, *, minute_df=None):\n"
-                "    values = np.select([np.isfinite(daily_df.close)], [daily_df.close-daily_df.open], default=np.nan)\n"
-                "    return daily_df[['ts_code','trade_date']].assign(factor_value=values)\n"
+                "from factor_factory.factors import PriceVolumeFactor\n"
+                "class DirectFactor(PriceVolumeFactor):\n"
+                "    name = 'direct_fixture'\n"
+                "    input_columns = {'daily_df': ('ts_code', 'trade_date', 'open', 'close')}\n"
+                "    def compute(self, inputs):\n"
+                "        daily_df = inputs['daily_df']\n"
+                "        values = np.select([np.isfinite(daily_df.close)], [daily_df.close-daily_df.open], default=np.nan)\n"
+                "        return daily_df[['ts_code','trade_date']].assign(factor_value=values)\n"
+                "FACTOR = DirectFactor()\n"
             )
         else:
             source = stage3.generate_hybrid_code(
@@ -146,6 +152,11 @@ def test_operator_direct_hybrid_compute_and_metric_consumers_agree(tmp_path, mon
                 boundary={}, contract={"hybrid_contract_version": "offline_fixture"},
             )
         implementation.write_text(source)
+        module = _load(implementation)
+        assert hasattr(module, 'FACTOR') and not hasattr(module, 'compute_factor')
+        canonical = module.FACTOR.run({'daily_df': daily})
+        assert canonical.index.names == ['datetime', 'instrument']
+        assert list(canonical.columns) == ['factor_value']
         sample = stage3.generate_first_run_factor_values(
             report_id, report_id, implementation,
             {"input_mode": "daily_only", "daily_df_parquet": str(input_path)},

@@ -2923,8 +2923,18 @@ def _compute_sp3_from_intraday_flow_daily(daily_df: pd.DataFrame, flow_daily: pd
 
 
 def _supports_sp3_intraday_flow_fast_path(module: Any) -> bool:
+    # This optimized recognizer belongs to historical function artifacts only.
+    # New class code owns its named-input implementation, even if it imports an
+    # old helper; it must not be replaced by a token-selected legacy kernel.
+    from factor_factory.factors import BaseFactor
+    if isinstance(module, BaseFactor) or hasattr(module, 'FACTOR'):
+        return False
+    fn = getattr(module, '_factorforge_user_compute_factor', None)
+    if fn is None:
+        fn = getattr(module, 'compute_factor', None)
+    if not callable(fn):
+        return False
     try:
-        fn = getattr(module, '_factorforge_user_compute_factor', getattr(module, 'compute_factor'))
         source = inspect.getsource(fn)
     except (OSError, TypeError):
         return False

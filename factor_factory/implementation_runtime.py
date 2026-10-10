@@ -206,6 +206,23 @@ def source_declares_legacy_callable(source: str) -> bool:
                for node in ast.parse(source).body)
 
 
+def validate_factor_authoring(source: str, contract: dict | None = None) -> None:
+    """Check new source without executing it; historical invocation is separate.
+
+    A FACTOR binding is only a structural check. The shared runtime subsequently
+    verifies BaseFactor type, named inputs and the standard output table.
+    """
+    compile(source, '<factor_authoring>', 'exec')
+    if not source_declares_factor_instance(source) or source_declares_legacy_callable(source):
+        raise ValueError('new factor source must export FACTOR only: module-level FACTOR = FactorClass(); implement BaseFactor.compute(inputs)')
+    for key in ('entrypoint', 'function_name'):
+        if (contract or {}).get(key) not in (None, '', 'FACTOR'):
+            raise ValueError(f'{key} must be FACTOR for new factor source')
+    output = (contract or {}).get('output_schema')
+    if output and (not isinstance(output, dict) or output.get('index') != ['datetime', 'instrument'] or output.get('columns') != ['factor_value']):
+        raise ValueError('FACTOR output_schema requires datetime/instrument index and factor_value column')
+
+
 def implementation_callable(implementation: Any) -> Callable:
     """Expose the same named-frame callable for class and legacy interfaces."""
     from factor_factory.factors import BaseFactor

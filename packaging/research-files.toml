@@ -303,6 +303,7 @@ include = [
   "tests/test_step6_researcher_identity.py",
   "tests/test_step6_reviewed_failure_projection.py",
   "tests/test_three_mode_metric_pipeline.py",
+  "tests/test_factor_authoring_entrypoint.py",
   "tests/test_transient_impact_kernels.py",
   "tests/test_transient_signal_method_reference.py",
   "tests/test_ultimate_library_boundary.py",

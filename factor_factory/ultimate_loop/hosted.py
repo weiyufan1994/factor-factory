@@ -367,12 +367,6 @@ def prepare_hosted_execution(
     ):
         print('BLOCK_FACTORFORGE_WEB_OOS_PRIVATE_LOCATOR_PATH_MIXED')
         return 1
-    if (
-        web_evo_action != 'LEGACY_WEB_EXECUTION'
-        and args.apply_approved_revision
-    ):
-        print('BLOCK_FACTORFORGE_EVO_V2_PARENT_REVISION_APPLICATION_FORBIDDEN')
-        return 1
     web_evo_wait_only = web_evo_action in {
         'AWAIT_HOST_QUALIFICATION',
         'RUN_PRE_OOS_REVISION_COUNCIL',

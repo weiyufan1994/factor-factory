@@ -1,6 +1,6 @@
 # D0.5 施工状态
 
-2026-10-10 · 本文件区分计划、实际实现和实际验证。
+2026-10-11 · 本文件区分计划、实际实现和实际验证。
 
 ## 对齐结果
 
@@ -63,7 +63,7 @@
 - L2 GP：22 个唯一评价、2 次复用；MCTS：32 个唯一评价。候选经标准 FormulaFactor 计算，在固定共同窗口对合成 `x + 0.5*y` 目标计算负 MSE。
 - GP 示例最优为 `(y + delay(mean(x, 3), 2))`；MCTS 示例为 `(mean(delay(y, 2), 3) + mean(delay(x, 3), 1))`。这是结构生成/数值路径证据，预算不同且仅一个合成例子，**不作为算法优劣、市场 alpha 或 self-improvement 的结论**。
 
-当前仍未改公共 Factor、research API、Formula 引擎或 Step3/4/5。未切换 runtime/研究 pin，未发布，未运行新市场研究。B3/B4 未完成。
+上述 B1/B2 验收结束时未改公共 Factor、research API、Formula 引擎或 Step3/4/5。未切换 runtime/研究 pin，未发布，未运行新市场研究。B3/B4 未完成；下方记录后续追加的接口修复。
 
 ## B3 独立复审与实际执行边界
 
@@ -76,3 +76,15 @@
 分发环境差异已定位：匹配 Data API SDK 的既有隔离 venv 通过 16 项分发/路由检查；系统 Python 缺该 SDK，旧 fallback 找到不含 `runtime` 的本地 SDK，导入 PF/VV helper 失败。对应 Data API/PFVV 源码与本轮基线无差异。此轮不改全局环境或 Data API，以已有隔离环境验证；不把这次系统 Python 失败隐去，也不将它误报为新增搜索代码回归。
 
 下一验收点是新工作区内的真实合成数据执行：生成公式 → 实际 Step3 → 独立代码复审/审后测试 → 原生 Step4/5 → 实际 metrics/Step6 材料 → 下一代。缺辨别实验时 L1 保留 Unknown；不把原生 IC 自动变成机制判决。该运行仍不是市场研究、OOS 或 self-improvement 有效性的证明。
+
+## 2026-10-11：用户追加的旧入口源头修复
+
+根因不是因子数据：主 Skill 已要求标准类，但 Step2 provider/bridge、smoke 构造器、Step3 生成模板和 hybrid 指南仍含旧函数约定。B3 首次实现复用了 smoke helper，同时带入旧入口和工程夹具的研究文字；原 attempt 保留，不把它改写成成功记录。
+
+修复统一新 authoring 为 `FACTOR` 实例、具名输入和标准因子表；直接代码原样保存，不再附加 keyword/state wrapper。operator、hybrid 和显式 family 模板采用同一类入口。Step4 分钟 fast-path 对类实例不再误取旧函数。删除固定执行三日平滑/截尾/zscore 的旧 Step6 apply/debug-autoloop 脚本及 CLI：改变响应结构仍须返回 Step2 推导，不能用包装层代替研究。
+
+标准 `BaseFactor` / `FormulaFactor`、`research_api`、因子值与 metrics 语义未改。历史冻结代码/law bytes、旧研究及其读取兼容保留。`build_direct_code_smoke_spec` 明确只构造工程夹具；真正研究使用 Step2 的实际规格。
+
+自改进负责人已进行两次只读交叉检查：第一次找出 Step4 fast-path 与 Step6 自动 wrapper 漏口，第二次确认关闭、当前 diff 无新增阻断。136 项受影响回归通过，72 项接口/管道回归通过；可选 Polars 在已有系统环境补跑 9 + 1 项通过。最终完整离线套件为 **2524 passed、4 skipped、2 deselected，266.77 秒**，禁用网络；其中 1 项 Polars 已另行补跑通过，其余 3 项依赖显式外部 PF/VV 历史回测引擎，本轮未运行。2 项 deselected 为原配置保留的 Git 历史/untracked 导出检查。本轮没有更改这些排除条件。
+
+本次源修复扩展了最初的代码编辑范围，但没有切换已安装的 Skill、全局运行环境或现有研究 pin。B3 须选择修复后的提交重新生成标准类，完成实际代码/推导复核，再进入原生 Step4/5；本修复本身不是 B3 验收或市场研究结论。

@@ -494,12 +494,16 @@ def build_hybrid_spec(report_id: str, factor_id: str, *, source_code: str, run_i
     return master
 
 
-def build_direct_code_spec(report_id: str, factor_id: str, *, source_code: str, run_id: str) -> dict[str, Any]:
+def build_direct_code_smoke_spec(report_id: str, factor_id: str, *, source_code: str, run_id: str) -> dict[str, Any]:
+    """Synthetic smoke metadata only; research specs come from reviewed Step2."""
+    from factor_factory.implementation_runtime import validate_factor_authoring
+    validate_factor_authoring(source_code)
     code_contract = {
         "code_contract_version": "factorforge_direct_code_contract_v1",
-        "function_name": "compute_factor",
+        "function_name": "FACTOR",
+        "entrypoint": "FACTOR",
         "input_schema": {"daily_df": ["ts_code", "trade_date", "open", "close"]},
-        "output_schema": {"columns": ["ts_code", "trade_date", "factor_value"]},
+        "output_schema": {"index": ["datetime", "instrument"], "columns": ["factor_value"]},
         "required_fields": ["open", "close"],
         "information_set_rules": ["no future fields"],
         "forbidden_patterns": [
@@ -836,37 +840,57 @@ def case_hybrid_hybrid_hash_mismatch(root: Path, summaries: Path) -> dict[str, A
 
 
 SAFE_DIRECT_CODE = """from __future__ import annotations
+from factor_factory.factors import PriceVolumeFactor
 
-def compute_factor(daily_df, minute_df=None):
-    out = daily_df[["ts_code", "trade_date"]].copy()
-    out["factor_value"] = daily_df["close"] / daily_df["open"] - 1.0
-    return out
+class SmokeFactor(PriceVolumeFactor):
+    name = 'synthetic_smoke'
+    input_columns = {"daily_df": ("ts_code", "trade_date", "open", "close")}
+
+    def compute(self, inputs):
+        daily_df = inputs["daily_df"]
+        out = daily_df[["ts_code", "trade_date"]].copy()
+        out["factor_value"] = daily_df["close"] / daily_df["open"] - 1.0
+        return out
+
+FACTOR = SmokeFactor()
 """
 
 
 UNSAFE_DIRECT_CODE = """from __future__ import annotations
+from factor_factory.factors import PriceVolumeFactor
 
-def compute_factor(daily_df, minute_df=None):
-    out = daily_df[["ts_code", "trade_date"]].copy()
-    out["factor_value"] = daily_df["future_return"].shift(-1)
-    return out
+class UnsafeSmokeFactor(PriceVolumeFactor):
+    name = 'unsafe_synthetic_smoke'
+    def compute(self, inputs):
+        daily_df = inputs["daily_df"]
+        out = daily_df[["ts_code", "trade_date"]].copy()
+        out["factor_value"] = daily_df["future_return"].shift(-1)
+        return out
+
+FACTOR = UnsafeSmokeFactor()
 """
 
 
 def unsafe_direct_code_for_column(column: str) -> str:
     return f'''from __future__ import annotations
+from factor_factory.factors import PriceVolumeFactor
 
-def compute_factor(daily_df, minute_df=None):
-    out = daily_df[["ts_code", "trade_date"]].copy()
-    out["factor_value"] = daily_df["{column}"]
-    return out
+class UnsafeSmokeFactor(PriceVolumeFactor):
+    name = 'unsafe_synthetic_smoke'
+    def compute(self, inputs):
+        daily_df = inputs["daily_df"]
+        out = daily_df[["ts_code", "trade_date"]].copy()
+        out["factor_value"] = daily_df["{column}"]
+        return out
+
+FACTOR = UnsafeSmokeFactor()
 '''
 
 
 def case_direct_code_safe(root: Path, summaries: Path) -> dict[str, Any]:
     case = "direct_code_safe"
     rid = "SMOKE_DIRECT_CODE_SAFE"
-    spec = build_direct_code_spec(rid, "DirectCodeSafe", source_code=SAFE_DIRECT_CODE, run_id=f"{rid}__run")
+    spec = build_direct_code_smoke_spec(rid, "DirectCodeSafe", source_code=SAFE_DIRECT_CODE, run_id=f"{rid}__run")
     write_common_objects(root, rid, spec, data_prep_payload(rid, "DirectCodeSafe", None))
     proof = summaries / "proofs" / f"{case}.json"
     cmd = ultimate_command(root, rid, "3b", "3b", proof)
@@ -878,7 +902,7 @@ def case_direct_code_safe(root: Path, summaries: Path) -> dict[str, Any]:
 def case_direct_code_future_return_shift(root: Path, summaries: Path) -> dict[str, Any]:
     case = "direct_code_future_return_shift_block"
     rid = "SMOKE_DIRECT_CODE_UNSAFE"
-    spec = build_direct_code_spec(rid, "DirectCodeUnsafe", source_code=UNSAFE_DIRECT_CODE, run_id=f"{rid}__run")
+    spec = build_direct_code_smoke_spec(rid, "DirectCodeUnsafe", source_code=UNSAFE_DIRECT_CODE, run_id=f"{rid}__run")
     write_common_objects(root, rid, spec, data_prep_payload(rid, "DirectCodeUnsafe", None))
     proof = summaries / "proofs" / f"{case}.json"
     cmd = ultimate_command(root, rid, "3b", "3b", proof)
@@ -888,7 +912,7 @@ def case_direct_code_future_return_shift(root: Path, summaries: Path) -> dict[st
 
 
 def case_direct_code_forbidden_column(root: Path, summaries: Path, *, case: str, rid: str, column: str) -> dict[str, Any]:
-    spec = build_direct_code_spec(rid, f"DirectCode{column.title().replace('_', '')}", source_code=unsafe_direct_code_for_column(column), run_id=f"{rid}__run")
+    spec = build_direct_code_smoke_spec(rid, f"DirectCode{column.title().replace('_', '')}", source_code=unsafe_direct_code_for_column(column), run_id=f"{rid}__run")
     write_common_objects(root, rid, spec, data_prep_payload(rid, spec["factor_id"], None))
     proof = summaries / "proofs" / f"{case}.json"
     cmd = ultimate_command(root, rid, "3b", "3b", proof)

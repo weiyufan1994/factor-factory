@@ -31,11 +31,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def _load(path: str, name: str):
     source = ROOT / path
-    if str(source.parent) not in sys.path:
-        sys.path.insert(0, str(source.parent))
-    spec = importlib.util.spec_from_file_location(name, source)
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    previous_path = list(sys.path)
+    try:
+        if str(source.parent) not in sys.path:
+            sys.path.insert(0, str(source.parent))
+        spec = importlib.util.spec_from_file_location(name, source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = previous_path
     return module
 
 

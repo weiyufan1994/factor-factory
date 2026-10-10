@@ -1440,9 +1440,9 @@ def validate_hybrid_mode(
 
     module = import_module_from_path(implementation_path)
     compute_operator = getattr(module, 'compute_operator_subgraph', None)
-    compute_factor = getattr(module, 'compute_factor', None)
+    from factor_factory.implementation_runtime import invoke_implementation
+    from factor_factory.research_api import validate_factor_output
     assert callable(compute_operator), 'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: compute_operator_subgraph missing'
-    assert callable(compute_factor), 'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: compute_factor missing'
     fixture = make_operator_fixture(formula_ir)
     fixture['is_tradable'] = [idx % 2 == 0 for idx in range(len(fixture))]
     fixture['custom_scale'] = 2.0
@@ -1460,10 +1460,7 @@ def validate_hybrid_mode(
         detail = str(exc).replace('BLOCK_OPERATOR_PARITY_FAILED:', '').strip()
         raise AssertionError(f'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: {detail}') from exc
     assert parity.get('status') == 'PASS', f'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: {parity}'
-    try:
-        combined = compute_factor(daily_df=fixture.copy(), minute_df=None)
-    except TypeError:
-        combined = compute_factor(fixture.copy(), None)
+    combined = validate_factor_output(invoke_implementation(module, fixture.copy(), None))
     required = {'ts_code', 'trade_date', 'factor_value'}
     assert hasattr(combined, 'columns'), 'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: output is not DataFrame-like'
     assert len(combined) > 0, 'BLOCK_HYBRID_COMBINED_SMOKE_FAILED: output row count must be positive'

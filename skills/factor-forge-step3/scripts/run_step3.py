@@ -867,37 +867,6 @@ def retained_chip_state_requirement(
     }
 
 
-def append_retained_chip_state_adapter(source: str) -> str:
-    if 'def compute_factor_from_derived_state' in source and 'def compute_factor' in source:
-        return source if source.endswith('\n') else source + '\n'
-    adapter = '''
-
-def compute_factor_from_derived_state(daily_df=None, derived_state_df=None):
-    """Map the production retained-chip state datamart to formal factor values."""
-    import pandas as pd
-
-    if derived_state_df is None:
-        raise ValueError("derived_state_df is required for intraday_retained_chip_state_v1")
-    frame = derived_state_df.copy()
-    required = {"ts_code", "trade_date", "lcr_raw"}
-    missing = required.difference(frame.columns)
-    if missing:
-        raise ValueError(f"intraday_retained_chip_state_v1 missing columns: {sorted(missing)}")
-    out = frame.loc[:, ["ts_code", "trade_date", "lcr_raw"]].copy()
-    out["factor_value"] = pd.to_numeric(out["lcr_raw"], errors="coerce")
-    out = out.drop(columns=["lcr_raw"])
-    out = out.dropna(subset=["factor_value"])
-    return out
-
-
-def compute_factor(daily_df=None, minute_df=None, derived_state_df=None):
-    """Step3B/Step4 adapter; minute_df may carry the retained-chip state sample."""
-    state_df = derived_state_df if derived_state_df is not None else minute_df
-    return compute_factor_from_derived_state(daily_df=daily_df, derived_state_df=state_df)
-'''
-    return source.rstrip() + adapter
-
-
 def declared_implementation_mode(fsm: dict, *, price_volume_minute: bool) -> str:
     identity = fsm.get('artifact_identity') if isinstance(fsm.get('artifact_identity'), dict) else {}
     contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
@@ -956,11 +925,13 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
     contract = fsm.get('implementation_contract') if isinstance(fsm.get('implementation_contract'), dict) else {}
     existing_code_contract = contract.get('code_contract') if isinstance(contract.get('code_contract'), dict) else {}
     existing_source = str(existing_code_contract.get('source_code') or '').strip()
-    uses_retained_state = direct_code_uses_retained_chip_state(fsm)
     if existing_source:
         source = existing_source if existing_source.endswith('\n') else existing_source + '\n'
-        if uses_retained_state:
-            source = append_retained_chip_state_adapter(source)
+        from factor_factory.implementation_runtime import validate_factor_authoring
+        try:
+            validate_factor_authoring(source, existing_code_contract)
+        except (ValueError, SyntaxError) as exc:
+            return {'status': 'blocked', 'blocked_reason': f'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: {exc}'}
         source_derivation = existing_code_contract.get('source_derivation') if isinstance(existing_code_contract.get('source_derivation'), dict) else {}
         raw_derivation = str(source_derivation.get('derivation') or 'source_code_preserved_from_step2_direct_code_contract')
         derivation = raw_derivation
@@ -972,9 +943,7 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
             'blocked_reason': 'BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING: Step2 direct_code contract must explicitly provide code_contract.source_code',
         }
 
-    if uses_retained_state:
-        required_fields = list(RETAINED_CHIP_STATE_FIELDS)
-    elif existing_code_contract.get('required_fields'):
+    if existing_code_contract.get('required_fields'):
         required_fields = list(dict.fromkeys(
             list(existing_code_contract.get('required_fields') or [])
             + ['ts_code', 'trade_date']
@@ -985,33 +954,16 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
             + list(canonical.get('required_inputs') or [])
             + ['ts_code', 'trade_date']
         ))
-    # Explicit direct_code contracts can target non-OHLCV daily panels such as
-    # moneyflow. Do not silently append price/volume fields unless Step2 did
-    # not provide a source contract field list.
-    if not existing_code_contract.get('required_fields'):
-        if 'vol' not in required_fields and 'volume' not in required_fields:
-            required_fields.append('vol')
-        if 'close' not in required_fields:
-            required_fields.append('close')
-    if uses_retained_state:
-        output_schema = {'columns': ['ts_code', 'trade_date', 'factor_value']}
-    else:
-        output_schema = (
-            existing_code_contract.get('output_schema')
-            or contract.get('output_schema')
-            or {'columns': ['ts_code', 'trade_date', 'factor_value']}
-        )
+    output_schema = (
+        existing_code_contract.get('output_schema')
+        or contract.get('output_schema')
+        or {'index': ['datetime', 'instrument'], 'columns': ['factor_value']}
+    )
     imports = list(dict.fromkeys(list(existing_code_contract.get('imports') or []) + ['numpy', 'pandas']))
     input_schema = existing_code_contract.get('input_schema') or {
         'daily_df': list((qlib_adapter_config.get('logical_fields') or {}).values()),
         'minute_df': ['ts_code', 'trade_date', 'trade_time', 'close', 'vol', 'amount'],
     }
-    if uses_retained_state:
-        input_schema = {
-            'daily_df': 'optional; not used by the retained-chip state adapter',
-            'derived_state_df': RETAINED_CHIP_STATE_FIELDS,
-            'state_dataset': INTRADAY_RETAINED_CHIP_STATE_DATASET,
-        }
     forbidden_patterns = existing_code_contract.get('forbidden_patterns') or [
         r'shift\s*\(\s*-\d+',
         r'\bfuture_return\b',
@@ -1021,22 +973,11 @@ def build_direct_code_contract_for_step3a(fsm: dict, qlib_adapter_config: dict) 
         r'\bfuture_',
         r'\blookahead\b',
     ]
-    if uses_retained_state:
-        forbidden_patterns = [
-            r'shift\s*\(\s*-\d+',
-            r'\bfuture_return\b',
-            r'\bnext_return\b',
-            r'\bnext_ret\b',
-            r'\blabel\b',
-            r'\btarget\b',
-            r'\bfuture_',
-            r'\blookahead\b',
-        ]
     code_contract = {
         **existing_code_contract,
         'code_contract_version': existing_code_contract.get('code_contract_version') or DIRECT_CODE_CONTRACT_VERSION,
-        'function_name': 'compute_factor' if uses_retained_state else (existing_code_contract.get('function_name') or existing_code_contract.get('entrypoint') or contract.get('function_name') or contract.get('entrypoint') or 'compute_factor'),
-        'entrypoint': 'compute_factor' if uses_retained_state else (existing_code_contract.get('entrypoint') or existing_code_contract.get('function_name') or contract.get('entrypoint') or contract.get('function_name') or 'compute_factor'),
+        'function_name': 'FACTOR',
+        'entrypoint': 'FACTOR',
         'source_code': source,
         'code_hash': source_hash(source),
         'imports': imports,

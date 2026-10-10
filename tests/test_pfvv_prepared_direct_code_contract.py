@@ -9,6 +9,7 @@ import hashlib
 import importlib.util
 from pathlib import Path
 
+import pytest
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -43,7 +44,7 @@ def compute_factor(daily_df=None, minute_df=None):
 '''
 
 
-def test_prepared_controller_source_passes_step2_and_step3b_direct_code_contracts(tmp_path: Path) -> None:
+def test_historical_prepared_controller_is_readable_but_not_a_new_authoring_template(tmp_path: Path) -> None:
     step2 = _load("step2_pfvv_prepared_contract_test", "skills/factor-forge-step2/scripts/run_step2.py")
     validate_step2 = _load("validate_step2_pfvv_prepared_contract_test", "skills/factor-forge-step2/scripts/validate_step2.py")
     step3b = _load("step3b_pfvv_prepared_contract_test", "skills/factor-forge-step3/scripts/run_step3b.py")
@@ -62,7 +63,9 @@ def test_prepared_controller_source_passes_step2_and_step3b_direct_code_contract
             "source_derivation": {"not_fallback": True, "derivation": "prepared_controller_delegate"},
         },
     }
-    raw_contract = step2.explicit_direct_code_source_contract({}, aim)
+    with pytest.raises(ValueError, match='export FACTOR only'):
+        step2.explicit_direct_code_source_contract({}, aim)
+    raw_contract = dict(aim['code_contract'], code_hash=hashlib.sha256(source.encode('utf-8')).hexdigest())
     assert raw_contract["source_code"] == source
     assert raw_contract["code_hash"] == hashlib.sha256(source.encode("utf-8")).hexdigest()
     step2_checks = validate_step2.direct_code_contract_checks(
@@ -76,9 +79,11 @@ def test_prepared_controller_source_passes_step2_and_step3b_direct_code_contract
         "artifact_identity": {"implementation_mode": "direct_code", "code_contract_hash": "synthetic"},
     }
     local_inputs = {"input_mode": "derived_state_with_daily"}
-    plan, generated_source, qlib, hybrid = step3b.build_direct_code_artifacts(
-        "SYNTHETIC_PFVV", local_inputs, spec, spec["artifact_identity"], None
-    )
+    with pytest.raises(SystemExit, match='export FACTOR only'):
+        step3b.build_direct_code_artifacts('SYNTHETIC_PFVV', local_inputs, spec, spec['artifact_identity'])
+    # Read the unchanged historical implementation, without regenerating it.
+    generated_source = source
+    plan, qlib, hybrid = ({'code_contract': raw_contract} for _ in range(3))
     stub = tmp_path / "factor_impl_stub__SYNTHETIC_PFVV.py"
     stub.write_text(generated_source, encoding="utf-8")
     actual_hash = hashlib.sha256(stub.read_bytes()).hexdigest()

@@ -202,7 +202,8 @@ def test_step3_hybrid_generator_combines_new_operator_and_custom_code():
     )
     namespace = {}
     exec(compile(source, "<extension_hybrid_test>", "exec"), namespace)
-    result = namespace["compute_factor"](daily_df=frame)
+    assert 'compute_factor' not in namespace
+    result = namespace["FACTOR"].run({'daily_df': frame})
     np.testing.assert_allclose(result.factor_value, [np.nan, np.nan, 14/3, 20/3], equal_nan=True)
 
 

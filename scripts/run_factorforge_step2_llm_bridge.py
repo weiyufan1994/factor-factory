@@ -25,12 +25,13 @@ BLOCK_STEP1_CONTEXT = "BLOCK_STEP2_STEP1_CONTEXT_REQUIRED"
 BLOCK_DIRECT_CODE_RAW = "BLOCK_STEP2_LLM_DIRECT_CODE_SOURCE_CONTRACT_MISSING"
 BLOCK_DIRECT_CODE_PERFORMANCE_RISK = "BLOCK_DIRECT_CODE_PERFORMANCE_RISK"
 BLOCK_PROVIDER_ROUTING = "BLOCK_STEP2_PROVIDER_ROUTING_MISMATCH"
-STANDARD_DIRECT_CODE_OUTPUT_COLUMNS = ["ts_code", "trade_date", "factor_value"]
+STANDARD_DIRECT_CODE_OUTPUT_COLUMNS = ["factor_value"]
 DIRECT_CODE_PERFORMANCE_PROFILE_VERSION = "factorforge_direct_code_performance_contract_v1"
 DEFAULT_STEP2_ALLOWED_PROVIDER_TOKENS = ["minimax", "deepseek"]
 DEFAULT_STEP2_ALLOWED_MODEL_TOKENS = ["minimax", "deepseek"]
 
 from scripts.factorforge_formal_run_manifest import load_required_manifest, validate_manifest
+from factor_factory.implementation_runtime import validate_factor_authoring
 
 
 class CommandProviderError(RuntimeError):
@@ -133,15 +134,7 @@ def _as_list(value: Any) -> list[Any]:
 
 
 def _normalize_direct_code_output_schema(code_contract: dict[str, Any]) -> dict[str, Any]:
-    output_schema = code_contract.get("output_schema")
-    if not isinstance(output_schema, dict):
-        output_schema = {}
-    columns = [str(col) for col in _as_list(output_schema.get("columns")) if str(col).strip()]
-    for column in STANDARD_DIRECT_CODE_OUTPUT_COLUMNS:
-        if column not in columns:
-            columns.append(column)
-    output_schema["columns"] = columns
-    return output_schema
+    return code_contract.get("output_schema") or {"index": ["datetime", "instrument"], "columns": ["factor_value"]}
 
 
 def source_context(root: Path, report_id: str) -> dict[str, Any]:
@@ -164,20 +157,21 @@ def fixture_primary(report_id: str, provenance: dict[str, Any]) -> dict[str, Any
     required_inputs = ["close", "volume", "amount", "total_mv", "ret20", "vol20", "turn20"]
     source_code = """import numpy as np
 import pandas as pd
+from factor_factory.factors import PriceVolumeFactor
 
 
-def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
-    if daily_df is None or daily_df.empty:
-        raise ValueError("daily_df is required")
-    required = {"ts_code", "trade_date", "close"}
-    missing = sorted(required - set(daily_df.columns))
-    if missing:
-        raise ValueError(f"daily_df missing required columns: {missing}")
-    df = daily_df[["ts_code", "trade_date", "close"]].copy()
-    df["close"] = pd.to_numeric(df["close"], errors="coerce")
-    df["factor_value"] = df.groupby("ts_code", sort=False)["close"].pct_change()
-    out = df[["ts_code", "trade_date", "factor_value"]].replace([np.inf, -np.inf], np.nan)
-    return out.dropna(subset=["factor_value"]).sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
+class BridgeFixtureFactor(PriceVolumeFactor):
+    # Engineering fixture, not a CPV implementation or research result.
+    name = "bridge_fixture_only"
+    input_columns = {"daily_df": ("ts_code", "trade_date", "close")}
+
+    def compute(self, inputs):
+        df = inputs["daily_df"][["ts_code", "trade_date", "close"]].copy()
+        df["close"] = pd.to_numeric(df["close"], errors="coerce")
+        df["factor_value"] = df.groupby("ts_code", sort=False)["close"].pct_change(fill_method=None)
+        return df[["ts_code", "trade_date", "factor_value"]].replace([np.inf, -np.inf], np.nan)
+
+FACTOR = BridgeFixtureFactor()
 """
     return {
         "report_id": report_id,
@@ -190,17 +184,17 @@ def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame
         "implementation_contract": {
             "implementation_mode": "direct_code",
             "required_fields": required_inputs,
-            "function_name": "compute_factor",
+            "function_name": "FACTOR",
             "code_contract": {
                 "code_contract_version": "factorforge_direct_code_contract_v1",
-                "function_name": "compute_factor",
-                "entrypoint": "compute_factor",
+                "function_name": "FACTOR",
+                "entrypoint": "FACTOR",
                 "source_code": source_code,
                 "code_hash": sha256_text(source_code),
                 "imports": ["numpy", "pandas"],
                 "dependencies": ["numpy", "pandas"],
                 "input_schema": {"daily_df": required_inputs},
-                "output_schema": {"columns": ["ts_code", "trade_date", "factor_value"]},
+                "output_schema": {"index": ["datetime", "instrument"], "columns": ["factor_value"]},
                 "required_fields": required_inputs,
                 "source_derivation": {
                     "derivation": "source_code_preserved_from_formal_step2_raw_direct_code_contract",
@@ -208,7 +202,7 @@ def compute_factor(daily_df: pd.DataFrame | None = None, minute_df: pd.DataFrame
                     "fixture_only": True,
                 },
             },
-            "output_schema": {"columns": ["ts_code", "trade_date", "factor_value"]},
+            "output_schema": {"index": ["datetime", "instrument"], "columns": ["factor_value"]},
         },
         "mechanism_math_contract": fixture_mechanism_math_contract(),
         "time_series_steps": [
@@ -545,15 +539,18 @@ def direct_code_source_contract_failure(payload: dict[str, Any]) -> str | None:
         return f"{BLOCK_DIRECT_CODE_RAW}: code_hash missing or does not match source_code"
     if not contract.get("function_name") and not contract.get("entrypoint"):
         return f"{BLOCK_DIRECT_CODE_RAW}: function_name/entrypoint missing"
+    try:
+        validate_factor_authoring(source, contract)
+    except (ValueError, SyntaxError) as exc:
+        return f"{BLOCK_DIRECT_CODE_RAW}: {exc}"
     if not _as_list(contract.get("required_fields")) and not _as_list(payload.get("required_inputs")):
         return f"{BLOCK_DIRECT_CODE_RAW}: required_inputs/required_fields missing"
     output_schema = contract.get("output_schema")
     if not isinstance(output_schema, dict) or not _as_list(output_schema.get("columns")):
         return f"{BLOCK_DIRECT_CODE_RAW}: output_schema.columns missing"
     columns = [str(col) for col in _as_list(output_schema.get("columns"))]
-    missing_columns = [col for col in STANDARD_DIRECT_CODE_OUTPUT_COLUMNS if col not in columns]
-    if missing_columns:
-        return f"{BLOCK_DIRECT_CODE_RAW}: output_schema.columns missing standard columns: {missing_columns}"
+    if columns != STANDARD_DIRECT_CODE_OUTPUT_COLUMNS or output_schema.get('index') != ['datetime', 'instrument']:
+        return f"{BLOCK_DIRECT_CODE_RAW}: output_schema must declare datetime/instrument index and factor_value column"
     source_derivation = contract.get("source_derivation")
     if not isinstance(source_derivation, dict) or source_derivation.get("not_fallback") is not True:
         return f"{BLOCK_DIRECT_CODE_RAW}: source_derivation.not_fallback=true required"
@@ -594,14 +591,15 @@ def role_prompt(role: str) -> str:
             "and formula/custom block identity. If the report describes minute sorting + top cumulative volume + VWAP ratio, "
             "or any natural-language or custom smart-money calculation "
             "that cannot be represented as legal hybrid, choose direct_code and provide implementation_contract.code_contract "
-            "with source_code, function_name/entrypoint=compute_factor, dependencies/imports, required_fields, input_schema, output_schema, "
+            "with a BaseFactor subclass implementing compute(inputs), a module-level FACTOR instance, "
+            "function_name/entrypoint=FACTOR, dependencies/imports, required_fields, input_schema, output_schema, "
             "and source_derivation.not_fallback=true. Do not invent code_hash; the bridge will compute code_hash from source_code. "
             "Do not choose direct_code without source_code. "
             "Direct_code source_code must be high-performance and validator-safe: prefer NumPy, Polars, or vectorized pandas; "
             "do not use for-loop iteration over pandas groupby objects, groupby.apply, row apply/apply(axis=1), iterrows, "
             "itertuples, nested Python loops over rows/tickers/dates/minutes, list append inside loops, or sort_values inside loops. "
             "Sort once globally or use vectorized group operations; never sort each group inside a Python loop. "
-            "For direct_code, output_schema must include {'columns': ['ts_code', 'trade_date', 'factor_value']}; do not return "
+            "FACTOR.run(inputs) returns {'index': ['datetime', 'instrument'], 'columns': ['factor_value']}; declare this output_schema. Do not return "
             "an empty output_schema, dtype-only output_schema, or output_schema nested outside implementation_contract.code_contract."
         )
     if role == "challenger":
@@ -609,8 +607,8 @@ def role_prompt(role: str) -> str:
             "You are the Step2 challenger spec extraction agent. Independently challenge the primary interpretation and "
             "output factor_spec_raw JSON with the same required fields, preserving disagreements and ambiguities. "
             "Do not default pdf_report to hybrid; require executable hybrid structure or use direct_code with "
-            "implementation_contract.code_contract.source_code, compute_factor entrypoint, output_schema.columns "
-            "['ts_code', 'trade_date', 'factor_value'], and source_derivation.not_fallback=true. Direct_code source_code must "
+            "implementation_contract.code_contract.source_code exporting a BaseFactor FACTOR instance (entrypoint=FACTOR), output_schema "
+            "{'index': ['datetime', 'instrument'], 'columns': ['factor_value']}, and source_derivation.not_fallback=true. Direct_code source_code must "
             "avoid pandas groupby iteration, groupby.apply, row apply, iterrows/itertuples, nested Python loops, list append "
             "inside loops, and sort_values inside loops."
         )

@@ -558,19 +558,12 @@ Step 6 必须把每条因子尝试归入以下状态之一：
 - 写 `research_iteration_master`
 - 写全部因子库 / 正式因子库 / 统一知识库
 - 写 `handoff_to_step3b`
-- 通过 `run_step6_autoloop.py` 自动触发下一轮 Step4/5/6
 
-当前第一版 `Step6` 的自动修改动作采用**保守包装层**：
-- 保留原 Step3B 实现
-- 新建 `factor_impl__...__iterN.py`
-- 通过外层平滑、winsorize、re-zscore 等保守变换做自动迭代
-
-它仍不等同于“论文级语义重写器”。
-
-此外，当前默认增加了**人工审批闸门**：
-- Step 6 先写 `revision_proposal__{report_id}.json`
-- 明确修订方向、思路、逻辑与 planned actions
-- 只有人工明确批准后，`apply_step6_iteration.py` 才允许真正改写下一轮执行入口
+自动固定平滑、winsorize、re-zscore 的旧包装脚本及其 debug autoloop 已删除。
+Step6 的修订通过 Ultimate 的 child-study 路径继续：经济机制、估计对象或
+响应结构变化返回 Step2，完成本轮 math induction；原规格的实现缺陷返回
+Step3。生成标准 `FACTOR` 类实例，经代码复核及测试后再进入 Step4–6。
+对研究方向的批准不等于定义了变换公式，也不代替实现复核。
 
 ## 三类库的职责
 

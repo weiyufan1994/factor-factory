@@ -189,9 +189,16 @@ def inputs(tmp_path: Path, *, bad_primary_role: bool = False, omit_original: boo
     discipline = authored_discipline()
     code_contract = {
         "code_contract_version": "factorforge_direct_code_contract_v1",
-        "function_name": "compute_factor",
-        "entrypoint": "compute_factor",
-        "source_code": "def compute_factor(daily_df):\n    return daily_df\n",
+        "function_name": "FACTOR",
+        "entrypoint": "FACTOR",
+        "source_code": "from factor_factory.factors import PriceVolumeFactor\n"
+                       "class IntakeFixture(PriceVolumeFactor):\n"
+                       "    name = 'synthetic_intake_only'\n"
+                       "    input_columns = {'daily_df': ('ts_code', 'trade_date', 'close')}\n"
+                       "    def compute(self, inputs):\n"
+                       "        df = inputs['daily_df']\n"
+                       "        return df[['ts_code','trade_date']].assign(factor_value=df.close)\n"
+                       "FACTOR = IntakeFixture()\n",
         "imports": ["pandas"],
         "required_fields": ["close"],
         "information_set_rules": ["close is observed at or before t"],
@@ -257,7 +264,8 @@ def invoke(workspace: Path, files: dict[str, Path]) -> subprocess.CompletedProce
 
 def test_local_step1_imports_authored_inputs_and_preserves_extensions(tmp_path: Path) -> None:
     workspace = make_workspace(tmp_path)
-    result = invoke(workspace, inputs(tmp_path))
+    files = inputs(tmp_path)
+    result = invoke(workspace, files)
     assert result.returncode == 0, result.stderr
     alpha = json.loads((workspace / "objects" / "alpha_idea_master" / f"alpha_idea_master__{REPORT_ID}.json").read_text())
     assert alpha["local_step1_declaration"]["provider_or_model_called"] is False
@@ -275,7 +283,8 @@ def test_local_step1_imports_authored_inputs_and_preserves_extensions(tmp_path: 
     assert alpha["factor_id"] == "DISTINCT_CHIEF_FACTOR_ID"
     assert alpha["source_baseline_reference"] == {"reference": "DISTINCT_BASELINE"}
     assert alpha["direct_code_spec"] == {"entrypoint": "DISTINCT_DIRECT_CODE"}
-    assert alpha["code_contract"]["source_code"] == "def compute_factor(daily_df):\n    return daily_df\n"
+    assert alpha['code_contract']['entrypoint'] == 'FACTOR'
+    assert alpha['code_contract']['source_code'] == json.loads(files['chief'].read_text())['chief_merge']['code_contract']['source_code']
     assert alpha["direct_code_contract"] == alpha["code_contract"]
     assert alpha["implementation_contract"]["code_contract"] == alpha["code_contract"]
     assert alpha["batch_execution_plan"] == {"batch": "DISTINCT_BATCH_PLAN"}

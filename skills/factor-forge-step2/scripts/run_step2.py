@@ -1970,12 +1970,14 @@ def explicit_direct_code_source_contract(primary: Dict[str, Any], aim: Dict[str,
         imports = candidate.get('imports') or candidate.get('dependencies') or ['numpy', 'pandas']
         if not isinstance(imports, list):
             imports = [str(imports)]
-        output_schema = candidate.get('output_schema') or {'columns': ['ts_code', 'trade_date', 'factor_value']}
+        from factor_factory.implementation_runtime import validate_factor_authoring
+        validate_factor_authoring(source, candidate)
+        output_schema = candidate.get('output_schema') or {'index': ['datetime', 'instrument'], 'columns': ['factor_value']}
         contract = {
             **candidate,
             'code_contract_version': candidate.get('code_contract_version') or 'factorforge_direct_code_contract_v1',
-            'function_name': candidate.get('function_name') or candidate.get('entrypoint') or 'compute_factor',
-            'entrypoint': candidate.get('entrypoint') or candidate.get('function_name') or 'compute_factor',
+            'function_name': 'FACTOR',
+            'entrypoint': 'FACTOR',
             'source_code': source,
             'code_hash': hashlib.sha256(source.encode('utf-8')).hexdigest(),
             'imports': imports,
@@ -3338,11 +3340,11 @@ def build_factor_spec_master(
             'parent_run_id': parent_run_id,
             'code_contract': (direct_code_source_contract or {
                 'code_contract_version': 'factorforge_direct_code_contract_v1',
-                'function_name': 'compute_factor',
-                'entrypoint': 'compute_factor',
+                'function_name': 'FACTOR',
+                'entrypoint': 'FACTOR',
                 'input_schema': {},
                 'output_schema': {
-                    'columns': ['ts_code', 'trade_date', 'factor_value'],
+                    'index': ['datetime', 'instrument'], 'columns': ['factor_value'],
                 },
                 'required_fields': primary.get('required_inputs', []),
                 'information_set_rules': ['no future-looking fields or negative shifts'],
@@ -3357,7 +3359,7 @@ def build_factor_spec_master(
                 ],
             }) if implementation_mode == 'direct_code' else None,
             'output_schema': {
-                'columns': ['ts_code', 'trade_date', 'factor_value'],
+                'index': ['datetime', 'instrument'], 'columns': ['factor_value'],
             } if implementation_mode == 'direct_code' else None,
             'mode_contract': (
                 'pure_formula_operator_graph'

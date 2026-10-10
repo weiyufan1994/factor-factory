@@ -471,13 +471,12 @@ python3 scripts/run_factorforge_ultimate.py --report-id "<report_id>" --start-st
 
 ### F. Debug 附录：direct step / Step6 loop
 
-以下 direct step、controller、autoloop 命令仅限 isolated developer debug，且已对 canonical writes 做 block；不可用于正式 Factor Forge run。
+以下 direct step 命令仅限 isolated developer debug，且已对 canonical writes 做 block；不可用于正式 Factor Forge run。旧的固定平滑包装与 debug autoloop 已删除；研究修订通过 Ultimate 返回 Step2/3。
 
 ```bash
 FACTORFORGE_ALLOW_DIRECT_STEP=1 FACTORFORGE_DEBUG_ROOT=/tmp/factorforge-debug \
 python3 /home/ubuntu/.openclaw/workspace/skills/factor-forge-step3/scripts/run_step3.py --report-id "<report_id>"
 
-python3 /home/ubuntu/.openclaw/workspace/skills/factor-forge-step6/scripts/run_step6_autoloop.py --report-id "<report_id>" --max-iterations 1
 ```
 
 如果生成 proposal，先停，不要直接改代码。

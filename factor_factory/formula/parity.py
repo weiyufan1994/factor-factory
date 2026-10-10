@@ -8,6 +8,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from factor_factory.implementation_runtime import implementation_callable
+from factor_factory.research_api import validate_factor_output
+
 from .evaluator import evaluate_formula_frame
 from .semantics import max_formula_ir_lookback
 
@@ -150,13 +153,17 @@ def _load_compute(path: Path):
         raise ImportError(f'cannot import generated operator artifact: {path}')
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    compute = getattr(module, 'compute_factor', None)
-    if compute is None or not callable(compute):
-        raise AssertionError('BLOCK_OPERATOR_PARITY_FAILED: compute_factor missing')
-    return compute
+    return implementation_callable(module)
 
 
 def compare_outputs(reference: pd.DataFrame, generated: pd.DataFrame, *, tolerance: float = 1e-9) -> dict[str, Any]:
+    # Legacy numerical fixtures use arbitrary matching key labels; only adapt
+    # indexed class outputs here. Real stage inputs/outputs are validated by
+    # the shared research API, not reinterpreted by the parity comparator.
+    if isinstance(reference.index, pd.MultiIndex):
+        reference = validate_factor_output(reference)
+    if isinstance(generated.index, pd.MultiIndex):
+        generated = validate_factor_output(generated)
     keys = ['ts_code', 'trade_date']
     required = set(keys + ['factor_value'])
     if not required.issubset(reference.columns) or not required.issubset(generated.columns):

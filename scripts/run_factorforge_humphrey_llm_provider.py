@@ -11,8 +11,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-import requests
-
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from factor_factory.implementation_runtime import validate_factor_authoring
 
 BLOCK_PROVIDER_FAILED = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_FAILED"
 BLOCK_PROVIDER_REQUEST_CONTRACT = "BLOCK_HUMPHREY_FORMAL_LLM_PROVIDER_REQUEST_CONTRACT_INVALID"
@@ -21,7 +23,7 @@ BLOCK_DIRECT_CODE_PERFORMANCE_RISK = "BLOCK_DIRECT_CODE_PERFORMANCE_RISK"
 DEFAULT_CONFIG = Path("/home/ubuntu/.openclaw/openclaw.json")
 SUPPORTED_PROVIDER_APIS = {"openai-completions", "anthropic-messages"}
 PROVIDER_REQUEST_CONTRACT_VERSION = "factorforge_formal_llm_provider_request_v1"
-STANDARD_DIRECT_CODE_OUTPUT_COLUMNS = ["ts_code", "trade_date", "factor_value"]
+STANDARD_DIRECT_CODE_OUTPUT_COLUMNS = ["factor_value"]
 DIRECT_CODE_PERFORMANCE_PROFILE_VERSION = "factorforge_direct_code_performance_contract_v1"
 
 
@@ -123,6 +125,7 @@ def openai_chat_completion(
         "max_tokens": max_tokens,
     }
     timeout = int(os.getenv("FACTORFORGE_FORMAL_LLM_TIMEOUT_SECONDS", "240"))
+    import requests
     resp = requests.post(
         url,
         headers={
@@ -175,6 +178,7 @@ def anthropic_messages_completion(
     if system_parts:
         payload["system"] = "\n\n".join(part for part in system_parts if part)
     timeout = int(os.getenv("FACTORFORGE_FORMAL_LLM_TIMEOUT_SECONDS", "240"))
+    import requests
     resp = requests.post(
         url,
         headers={
@@ -340,15 +344,7 @@ def _as_list(value: Any) -> list[Any]:
 
 
 def _normalize_direct_code_output_schema(code_contract: dict[str, Any]) -> dict[str, Any]:
-    output_schema = code_contract.get("output_schema")
-    if not isinstance(output_schema, dict):
-        output_schema = {}
-    columns = [str(col) for col in _as_list(output_schema.get("columns")) if str(col).strip()]
-    for column in STANDARD_DIRECT_CODE_OUTPUT_COLUMNS:
-        if column not in columns:
-            columns.append(column)
-    output_schema["columns"] = columns
-    return output_schema
+    return code_contract.get("output_schema") or {"index": ["datetime", "instrument"], "columns": ["factor_value"]}
 
 
 def _direct_code_contract(payload: dict[str, Any]) -> dict[str, Any]:
@@ -604,15 +600,18 @@ def _direct_code_source_contract_failure(payload: dict[str, Any]) -> str | None:
         return "direct_code code_contract.code_hash missing or mismatched"
     if not contract.get("function_name") and not contract.get("entrypoint"):
         return "direct_code code_contract.function_name/entrypoint missing"
+    try:
+        validate_factor_authoring(source, contract)
+    except (ValueError, SyntaxError) as exc:
+        return f"direct_code code_contract: {exc}"
     if not _as_list(contract.get("required_fields")) and not _as_list(payload.get("required_inputs")):
         return "direct_code code_contract.required_fields or required_inputs missing"
     output_schema = contract.get("output_schema")
     if not isinstance(output_schema, dict) or not _as_list(output_schema.get("columns")):
         return "direct_code code_contract.output_schema.columns missing"
     columns = [str(col) for col in _as_list(output_schema.get("columns"))]
-    missing_columns = [col for col in STANDARD_DIRECT_CODE_OUTPUT_COLUMNS if col not in columns]
-    if missing_columns:
-        return f"direct_code code_contract.output_schema.columns missing standard columns: {missing_columns}"
+    if columns != STANDARD_DIRECT_CODE_OUTPUT_COLUMNS or output_schema.get('index') != ['datetime', 'instrument']:
+        return 'direct_code output_schema must declare datetime/instrument index and factor_value column'
     source_derivation = contract.get("source_derivation")
     if not isinstance(source_derivation, dict) or source_derivation.get("not_fallback") is not True:
         return "direct_code code_contract.source_derivation.not_fallback=true missing"
@@ -675,14 +674,15 @@ def repair_step2_payload(
         "non-empty custom_blocks, formula_hash, custom_block_hash, hybrid_hash), choose implementation_mode='direct_code'. "
         "For minute sorting + top cumulative volume + VWAP ratio algorithms, use implementation_mode='direct_code' by default. "
         "Do not attempt hybrid unless the full executable hybrid contract is truly complete. "
-        "If you choose direct_code, you must provide implementation_contract.code_contract.source_code with entrypoint/function_name, "
+        "If you choose direct_code, provide a BaseFactor subclass with compute(inputs), export its instance as FACTOR, "
+        "and set implementation_contract.code_contract.entrypoint/function_name=FACTOR with source_code, "
         "imports/dependencies, required_fields, input_schema, output_schema, and source_derivation.not_fallback=true. "
         "Do not invent code_hash; the bridge will compute code_hash from source_code. "
         "Direct_code source_code must be high-performance and validator-safe: prefer NumPy, Polars, or vectorized pandas; "
         "do not use for-loop iteration over pandas groupby objects, groupby.apply, row apply/apply(axis=1), iterrows, "
         "itertuples, nested Python loops over rows/tickers/dates/minutes, list append inside loops, or sort_values inside loops. "
         "Sort once globally or use vectorized group operations; never sort each group inside a Python loop. "
-        "The direct_code output_schema must be exactly or at least {'columns': ['ts_code', 'trade_date', 'factor_value']}; "
+        "The direct_code output_schema is {'index': ['datetime', 'instrument'], 'columns': ['factor_value']} from FACTOR.run(inputs); "
         "do not return an empty output_schema, a dtype-only output_schema, or output_schema nested outside code_contract. "
         "Do not use direct_code without source_code. "
         "Preserve report-specific formulas, required_inputs, ambiguities, and mechanism contracts. "
@@ -785,7 +785,8 @@ def step2_messages(request: dict[str, Any], *, model: str) -> tuple[list[dict[st
             "Never default pdf_report to hybrid. Include required_inputs, operators, time_series_steps, cross_sectional_steps, "
             "implementation_contract, raw_formula_text, explicit_items, inferred_items, ambiguities, and mechanism contracts when supported. "
             "If you choose direct_code, implementation_contract.code_contract is mandatory and must include source_code, "
-            "function_name/entrypoint=compute_factor, imports/dependencies, required_fields, input_schema, output_schema, "
+            "a BaseFactor subclass implementing compute(inputs), module-level FACTOR instance, "
+            "function_name/entrypoint=FACTOR, imports/dependencies, required_fields, input_schema, output_schema, "
             "source_derivation.not_fallback=true and report-derived implementation notes. "
             "Do not invent code_hash; the bridge will compute code_hash from source_code. "
             "Direct_code source_code must be high-performance and validator-safe: prefer NumPy, Polars, or vectorized pandas; "
@@ -794,7 +795,7 @@ def step2_messages(request: dict[str, Any], *, model: str) -> tuple[list[dict[st
             "or use vectorized group operations; never sort each group inside a Python loop. "
             "For the Kaiyuan smart-money factor preserve the PDF mechanics "
             "S=|R|/ln(V), S sorting, top-20-percent cumulative volume selection, and VWAPsmart/VWAPall semantics in the source contract. "
-            "The direct_code output_schema must include {'columns': ['ts_code', 'trade_date', 'factor_value']}; do not return "
+            "The direct_code output_schema is {'index': ['datetime', 'instrument'], 'columns': ['factor_value']}; do not return "
             "empty output_schema, dtype-only output_schema, or output_schema nested outside implementation_contract.code_contract."
         )
     elif role == "auditor":

@@ -45,6 +45,7 @@ from factor_factory.formula.qlib_codegen import to_qlib_expression
 from factor_factory.formula.registry import operator_meta
 from factor_factory.formula.semantics import max_formula_ir_lookback as shared_max_formula_ir_lookback
 from factor_factory.formula.evaluator import evaluate_formula_frame
+
 from factor_factory.formula.kernels import default_kernel_profile, resolve_formula_kernel_engine
 from factor_factory.formula.operators import default_ts_rank_engine_profile, resolve_ts_rank_engine as resolve_formula_ts_rank_engine
 from factor_factory.formula.parity import compare_outputs, make_operator_fixture
@@ -2174,7 +2175,7 @@ def build_operator_artifacts(report_id: str, prep: dict, spec: dict, identity: d
         'operator_schema': operator_schema,
         'qlib_expression': qlib_expression,
         'metadata': metadata,
-        'output_schema': {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        'output_schema': {'index': ['datetime', 'instrument'], 'columns': ['factor_value']},
         'step4_contract': {
             'execution_mode': 'operator',
             'runner_entry': None,
@@ -2317,6 +2318,7 @@ def generate_hybrid_code(*, report_id: str, factor_id: str, formula_ir: dict, cu
 
 import pandas as pd
 
+from factor_factory.factors import BaseFactor
 from factor_factory.formula.evaluator import evaluate_formula_frame
 
 
@@ -2339,10 +2341,18 @@ def compute_operator_subgraph(daily_df: pd.DataFrame) -> pd.DataFrame:
 # <FACTORFORGE_CUSTOM_BLOCK_END>
 
 
-def compute_factor(daily_df: pd.DataFrame, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
-    operator_df = compute_operator_subgraph(daily_df)
-    out = {function_name}(operator_df, daily_df)
-    return out
+class GeneratedHybridFactor(BaseFactor):
+    name = FACTOR_ID
+    domain = {contract.get('domain', 'price_volume')!r}
+    input_columns = {{"daily_df": ("ts_code", "trade_date")}}
+
+    def compute(self, inputs):
+        daily_df = inputs["daily_df"]
+        operator_df = compute_operator_subgraph(daily_df)
+        return {function_name}(operator_df, daily_df)
+
+
+FACTOR = GeneratedHybridFactor()
 '''
 
 
@@ -2350,12 +2360,14 @@ def _smoke_hybrid_code(python_stub: str, formula_ir: dict) -> None:
     namespace: dict = {}
     exec(compile(python_stub, '<hybrid_codegen_smoke>', 'exec'), namespace)
     compute_operator = namespace.get('compute_operator_subgraph')
-    compute_factor = namespace.get('compute_factor')
+    from factor_factory.factors import BaseFactor
+    from factor_factory.research_api import validate_factor_output
+    factor = namespace.get('FACTOR')
     if not callable(compute_operator):
         raise SystemExit('BLOCK_HYBRID_OPERATOR_PARITY_FAILED: compute_operator_subgraph missing')
-    if not callable(compute_factor):
-        raise SystemExit('BLOCK_HYBRID_COMBINED_SMOKE_FAILED: compute_factor missing')
-    fixture = make_operator_fixture()
+    if not isinstance(factor, BaseFactor):
+        raise SystemExit('BLOCK_HYBRID_COMBINED_SMOKE_FAILED: FACTOR must be a BaseFactor instance')
+    fixture = make_operator_fixture(formula_ir)
     fixture['is_tradable'] = [idx % 2 == 0 for idx in range(len(fixture))]
     fixture['custom_scale'] = 2.0
     fixture['universe_flag'] = [1 if idx % 3 else 0 for idx in range(len(fixture))]
@@ -2370,7 +2382,7 @@ def _smoke_hybrid_code(python_stub: str, formula_ir: dict) -> None:
         )
     except AssertionError as exc:
         raise SystemExit(f'BLOCK_HYBRID_OPERATOR_PARITY_FAILED: {exc}') from exc
-    combined = compute_factor(daily_df=fixture.copy(), minute_df=None)
+    combined = validate_factor_output(factor.run({'daily_df': fixture.copy()}))
     required = {'ts_code', 'trade_date', 'factor_value'}
     if not hasattr(combined, 'columns'):
         raise SystemExit('BLOCK_HYBRID_COMBINED_SMOKE_FAILED: output is not DataFrame-like')
@@ -2443,7 +2455,7 @@ def build_hybrid_artifacts(report_id: str, prep: dict, spec: dict, identity: dic
         'custom_block_hash': contract.get('custom_block_hash'),
         'hybrid_hash': contract.get('hybrid_hash'),
         'metadata': metadata,
-        'output_schema': custom_blocks[0].get('output_schema') or {'columns': ['ts_code', 'trade_date', 'factor_value']},
+        'output_schema': {'index': ['datetime', 'instrument'], 'columns': ['factor_value']},
         'step4_contract': {
             'execution_mode': 'hybrid',
             'runner_entry': None,
@@ -2528,52 +2540,6 @@ def resolve_direct_code_law_contract(contract: dict) -> dict:
     return resolved
 
 
-def ensure_direct_code_keyword_adapter(source_code: str, input_schema: dict | None = None) -> str:
-    # Keep the selected body and expose the shared single-invocation keyword API.
-    from factor_factory.implementation_runtime import source_declares_factor_instance
-    if source_declares_factor_instance(source_code):
-        return source_code
-    marker = '_factorforge_user_compute_factor'
-    if marker in source_code:
-        return source_code
-    declared_roles = sorted(set(input_schema or {}) - {'daily_df', 'minute_df', 'grain', 'state_dataset', 'minute_required'})
-    if declared_roles:
-        adapter = r'''
-
-# Factor Forge formal API adapter: factorforge_implementation_runtime_v1.
-# The selected factor body remains above; argument binding happens before its
-# single invocation. Body exceptions propagate without positional retries.
-_factorforge_user_compute_factor = compute_factor
-
-def compute_factor(daily_df=None, minute_df=None, **additional_inputs):
-    from factor_factory.implementation_runtime import invoke_factor
-
-    missing = [role for role in __FACTORFORGE_NAMED_ROLES__ if additional_inputs.get(role) is None]
-    if missing:
-        raise TypeError("BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING: " + ",".join(missing))
-    return invoke_factor(
-        _factorforge_user_compute_factor,
-        daily_df,
-        minute_df,
-        additional_inputs=additional_inputs,
-    )
-'''.replace("__FACTORFORGE_NAMED_ROLES__", repr(declared_roles))
-    else:
-        adapter = r'''
-
-# Factor Forge formal API adapter: factorforge_implementation_runtime_v1.
-# The selected factor body remains above; argument binding happens before its
-# single invocation. Body exceptions propagate without positional retries.
-_factorforge_user_compute_factor = compute_factor
-
-def compute_factor(daily_df=None, minute_df=None):
-    from factor_factory.implementation_runtime import invoke_factor
-
-    return invoke_factor(_factorforge_user_compute_factor, daily_df, minute_df)
-'''
-    return source_code.rstrip() + '\n' + adapter.lstrip()
-
-
 def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity: dict, plan: dict | None = None):
     contract = spec.get('implementation_contract') or {}
     plan_contract = (plan or {}).get('implementation_contract') if isinstance((plan or {}).get('implementation_contract'), dict) else {}
@@ -2594,21 +2560,15 @@ def build_direct_code_artifacts(report_id: str, prep: dict, spec: dict, identity
             'BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: direct_code Step3B requires explicit code_contract.source_code; '
             'no fallback implementation is allowed.'
         )
-    from factor_factory.implementation_runtime import source_declares_factor_instance, source_declares_legacy_callable
-    if not (source_declares_factor_instance(source_code) or source_declares_legacy_callable(source_code)):
-        raise SystemExit('BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: source must declare a module-level FACTOR or compute_factor().')
-    source_code = ensure_direct_code_keyword_adapter(
-        source_code,
-        input_schema=(
-            code_contract.get('input_schema')
-            if isinstance(code_contract.get('input_schema'), dict)
-            else None
-        ),
-    )
+    from factor_factory.implementation_runtime import validate_factor_authoring
+    try:
+        validate_factor_authoring(source_code, code_contract)
+    except (ValueError, SyntaxError) as exc:
+        raise SystemExit(f'BLOCK_UNSUPPORTED_DIRECT_CODE_MODE: {exc}') from exc
 
     factor_id = spec.get('factor_id') or report_id
     code_contract_hash = code_contract.get('code_contract_hash') or (plan or {}).get('code_contract_hash') or identity.get('code_contract_hash') or stable_hash(code_contract)
-    output_schema = code_contract.get('output_schema') or contract.get('output_schema') or {'columns': ['ts_code', 'trade_date', 'factor_value']}
+    output_schema = code_contract.get('output_schema') or contract.get('output_schema') or {'index': ['datetime', 'instrument'], 'columns': ['factor_value']}
     metadata = {
         'implementation_mode': 'direct_code',
         'implementation_source': 'direct_code_contract_codegen',

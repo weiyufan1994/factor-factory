@@ -35,7 +35,7 @@ class PriceVolumePlugin:
                 'sample_window': prep.get('sample_window', {}),
                 'required_fields': ['ts_code', 'trade_date', 'open', 'close', 'vol'],
             },
-            'output_schema': {'columns': ['ts_code', 'trade_date', signal_col]},
+            'output_schema': {'index': ['datetime', 'instrument'], 'columns': ['factor_value']},
             'step4_contract': {
                 'runner_entry': f'generated_code/{report_id}/factor_impl_stub__{report_id}.py',
                 'execution_mode': self.contract.implementation_mode,
@@ -57,6 +57,7 @@ factor_family=price_volume and family_plugin_allowed=true.
 from __future__ import annotations
 
 import pandas as pd
+from factor_factory.factors import PriceVolumeFactor
 
 REPORT_ID = {report_id!r}
 FACTOR_ID = {factor_id!r}
@@ -65,19 +66,23 @@ FAMILY_PLUGIN = {self.contract.plugin_id!r}
 NOT_GENERIC_FALLBACK = True
 
 
-def compute_factor(daily_df: pd.DataFrame, minute_df=None) -> pd.DataFrame:
-    required = ['ts_code', 'trade_date', 'open', 'close', 'vol']
-    for column in required:
-        if column not in daily_df.columns:
-            raise KeyError(f'missing daily column: {{column}}')
-    out = daily_df[['ts_code', 'trade_date']].copy()
-    safe_open = daily_df['open'].replace(0, pd.NA)
-    intraday_return = (daily_df['close'] - daily_df['open']) / safe_open
-    volume = pd.to_numeric(daily_df['vol'], errors='coerce')
-    date_median_volume = volume.groupby(daily_df['trade_date']).transform('median').replace(0, pd.NA)
-    relative_participation = volume / date_median_volume
-    out[SIGNAL_COLUMN] = intraday_return * relative_participation
-    return out
+class GeneratedPriceVolumeFactor(PriceVolumeFactor):
+    name = FACTOR_ID
+    input_columns = {{'daily_df': ('ts_code', 'trade_date', 'open', 'close', 'vol')}}
+
+    def compute(self, inputs):
+        daily_df = inputs['daily_df']
+        out = daily_df[['ts_code', 'trade_date']].copy()
+        safe_open = daily_df['open'].mask(daily_df['open'] == 0)
+        intraday_return = (daily_df['close'] - daily_df['open']) / safe_open
+        volume = pd.to_numeric(daily_df['vol'], errors='coerce')
+        date_median_volume = volume.groupby(daily_df['trade_date']).transform('median')
+        relative_participation = volume / date_median_volume.mask(date_median_volume == 0)
+        out['factor_value'] = intraday_return * relative_participation
+        return out
+
+
+FACTOR = GeneratedPriceVolumeFactor()
 '''
         qlib = {
             'report_id': report_id,

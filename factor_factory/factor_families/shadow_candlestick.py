@@ -40,7 +40,7 @@ class ShadowCandlestickPlugin:
                 'Apply family-specific rolling aggregation only under the explicit plugin contract.',
                 'Expose a hybrid scaffold for downstream audited implementation.',
             ],
-            'output_schema': {'columns': ['ts_code', 'trade_date', signal_col]},
+            'output_schema': {'index': ['datetime', 'instrument'], 'columns': ['factor_value']},
             'step4_contract': {
                 'runner_entry': f'generated_code/{report_id}/factor_impl_stub__{report_id}.py',
                 'execution_mode': self.contract.implementation_mode,
@@ -62,6 +62,7 @@ factor_family=shadow_candlestick and family_plugin_allowed=true.
 from __future__ import annotations
 
 import pandas as pd
+from factor_factory.factors import PriceVolumeFactor
 
 REPORT_ID = {report_id!r}
 FACTOR_ID = {factor_id!r}
@@ -70,17 +71,21 @@ FAMILY_PLUGIN = {self.contract.plugin_id!r}
 NOT_GENERIC_FALLBACK = True
 
 
-def compute_factor(minute_df: pd.DataFrame, daily_df: pd.DataFrame) -> pd.DataFrame:
-    required = ['ts_code', 'trade_date', 'open', 'high', 'low', 'close']
-    for column in required:
-        if column not in daily_df.columns:
-            raise KeyError(f'missing daily column: {{column}}')
-    out = daily_df[required].copy()
-    upper = out['high'] - out[['open', 'close']].max(axis=1)
-    lower = out[['open', 'close']].min(axis=1) - out['low']
-    price_range = (out['high'] - out['low']).replace(0, pd.NA)
-    out[SIGNAL_COLUMN] = (lower - upper) / price_range
-    return out[['ts_code', 'trade_date', SIGNAL_COLUMN]]
+class GeneratedShadowFactor(PriceVolumeFactor):
+    name = FACTOR_ID
+    input_columns = {{'daily_df': ('ts_code', 'trade_date', 'open', 'high', 'low', 'close')}}
+
+    def compute(self, inputs):
+        daily_df = inputs['daily_df']
+        out = daily_df[list(self.input_columns['daily_df'])].copy()
+        upper = out['high'] - out[['open', 'close']].max(axis=1)
+        lower = out[['open', 'close']].min(axis=1) - out['low']
+        price_range = out['high'] - out['low']
+        out['factor_value'] = (lower - upper) / price_range.mask(price_range == 0)
+        return out[['ts_code', 'trade_date', 'factor_value']]
+
+
+FACTOR = GeneratedShadowFactor()
 '''
         qlib = {
             'report_id': report_id,

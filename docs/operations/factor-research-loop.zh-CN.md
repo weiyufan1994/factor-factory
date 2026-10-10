@@ -50,17 +50,10 @@
 
 1. `run_step6_controller.py`
    - 顺序执行 `Step5 -> validate_step5 -> Step6 -> validate_step6`
-2. `run_step6_autoloop.py`
-   - 顺序执行 `Step4 -> Step5 -> Step6`
-   - 若决策为 `iterate`，默认先生成 `revision_proposal__{report_id}.json` 并暂停，等待人工审批
-   - 审批通过后，再调用 `apply_step6_iteration.py`
-   - 该脚本会生成一个新的 `factor_impl__...__iterN.py` 包装层，并把 `handoff_to_step4.factor_impl_ref` 指向新实现
-   - 然后继续下一轮 Step4/5/6
-
-注意：
-- 当前自动修改策略是“保守鲁棒化包装层”，不是论文级重写。
-- 它会保留原 Step3B 实现文件，并在外层增加平滑、截尾、再标准化等保守变换。
-- 当前默认要求人工先确认“修订方向、思路、逻辑”，再真的落代码。
+2. Ultimate 的 child-study 路径
+   - 新响应结构返回 Step2，完成 math induction，再实现为标准 `FACTOR`。
+   - 同一规格的代码缺陷返回 Step3，经过复核及测试后恢复 Step4–6。
+   - 固定平滑、截尾、再标准化的旧自动包装脚本及 debug autoloop 已删除。
 
 ## 三类长期资产
 

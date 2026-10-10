@@ -20,7 +20,6 @@ HOST_ONLY_ARGUMENTS = (
     "agent_execution_container_admission",
     "evo_child_finalizer_recovery_admission",
     "evo_child_command_recovery_admission",
-    "apply_approved_revision",
 )
 
 

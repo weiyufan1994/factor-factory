@@ -19,6 +19,15 @@ The producer computes `code_hash` from the normalized source; do not supply a
 placeholder. `source_derivation.not_fallback=true` asserts provenance, not review
 approval. Pseudocode or a prose-only formula is not an executable source contract.
 
+New source exports one `FACTOR` instance of `BaseFactor`, `PriceVolumeFactor`, or
+`FundamentalFactor`, with `compute(inputs)` and explicit named input frames.
+Set both entrypoint fields to `FACTOR`; declare output as
+`{"index": ["datetime", "instrument"], "columns": ["factor_value"]}`.
+The class may calculate a long table internally; `run(inputs)` normalizes it.
+Historical `compute_factor` artifacts are readable by the shared runner, not
+templates for new source. Smoke-spec builders contain synthetic research text;
+use the actual Step2 source and derivation for a research spec.
+
 This is a pure algorithm input, not permission to fetch data or calculate factor
 returns. Preserve independent readings; append a chief-adjudicated input revision
 and update its references rather than editing generated master/handoff fields.

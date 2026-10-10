@@ -446,22 +446,12 @@ python3 skills/factor-forge-step6/scripts/validate_bayesian_search_trials.py \
   --branch-id exploit_parameter_tuning
 ```
 
-Automatic loop runner (Step4 -> Step5 -> Step6 -> apply Step3B refinement -> repeat):
-
-Official loop execution must enter through `scripts/run_factorforge_ultimate.py`. `run_step6_autoloop.py` is a developer-debug orchestrator only and must not be used by Bernard/Humphrey for formal factor research or for canonical writes.
-
-Human approval gate for automatic modification:
-
-```bash
-# 1) generate proposal and stop for review
-python3 repos/factor-factory/scripts/run_factorforge_ultimate.py --report-id <report_id> --start-step 6 --end-step 6
-
-# 2) after human review, explicitly approve or reject
-python3 skills/factor-forge-step6/scripts/approve_step6_revision.py --report-id <report_id> --decision approve --notes "focus on robustness first"
-
-# 3) apply approved revision only through the ultimate wrapper
-python3 repos/factor-factory/scripts/run_factorforge_ultimate.py --report-id <report_id> --apply-approved-revision --start-step 4 --end-step 6
-```
+Revision continuation uses Ultimate's existing child-study route. A changed
+mechanism, estimator or response structure goes to Step2 for its own derivation;
+an unchanged-spec implementation repair goes to Step3. Review and test the
+resulting `FACTOR` implementation before resuming Step4–6. The old automatic
+smoothing/winsorization wrapper and debug autoloop have been removed; approval
+of a direction does not define its mathematics or implementation.
 
 Optional manual retrieval check:
 

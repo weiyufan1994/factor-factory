@@ -4,7 +4,7 @@ import pprint
 from typing import Any
 
 
-CODEGEN_VERSION = 'factorforge_pandas_formula_codegen_v2_class'
+CODEGEN_VERSION = 'factorforge_pandas_formula_codegen_v3_class_only'
 
 
 def render_python_literal(value: Any) -> str:
@@ -18,11 +18,8 @@ def generate_pandas_formula_code(*, report_id: str, factor_id: str, formula_ir: 
     formula_ir_literal = render_python_literal(formula_ir)
     return f'''from __future__ import annotations
 
-import pandas as pd
-
 from factor_factory.factors import BaseFactor
 from factor_factory.formula.evaluator import evaluate_formula_frame
-from factor_factory.research_api import validate_factor_output
 
 
 REPORT_ID = {report_id!r}
@@ -56,12 +53,6 @@ class GeneratedFormulaFactor(BaseFactor):
 
 
 FACTOR = GeneratedFormulaFactor()
-
-
-def compute_factor(daily_df: pd.DataFrame, minute_df: pd.DataFrame | None = None) -> pd.DataFrame:
-    # Backward-compatible long-table boundary, not a second implementation.
-    result = FACTOR({{"daily_df": daily_df, "minute_df": minute_df}})
-    return validate_factor_output(result).sort_values(["ts_code", "trade_date"]).reset_index(drop=True)
 '''
 
 

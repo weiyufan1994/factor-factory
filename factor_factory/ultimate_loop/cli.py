@@ -36,7 +36,6 @@ def build_parser(*, show_all: bool = False) -> argparse.ArgumentParser:
     groups["Compatibility and optional observations"].add_argument('--allow-legacy-global-runtime', action='store_true')
     groups["Research"].add_argument('--skip-step3a', action='store_true', help='When starting at Step3, skip run_step3 and run only Step3B onward.')
     groups["Council and search"].add_argument('--skip-researcher-packets', action='store_true', help='Do not build Step6 researcher packet/dossier before Step6.')
-    groups["Council and search"].add_argument('--apply-approved-revision', action='store_true', help='Apply a human-approved Step6 revision before running the requested step range.')
     groups["Council and search"].add_argument('--council-mode', choices=['off', 'auto', 'scaffold', 'agentic'], default='auto')
     groups["Council and search"].add_argument('--auto-council-policy', choices=['scaffold', 'dispatch_manifest', 'block_without_agentic'], default='dispatch_manifest')
     groups["Council and search"].add_argument('--research-loop-policy', choices=['single_pass', 'council_until_promote_or_exhausted'], default='council_until_promote_or_exhausted')

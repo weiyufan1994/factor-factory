@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from factor_factory.implementation_runtime import expects_polars, invoke_factor
+from factor_factory.implementation_runtime import expects_polars, invoke_factor, invoke_implementation
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -84,13 +84,11 @@ def test_keyword_only_minute_argument_is_delivered(runner, frames):
     ("daily_df=None, /, window=3, *, minute_df=None", "daily_df.close * window + 10 * minute_df.close", 76.),
     ("df, window=3", "df.close * window", 21.),
 ])
-def test_legacy_binding_and_generated_adapter_agree(header, expression, expected, frames):
-    stage3 = load(ROOT / "skills/factor-forge-step3/scripts/run_step3b.py")
+def test_historical_binding_and_shared_runtime_agree(header, expression, expected, frames):
     source = f"def compute_factor({header}):\n    return {expression}\n"
     raw = {}; exec(source, raw)
-    adapted = {}; exec(stage3.ensure_direct_code_keyword_adapter(source), adapted)
     assert invoke_factor(raw["compute_factor"], *frames).tolist() == [expected]
-    assert adapted["compute_factor"](daily_df=frames[0], minute_df=frames[1]).tolist() == [expected]
+    assert invoke_implementation(SimpleNamespace(**raw), *frames).tolist() == [expected]
 
 
 def test_unbindable_signature_does_not_execute(frames):
@@ -131,31 +129,20 @@ def test_missing_named_exchange_calendar_blocks_before_body(frames):
     assert calls == []
 
 
-def test_generated_adapter_declares_exchange_calendar_role(frames):
-    stage3 = load(ROOT / "skills/factor-forge-step3/scripts/run_step3b.py")
+def test_historical_runtime_declares_exchange_calendar_role(frames):
     source = (
         "def compute_factor(daily_df, exchange_calendar):\n"
         "    assert exchange_calendar.trade_date.iloc[-1] == '20240110'\n"
         "    return daily_df.close\n"
     )
     namespace = {}
-    exec(
-        stage3.ensure_direct_code_keyword_adapter(
-            source,
-            input_schema={
-                'daily_df': ['ts_code', 'trade_date', 'close'],
-                'exchange_calendar': ['trade_date'],
-            },
-        ),
-        namespace,
-    )
+    exec(source, namespace)
     calendar = pd.DataFrame({'trade_date': ['20240109', '20240110']})
-    assert namespace['compute_factor'](
-        daily_df=frames[0],
-        exchange_calendar=calendar,
-    ).tolist() == [2.0]
+    module = SimpleNamespace(**namespace)
+    assert invoke_implementation(module, frames[0], None,
+        additional_inputs={'exchange_calendar': calendar}).tolist() == [2.0]
     with pytest.raises(TypeError, match='BLOCK_FACTOR_IMPLEMENTATION_INPUT_ROLE_MISSING'):
-        namespace['compute_factor'](daily_df=frames[0])
+        invoke_implementation(module, frames[0], None)
 
 
 def test_numpy_select_and_comments_do_not_switch_dataframe_backend(runner, frames, tmp_path):

@@ -2476,9 +2476,6 @@ def _plan_commands(
     if args.subagent_model:
         taskbook_runtime_args.extend(['--subagent-model', args.subagent_model])
 
-    if args.apply_approved_revision and not mode.web_evo_wait_only:
-        commands.append(('apply_approved_step6_revision', [py, 'skills/factor-forge-step6/scripts/apply_step6_iteration.py', '--manifest', str(manifest_path)]))
-
     if not mode.web_evo_wait_only and '2' in steps:
         commands.append(('run_step2', [py, 'skills/factor-forge-step2/scripts/run_step2.py', '--report-id', args.report_id]))
         commands.append(('validate_step2', [py, 'skills/factor-forge-step2/scripts/validate_step2.py', '--report-id', args.report_id]))

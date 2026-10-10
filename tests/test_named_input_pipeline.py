@@ -207,6 +207,13 @@ def compute_factor(daily_df, minute_df=None, *, exchange_calendar, formation_mem
     validator = load_stage(3, 'validate_step3.py')
     bind_manifest(validator, ff)
     validator.validate_step3_readiness_contract(prep, qcfg, impl, {})
+    if route == 'function':
+        # New preparation no longer turns legacy code into another new module.
+        # Historical invocation is covered separately in implementation_runtime.
+        assert impl['code_contract'] is None
+        with pytest.raises(AssertionError, match='BLOCK_DIRECT_CODE_SOURCE_CONTRACT_MISSING'):
+            validator.validate_direct_code_source_contract(impl)
+        return
     # Exercise the real gate that Ultimate calls, not just its readiness helper.
     # Only entrypoint was supplied above: Step3A must mirror its function_name.
     assert impl['code_contract']['function_name'] == _contract['entrypoint']
@@ -477,17 +484,27 @@ def test_two_studies_do_not_share_helper_modules(tmp_path, monkeypatch):
         assert not any(name == 'implementation' or name.startswith('implementation.') for name in sys.modules)
 
 
-def test_generated_legacy_adapter_accepts_generic_named_role(tmp_path, monkeypatch):
+def test_new_factor_class_accepts_generic_named_role(tmp_path, monkeypatch):
     _ff, _payload, _contract, _fsm, _path = prepared_fixture(tmp_path, monkeypatch)
     stage = load_stage(3, 'run_step3b.py')
-    source = 'def compute_factor(daily_df, *, risk_exposure):\n    return daily_df.close + risk_exposure.beta\n'
+    source = '''from factor_factory.factors import PriceVolumeFactor
+class RiskFactor(PriceVolumeFactor):
+    name = 'risk_fixture'
+    input_columns = {'daily_df': ('ts_code', 'trade_date', 'close'), 'risk_exposure': ('beta',)}
+    def compute(self, inputs):
+        daily, risk = inputs['daily_df'], inputs['risk_exposure']
+        return daily[['ts_code', 'trade_date']].assign(factor_value=daily.close + risk.beta)
+FACTOR = RiskFactor()
+'''
     namespace = {}
-    exec(stage.ensure_direct_code_keyword_adapter(source,
-         {'daily_df': ['close'], 'risk_exposure': ['beta']}), namespace)
-    daily, risk = pd.DataFrame({'close': [2.]}), pd.DataFrame({'beta': [.5]})
-    assert namespace['compute_factor'](daily_df=daily, risk_exposure=risk).tolist() == [2.5]
-    with pytest.raises(TypeError, match='INPUT_ROLE_MISSING: risk_exposure'):
-        namespace['compute_factor'](daily_df=daily)
+    exec(source, namespace)
+    daily = pd.DataFrame({'ts_code': ['000001.SZ'], 'trade_date': ['20240110'], 'close': [2.]})
+    risk = pd.DataFrame({'beta': [.5]})
+    result = stage.compute_factor_with_contract(namespace['FACTOR'], daily, None,
+        additional_inputs={'risk_exposure': risk})
+    assert result.factor_value.tolist() == [2.5]
+    with pytest.raises(ValueError, match='missing factor input: risk_exposure'):
+        stage.compute_factor_with_contract(namespace['FACTOR'], daily, None)
 
 
 @pytest.mark.parametrize('conflict', ['active_root', 'environment'])

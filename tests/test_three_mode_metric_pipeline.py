@@ -178,6 +178,13 @@ def test_operator_direct_hybrid_compute_and_metric_consumers_agree(tmp_path, mon
                   "objects": {"factor_run_master": frame}, "paths": {}}
         evaluation = build_factor_evaluation(bundle)
         archived = evaluation['backend_summary'][0]['key_metrics']
+        from factor_factory.research_search.native import score_native_metric
+        rule = {"metric_pointer": "/ic_summary/rank_ic_mean", "sample_count_pointer": "/coverage/rank_ic_count",
+                "unit_pointer": None, "unit": "dimensionless", "minimum_samples": 5,
+                "direction": 1, "baseline": 0, "scale": 1, "evaluation_scope": "signal_diagnostic"}
+        metric, candidate_score, learning = score_native_metric(rule, payload)
+        assert metric == candidate_score == payload["ic_summary"]["rank_ic_mean"]
+        assert learning == max(-1, min(1, candidate_score))
         for key in ('evaluation_scope', 'account_simulation', 'tradable_net_alpha_evidence', 'result_interpretation'):
             assert archived[key] == payload[key]
         results[mode] = {"ic": payload["ic_summary"], "long_side": payload["long_side_performance"],

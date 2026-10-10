@@ -65,8 +65,25 @@ def test_build_selection_does_not_ship_historical_services(selected_tree):
         "factor_factory/knowledge_context.py", "factor_factory/step5/evaluator.py",
         "skills/factor-forge-step6/SKILL.md", "scripts/run_factorforge_ultimate.py",
         "scripts/build_report_qlib_provider.py", "scripts/publish_qlib_daily_provider.py",
+        "factor_factory/research_search/controller.py", "factor_factory/research_search/planner.py",
+        "scripts/manage_factor_search.py",
     ):
         assert (selected_tree / rel).is_file(), rel
+
+
+def test_search_cli_and_planner_work_in_export_without_console_miner(selected_tree, tmp_path):
+    _run(selected_tree, tmp_path, '''
+import sys, subprocess
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from factor_factory.research_search.planner import plan_next
+from factor_factory.research_search.controller import ResearchSearchController
+from factor_factory.research_search.executor import FileNativeExecutor
+result = plan_next([{"candidate_hash": "root", "parent_candidate_hash": None, "estimated_cost": 1}], [], root_candidate_hash="root", seed=1)
+assert result["candidate_hash"] == "root"
+run = subprocess.run([sys.executable, str(Path(sys.argv[1]) / "scripts/manage_factor_search.py"), "--help"], capture_output=True)
+assert run.returncode == 0, run.stderr
+''')
 
 
 def test_new_unclassified_module_or_script_is_not_automatically_distributed(tmp_path):

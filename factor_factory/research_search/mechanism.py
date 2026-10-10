@@ -158,14 +158,20 @@ def apply_research_action(state: MechanismState, action: ResearchAction) -> Mech
         (action.response_structure and action.response_structure != state.response_structure)
         or (action.response_family and action.response_family != state.response_family)
     )
-    if changes_response and action.induction_record is None:
+    changes_economics = bool(
+        (action.mechanism and action.mechanism != state.mechanism)
+        or action.add_assumptions
+    )
+    requires_induction = changes_response or changes_economics
+    if requires_induction and action.induction_record is None:
         return replace(state, state_id=f"{state.state_id}/{action.action_id}", status="needs_induction",
                        depth=state.depth + 1)
-    if changes_response:
+    if requires_induction:
         assert action.induction_record is not None
+        expected_family = action.response_family or state.response_family
         if (not action.induction_record.parent_delta
-                or action.induction_record.response_family != action.response_family):
-            raise ValueError("new response structure requires a matching induction delta")
+                or action.induction_record.response_family != expected_family):
+            raise ValueError("changed economics or response requires a matching induction delta")
     assumptions = tuple(dict.fromkeys(state.assumptions + action.add_assumptions))
     unknowns = tuple(row for row in state.unknowns if row not in set(action.resolve_unknowns))
     unknowns = tuple(dict.fromkeys(unknowns + action.add_unknowns))
@@ -173,7 +179,7 @@ def apply_research_action(state: MechanismState, action: ResearchAction) -> Mech
         state_id=f"{state.state_id}/{action.action_id}", mechanism=action.mechanism or state.mechanism,
         response_family=action.response_family or state.response_family,
         response_structure=action.response_structure or state.response_structure,
-        induction_record_hash=(action.induction_record.record_hash if changes_response else state.induction_record_hash),
+        induction_record_hash=(action.induction_record.record_hash if requires_induction else state.induction_record_hash),
         assumptions=assumptions, predictions=tuple(predictions.values()),
         competing_mechanisms=state.competing_mechanisms, unknowns=unknowns,
         evidence_refs=state.evidence_refs, implementation_scores=state.implementation_scores,

@@ -25,7 +25,7 @@ def _conditional_actions():
         ResearchAction("test-sign", "check_observation", "explore", 1.0,
                        "run the predeclared sign discrimination", resolve_unknowns=("response sign",)),
         ResearchAction("deepen-supported", "deepen", "exploit", 1.0,
-                       "derive the supported branch", add_assumptions=("sign survived the test",),
+                       "estimate the supported branch next", add_unknowns=("lag weights",),
                        requires_assessment=("supported",)),
         ResearchAction("revise-refuted", "deepen", "explore", 1.0,
                        "revise the refuted mechanism", mechanism="common cause drives both x and response",
@@ -79,6 +79,22 @@ def test_new_response_without_induction_stops_before_effect_evaluator():
     assert calls == []
     assert result.expansions[0].successor.status == "needs_induction"
     assert result.expansions[0].evidence is None
+    assert result.decision == "needs_induction"
+
+
+@pytest.mark.parametrize("action", [
+    ResearchAction("new-mechanism", "deepen", "explore", 1.0, "change economic mechanism",
+                   mechanism="a common cause drives both variables"),
+    ResearchAction("new-assumption", "deepen", "explore", 1.0, "add an economic premise",
+                   add_assumptions=("agents optimize against x",)),
+])
+def test_changed_economics_cannot_reuse_old_response_label_to_skip_induction(action):
+    calls = []
+    result = run_mechanism_mcts(
+        initial_state=_state(), actions=(action,), evaluator=lambda *args: calls.append(args),
+        protocol_id="disc-v1", seed=7, total_budget=1.0, max_expansions=1)
+    assert calls == []
+    assert result.expansions[0].successor.status == "needs_induction"
     assert result.decision == "needs_induction"
 
 

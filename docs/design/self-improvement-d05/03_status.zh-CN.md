@@ -43,4 +43,8 @@
 - 总入口独立测试：`python -B -m pytest -c pytest-offline.ini -p no:cacheprovider tests/test_research_search_d05_independent.py tests/test_research_search_formula_bridge.py tests/test_research_search_generator.py tests/test_research_search_induction.py tests/test_research_search_typed_ast.py`：31 passed，0.82 秒；禁用网络。
 - 其中 12 项为独立实现：6 个随机种子各生成 10 棵初始树，并对成功变异/交叉后的全部树逐 instrument 用手写数值循环比较，未复用 Formula 的数值 helper；另检查非法树的 fitness 零调用、负常数、NaN/真实零和未来扰动不影响过去。
 - 当前只支持已推导的 `causal_affine` 家族，含显式截距；不是“任意公式都合法”。B1 记录只接受 synthetic_fixture，真实研究评审适配、multi-generation GP、表达式 MCTS 与机制树仍由后续批次交付。
-- 负责人另报告广回归 301 passed / 1 Polars 环境失败；待取得确切测试并与基线对比，该项不记为通过。
+- 负责人首次广回归报告 301 passed / 1 Polars binary/PySeries 失败。总入口随后完整重跑相同 12 个文件：系统 Python 为 **302 passed，7.73 秒**；原有离线 venv 为 301 passed / 1 skipped，7.50 秒（仅因未安装可选 Polars）。系统 Python 单独运行该 Polars 用例也通过。原失败记录保留，不据此宣称全机 Polars 损坏；没有改/安装依赖。
+
+## B2 施工中复核
+
+已要求纠正：将机制支持/反驳方向与研究动作效用分离，L1 新结构先消费 induction，预测不能同 ID 覆写，失配证据不改变终局，stop 不虚构效果调用。表达式搜索还须复用重复 AST 结果，避免 elite 重复评价；失败不得回传为 0 分；效果 callback 的失败与生成前无效树分开记录。B2 尚未独立验收，不以新模块出现冒充已完成。

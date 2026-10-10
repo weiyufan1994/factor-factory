@@ -15,7 +15,7 @@
 | 架构/施工图 | 已对齐并提交 | `06d0d9fa`；负责人完整回读后确认与代码无实质冲突 |
 | B1 可运行公式切片 | 已提交并独立复核 | `c6f9f6c5`；synthetic causal-affine 范围内真生成、变异/交叉与标准 Factor；31 项新检查通过 |
 | B2 两层树 | 已实现并独立定向复核 | `84690442` + `552c10b6` + `ba33da5c`；机制动作树、多代 GP、公式空位 MCTS；B1/B2 共 54 项定向检查通过 |
-| B3 原生闭环 | 适配代码已实现，纵向执行待验收 | `dd6569d9` 已交接；独立复审发现并要求修复推导范围与跨机制父代问题；实际合成 Step3–5 正在准备，不以协议夹具代替执行 |
+| B3 原生闭环 | 合成原生3–5、反思与下一轮数学 STOP 已验收；正式Step6未验证 | `38387225`；标准因子表864行，真实原生执行与审后测试通过；子式先回Step2推导，再停止，不伪称正式Step6完成 |
 | B4 独立使用/比较/交付 | 未开始 | 未做新市场测试，未发布 |
 
 ## 后续报告原则
@@ -88,3 +88,15 @@
 自改进负责人已进行两次只读交叉检查：第一次找出 Step4 fast-path 与 Step6 自动 wrapper 漏口，第二次确认关闭、当前 diff 无新增阻断。136 项受影响回归通过，72 项接口/管道回归通过；可选 Polars 在已有系统环境补跑 9 + 1 项通过。最终完整离线套件为 **2524 passed、4 skipped、2 deselected，266.77 秒**，禁用网络；其中 1 项 Polars 已另行补跑通过，其余 3 项依赖显式外部 PF/VV 历史回测引擎，本轮未运行。2 项 deselected 为原配置保留的 Git 历史/untracked 导出检查。本轮没有更改这些排除条件。
 
 本次源修复扩展了最初的代码编辑范围，但没有切换已安装的 Skill、全局运行环境或现有研究 pin。B3 须选择修复后的提交重新生成标准类，完成实际代码/推导复核，再进入原生 Step4/5；本修复本身不是 B3 验收或市场研究结论。
+
+## B3 合成纵向执行与数学 STOP 验收
+
+源码 `38387225` 修复了搜索适配器漏传已审 measurement profile 与已验证 Step3 执行范围的问题。总入口阅读该小幅改动后，在禁网环境独立复跑搜索套件158项通过。标准 Factor、Step3/4/5 的输入输出未改变。
+
+V7 的独立代码复核、审后字面量数值 oracle、真实 Step3/4/5 均通过。总入口另从实际 parquet 复算：864行、36日、24个合成标的，因子值逐项等于冻结输入 close；规范化后为排序唯一的 datetime/instrument MultiIndex、float64 factor_value。合成标签满足 `y(i,t+1)=0.0001*x(i,t)`，最大浮点差约2.17e-19；35日 Rank IC约1因此只是构造结果，不是机制或市场有效性的证据。
+
+搜索实际生成了子式 `delay((close - mean(close, 2)), 2)`，作为 measurement variant 送回Step2。研究员给出了实际判断与新观察映射：全观测时 `h(i,t)=0.5*[x(i,t-2)-x(i,t-3)]`；当前冻结夹具 `x(i,t)=a(i)+b(t)`，故子式删除全部横截面层级，同日跨标的理论常量。独立数学复核认可该结论。数值核对发现的约8.88e-16横截面差异是舍入噪声，不作为排名信息或分数。
+
+该分支合法 STOP：原 baseline 保留为工程回归；child未进入原生Step3/4/5，score/reward/cost均为null，票据为BLOCKED且活动票据为0；另一未选子式保留为未审提案。这里已有真实研究反思和Step2推导，但 `formal_step6_completed=false`、`native_step6_executed=false`；不将材料写入冒充正式Step6运行。尚待正式Step6集成验证，以及B4独立使用、同预算比较与发布。
+
+本次验收读取的实际结果位于 `/Users/humphrey/projects/factorforge-two-level-search-b3-native-20261010/native-success-final-evidence-v7.json`，其 `research_closeout` 指向判断、推导、handoff与journal。V1–V6失败/中间记录保留；未改市场研究、全局Skill、OOS或知识库。该文件记录可验证进度，不新增运行入口或审批服务。

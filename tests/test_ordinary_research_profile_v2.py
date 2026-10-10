@@ -16,7 +16,7 @@ from factor_factory.research_profiles import (
 )
 from factor_factory.revision_council.agentic_result import validate_agentic_result
 from factor_factory.revision_council.validator import validate_revision_council_proposal
-from scripts.run_agentic_council_dispatch_smoke import fake_real_agent_result
+from tests.helpers.council_result import fake_real_agent_result
 from tests import test_e_flexible_local_profile as legacy
 from tests.test_factorforge_measurement_program_pipeline import COUNCIL_RUN
 from tests.test_step6_council_phase_visibility import (

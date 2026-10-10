@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 
 from factor_factory.measurement_program import mathematical_object_present
-from scripts.run_agentic_council_dispatch_smoke import fake_real_agent_result
+from tests.helpers.council_result import fake_real_agent_result
 from tests.test_step6_council_phase_visibility import (
     RID, SCRIPT, _cli, _dispatch, _write, cli_taskbook,
 )

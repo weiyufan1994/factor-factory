@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 from factor_factory.ultimate_loop.cli import parse_args
 
 from factor_factory.research_org.contracts import ResearchOrganizationError
-from factor_factory.research_org.director import resolve_research_organization_gate
+from factor_factory.research_org.gate import resolve_research_organization_gate
 from factor_factory.research_evidence import web_factor_proof_oos_recovery_state
 
 
@@ -3959,6 +3959,18 @@ def _run_formal_ultimate(args: argparse.Namespace) -> int:
     if local_is_only and (errors := local_is_request_errors(args)):
         print('BLOCK_FACTORFORGE_LOCAL_IS_HOST_OR_OOS_ARGUMENT: ' + ','.join(errors))
         return 1
+    # Select the optional mode before creating a workspace or any run artifacts.
+    # A research-only installation cannot silently stand in for hosted execution.
+    if not local_is_only:
+        try:
+            from factor_factory.ultimate_loop.hosted import prepare_hosted_execution
+        except ModuleNotFoundError as exc:
+            if not str(exc.name).startswith((
+                'factor_factory.console', 'factor_factory.ultimate_loop.hosted',
+            )):
+                raise
+            print(f'BLOCK_FACTORFORGE_HOSTED_COMPONENTS_NOT_INSTALLED: {exc.name}')
+            return 1
     phase_rc = _run_hybrid_only(
         args=args,
         local_is_only=local_is_only,
@@ -3990,13 +4002,6 @@ def _run_formal_ultimate(args: argparse.Namespace) -> int:
         from factor_factory.ultimate_loop.local import prepare_local_execution
         mode = prepare_local_execution(ctx, args.report_id)
     else:
-        try:
-            from factor_factory.ultimate_loop.hosted import prepare_hosted_execution
-        except ModuleNotFoundError as exc:
-            if not str(exc.name).startswith("factor_factory.console"):
-                raise
-            print(f"BLOCK_FACTORFORGE_HOSTED_COMPONENTS_NOT_INSTALLED: {exc.name}")
-            return 1
         mode = prepare_hosted_execution(
             args=args,
             ctx=ctx,

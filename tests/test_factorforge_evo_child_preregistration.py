@@ -43,7 +43,7 @@ from factor_factory.research_release import (
     stable_hash,
 )
 from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
-from scripts.run_factorforge_research_protocol_smoke import (
+from tests.helpers.research_protocol import (
     valid_approaches,
     valid_conjecture,
     valid_state,

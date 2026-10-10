@@ -21,6 +21,12 @@ build = [
   "setuptools>=69",
   "wheel",
 ]
+research = [
+  "cryptography>=46,<47",
+  "latex2mathml==3.81.0",
+  "pypdf==6.10.1",
+]
+# Dependency-name compatibility only; this extra does not install a Console service.
 console = [
   "cryptography>=46,<47",
   "latex2mathml==3.81.0",

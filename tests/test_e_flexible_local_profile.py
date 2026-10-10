@@ -21,7 +21,7 @@ from factor_factory.knowledge_reference import (
     build_legacy_knowledge_reference_contract,
 )
 from factor_factory.workspace_experience_export import export_workspace_knowledge_record
-from scripts.run_factorforge_research_protocol_smoke import valid_conjecture
+from tests.helpers.research_protocol import valid_conjecture
 
 from tests.test_factorforge_measurement_program import _filled_program
 
@@ -236,7 +236,7 @@ def test_research_conjecture_profile_relaxes_only_declared_quota():
 def test_research_protocol_cli_uses_report_bound_profile(
     tmp_path, spec_profile, top_profile, local_flag, expected_returncode
 ):
-    from scripts.run_factorforge_research_protocol_smoke import valid_approaches, valid_state
+    from tests.helpers.research_protocol import valid_approaches, valid_state
     from tests.test_factorforge_research_protocol_local_is_scope import local_is_conjecture
 
     conjecture = local_is_conjecture()
@@ -296,7 +296,7 @@ def test_research_protocol_cli_uses_report_bound_profile(
 
 
 def test_protocol_writer_and_validator_keep_unmarked_old_local_strict(tmp_path):
-    from scripts.run_factorforge_research_protocol_smoke import valid_approaches, valid_state
+    from tests.helpers.research_protocol import valid_approaches, valid_state
     from tests.test_factorforge_research_protocol_local_is_scope import local_is_conjecture
 
     conjecture = local_is_conjecture()

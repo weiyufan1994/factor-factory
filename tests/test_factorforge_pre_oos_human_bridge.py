@@ -126,7 +126,7 @@ from factor_factory.research_workspace import (
 from factor_factory.revision_council.pre_oos_outcome import (
     materialize_pre_oos_council_outcome,
 )
-from scripts.run_factorforge_research_protocol_smoke import (
+from tests.helpers.research_protocol import (
     valid_approaches,
     valid_conjecture,
     valid_state,

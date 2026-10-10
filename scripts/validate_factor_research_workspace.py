@@ -19,11 +19,8 @@ from factor_factory.research_workspace import (
     workspace_manifest_path,
 )
 from factor_factory.runtime_context import load_runtime_manifest
-from factor_factory.research_org import (
-    PLAN_RELATIVE_PATH,
-    ResearchOrganizationError,
-    validate_research_organization_bundle,
-)
+from factor_factory.research_org.contracts import ResearchOrganizationError
+from factor_factory.research_org.gate import PLAN_RELATIVE_PATH
 
 
 def _workspace_from_runtime_manifest(path: Path) -> tuple[Path, dict]:
@@ -91,9 +88,14 @@ def main() -> int:
     research_org_path = workspace_root / PLAN_RELATIVE_PATH
     if args.require_research_org or research_org_path.exists() or research_org_path.is_symlink():
         try:
+            from factor_factory.research_org.director import validate_research_organization_bundle
             research_org = validate_research_organization_bundle(
                 workspace=workspace_root
             )
+        except ModuleNotFoundError as exc:
+            if exc.name != 'factor_factory.research_org.director':
+                raise
+            failures.append('BLOCK_FACTORFORGE_HOSTED_COMPONENTS_NOT_INSTALLED: research organization')
         except ResearchOrganizationError as exc:
             failures.append(str(exc))
     if failures:

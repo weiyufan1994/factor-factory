@@ -26,13 +26,13 @@
 ```bash
 python3.13 -m venv .venv
 source .venv/bin/activate
-python -m pip install -e '.[console,step4,test]'
+python -m pip install -e '.[research,step4,test]'
 # 如果本次包附带独立 Data API SDK：
 python -m pip install '../factorforge-data-api[test]'
 python -m pip check
 ```
 
-`console` 目前是保留的依赖分组名，包含 PDF/历史证明解析依赖，不表示启动 Web Console。纯 DataFrame 使用者安装框架 wheel 或 `pip install .` 即可；Step4 增加 `.[step4]`，明确选择 Qlib 时才安装 `.[qlib]`。
+`research` 包含 PDF/数学显示及既有证据解析依赖。纯 DataFrame 使用者安装框架 wheel 或 `pip install .` 即可；Step4 增加 `.[step4]`，明确选择 Qlib 时才安装 `.[qlib]`。旧依赖分组名 `console` 仅保留安装兼容；它不会补装 Console 或托管执行组件。
 
 第三方版本按实际测试环境记录：`packaging/constraints-tested-macos.txt` 对应 macOS Python 3.13/3.14，`packaging/constraints-tested-macos-py311.txt` 对应 macOS Python 3.11。在相同环境安装时可加 `-c` 使用；3.13/3.14 清单不能直接用于 3.11，也不是所有平台已通过的声明。依赖未缓存时安装需要网络；研究包没有自动下载行情、安装 Qlib 或连接服务的步骤。
 
@@ -59,6 +59,8 @@ python -m pytest -c pytest-offline.ini
 ## 研究入口与标准接口
 
 默认 11 个 Skill 及可选/兼容入口见 `packaging/research-skills.json`。让研究员读取本包 `skills/factor-forge-ultimate/SKILL.md`，不要混用另一版全局 Skill。默认入口之外的旧角色路径仅用于兼容；研究员日志已并入 Ultimate，证据解释和独立评议在 Step6 维护。
+
+可选 Miner、托管记忆的说明保留作导航，其执行组件属于完整源码分支，不在标准研究发行中。普通知识检索、经验候选整理和 GP/MCTS 搜索仍在研究包内，两者不要混淆。
 
 常用 Python 入口：
 
@@ -105,6 +107,10 @@ python scripts/build_factorforge_publish_bundle.py \
 
 构建只读选定 Git 提交和明确提供的 SDK，不自动拉取上游；SDK 文件身份单独记录。wheel 从临时副本离线构建，逐个模块核对实际 wheel 与分发源码。已有输出目录不覆盖。
 
-`packaging/research-files.toml` 是单一分发选择表。历史 Host 构建巨型实现、Console 服务端入口、生产数据运维脚本和相应历史测试不随标准研究包交付，原始文件继续保存在 Git 中。仍被研究或兼容功能使用的辅助模块保留，并在验证说明中列出残余依赖；不是根据文件名批量删除 EVO/信息边界检查。
+`packaging/research-files.toml` 是正向分发清单：根目录运行模块和命令逐项选择，核心子包按职责选择。新建顶层模块或脚本不会自动进入研究包。
+
+Console 全栈、托管组织执行/记忆/Miner、历史部署与生产补数工具、历史大 smoke runner 及其专属测试留在完整 Git 源码中，不进入本包或 wheel。普通运行通过轻量的模式检查，不再为确认“没有托管计划”加载整个组织执行栈。显式选择未安装的托管模式会在创建工作区前说明缺少组件；已有托管计划也不会被当作普通研究跳过。
+
+研究实际使用的数学、数据边界、代码评审、Step6/Council、知识和修订消费者继续保留。旧实现数值对照放在测试 fixture 中，不进入运行 wheel。具体减少量和剩余长函数见 `docs/cleanup-maintainability.zh-CN.md`；全仓库保留历史源码不等于普通研究仍要安装它们。
 
 本轮本地候选不自动推送 GitHub或切换研究环境。公开发布前仍需所有者确认代码/参考资料许可；当前定位是私有研究试用。

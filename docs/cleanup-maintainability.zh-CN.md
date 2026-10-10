@@ -1,12 +1,40 @@
-# 长函数清理与剩余职责
+# 研究核心与历史代码分离
 
-这是施工记录，不增加研究步骤或运行门槛。范围按 `packaging/research-files.toml` 的实际源码选择，长度按 Python AST 起止行（包含注释/声明）统计。测试对照、测试启动器和历史不分发代码与研究运行代码分开。
+这是施工记录，不增加研究步骤或运行门槛。本轮不仅拆函数：改变实际分发范围，并解除普通研究对托管组织/Console 的运行依赖。历史代码留在完整 Git 源码，研究发行树和 wheel 中没有这些模块。
+
+## R3 的实质精简
+
+与 R2 同口径比较：逐个读取实际分发树的 Python 文件，物理行数包含空行/注释；不含 Markdown，不重复计算 wheel。框架代码指 `factor_factory + scripts + skills`，不把测试削减冒充运行代码削减。
+
+| 框架部分 | R2 行数 | R3 行数 |
+|---|---:|---:|
+| 研究库 `factor_factory` | 176,614 | 100,188 |
+| 命令脚本 `scripts` | 67,585 | 13,786 |
+| Skill 中的阶段代码 | 52,197 | 52,197 |
+| 合计 | **296,396** | **166,171** |
+
+减少 **130,225 行，约 43.9%**。独立 Data API SDK 的运行代码保持 4,001 行，不混入框架减少量。全仓库没有声称删掉同等行数；旧代码仍可通过 Git 查阅或在完整源码环境中维护。
+
+具体分离：
+
+- Console 的 37 个模块（41,939 行）、托管组织执行的 5 个模块（10,486 行）、Miner 的 11 个模块（4,086 行）退出标准研究分发。
+- 托管记忆、EVO 执行编排及 hosted Ultimate 等 11 个文件（20,001 行）退出标准分发；普通检索、候选经验维护、GP/MCTS 和 Step6/Council 保留。
+- 历史部署、生产补数、大 smoke runner 等 133 个命令脚本（53,801 行）退出。测试真正需要的合成输入迁到 `tests/helpers`，不再为几个 fixture 安装整个历史 smoke 链。
+- `research_org.gate` 只判断是否显式选择了托管计划；普通研究不导入 director。存在托管计划时仍执行原验证，缺少托管组件时明确报错。完整源码旧入口转发到同一个判断，不维护第二套规则。
+- 根目录模块/命令改为正向选择；核心子包按职责保留。新增未分类模块不再自动进入发行。实际 wheel 逐文件与选定源码比较。
+- 普通测试保留；托管兼容测试迁到 `tests/legacy`，完整源码中单独运行。没有把真实研究失败改成 skip。
+
+本轮四个公开 SDK 文件 `factors.py`、`research_api.py`、`portfolio_api.py`、`result_artifacts.py` 以及 Step3/4/5 阶段实现与 R2 字节相同；不会靠调整账户、指标或因子表语义换取测试通过。
+
+## 前轮已完成的职责拆分
+
+以下长度按 Python AST 起止行统计。它们解释已有重构，不作为 R3 减少 13 万行的来源。
 
 ## 已拆分的主要运行函数
 
 | 原函数 | 原长度 | 现在的职责划分 |
 |---|---:|---|
-| Ultimate 主编排 | 2746 | 库内准备、计划、执行、Council、结果整理；主入口 473 行。普通 IS 和托管路径分开选择。 |
+| Ultimate 主编排 | 2746 | 库内准备、计划、执行、Council、结果整理；普通 IS 和托管路径分开选择。本轮进一步将可选模式检查前置到创建工作区之前。 |
 | `_minute_derived_flow_state_adapter` | 2006 | 14 行生成入口；4 个纯计算模块的最大函数 145 行。生成的因子代码仍完整可读。 |
 | Step4 `main` | 1314 | 主函数 683 行；分钟分派、输入读取、复用判定、结果保存、评价上下文、覆盖和质量分别维护。主编排仍偏长，见下表。 |
 | `_has_explicit_transient_impact_model` | 946 | 多项式计算和语义关系识别分开；主判断 170 行，helper 最长 97 行。不是定理证明器。 |
@@ -35,23 +63,16 @@ Step5 双实现已经合并为 `factor_factory.step5`；Step6 的结果校验、
 
 | 源文件与函数 | 行数 | 实际用途及本轮处理 |
 |---|---:|---|
-| `factor_factory/console/web_research_plan.py::validate_plan` | 997 | 显式 Web/托管研究计划的身份、来源、公式、数据和预算联合检查。普通 local IS 的环境准备分支不导入它；旧计划消费者仍使用，保留兼容，不在本轮重写托管协议。 |
-| `factor_factory/console/evo_child_runtime.py::execute_evo_child_ready` | 978 | 托管 child 执行/恢复和终局落地。普通 IS 不调用；保留旧行为，安装导入通过不代表执行验证。 |
-| `factor_factory/research_org/runtime.py::validate_research_organization_runtime` | 893 | 显式研究组织模式跨任务、身份、结果的联合检查；`runtime_mode=off` 在导入前返回。后续可按对象类型拆分，不删除旧检查。 |
 | `skills/factor-forge-step4/scripts/run_step4.py::main` | 683 | 核心路径仍串联上下文、计算/复用、评价和保存。输入读取、结果保存等已分离；下一步应按执行路线整理分派，不能塞入万能 context。 |
 | `skills/factor-forge-step6/scripts/materialize_step6_child_revision.py::main` | 812 | 已选择修订后的旧 child 工作区构建，含普通和严格 EVO 兼容分支；不是解释指标所必需。保持既有原子落地顺序，不趁简化改变批准语义。 |
-| `scripts/run_factorforge_ultimate_loop.py::main` | 747 | 旧多轮驱动器，区别于当前 Ultimate 默认入口。仍保留兼容调用；以后优先转发到当前库的同一实现，不能直接删旧参数。 |
 | `skills/factor-forge-step2/scripts/run_step2.py::load_manifest_bound_dual_route_pdf_specs` | 678 | 已显式选择双路 PDF 输入的 V2/V3 兼容读取；没有该输入约定时不进入。维护重点是按输入版本拆分，保留来源忠实性和缺失错误。 |
-| `factor_factory/research_org/runtime.py::build_research_org_session_prompt` | 535 | 角色提示模板选择，含大量声明文本；不是数值算法。属于显式研究组织路径，后续抽出角色模板，不改 producer 身份。 |
-| `factor_factory/console/evo_child_runtime.py::prepare_evo_child_execution` | 535 | 托管 child 的路径/来源核对和准备；普通研究不使用。保留兼容分支，无新部署或执行。 |
-| `factor_factory/research_org/director.py::validate_research_organization_bundle` | 524 | 显式多角色组织的计划/任务/分工联合检查；保留。后续与 runtime 按同一对象边界清理，避免再生双份 validator。 |
 | `factor_factory/revision_council/pre_oos_outcome.py::validate_pre_oos_root_synthesis` | 519 | 显式 pre-OOS 选择核对，包含结果回放；不能从普通研究中无差别删掉信息边界检查。此轮只保证既有兼容测试，不作真实 OOS 验证。 |
 
 ## 单列而非隐藏的长测试和历史代码
 
-- 随包的 `run_factorforge_metric_verifier_smoke.py::main`（1118 行）、`run_factorforge_miner_mvp_smoke.py::main`（1016 行）和 `run_factorforge_research_protocol_smoke.py::main`（611 行）是显式启动的合成测试程序。第三个还向测试提供 fixture helper；未发现研究运行库调用这三个 `main`。它们不是因子计算入口，也不能作为真实研究结果。
+- 旧 `run_factorforge_metric_verifier_smoke.py::main`、`run_factorforge_miner_mvp_smoke.py::main` 和 `run_factorforge_research_protocol_smoke.py::main` 均不再随包分发；研究测试所需的纯 fixture 已独立。
 - `tests/fixtures/*_before_cleanup.py` 是冻结的旧实现对照，保留其原长度以避免“旧实现也一起改了”的伪一致。它们不在 `factor_factory` wheel 中。
-- 原 16866 行 Host bootstrap 和 Console 服务进程 `_run_job` 等不在标准发行选择内，保留于 Git 历史/原工程；这不是声称它们已经完成重构。
+- 原 16866 行 Host bootstrap、整个 Console、托管组织 runtime 及旧多轮驱动器不在标准发行选择内；不声称这些旧系统已经完成重构。
 
 ## 尚待验收
 

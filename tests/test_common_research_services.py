@@ -119,20 +119,6 @@ def test_workspace_calendar_is_not_an_independent_snapshot(tmp_path, alias):
         snapshot.read_calendar_snapshot(path, **options)
 
 
-def test_old_console_entry_uses_new_calendar_service(tmp_path, monkeypatch):
-    from factor_factory.console import web_factor_proof as web
-    path, _, options = _calendar(tmp_path)
-    monkeypatch.setenv("FACTORFORGE_TRUSTED_TRADE_CAL_CSV", str(path))
-    for name, key in [
-        ("TRADING_CALENDAR_REGISTRY_PATH", "registry_path"),
-        ("TRADING_CALENDAR_REGISTRY_TRUST_SHA256", "registry_sha256"),
-        ("TRADING_CALENDAR_REGISTRY_TRUST_COMMIT", "registry_git_commit"),
-        ("TRADING_CALENDAR_REGISTRY_TRUST_BLOB", "registry_git_blob"),
-        ("CALENDAR_SNAPSHOT_ID", "snapshot_id"),
-    ]:
-        monkeypatch.setattr(snapshot, name, options[key])
-    assert web._trusted_calendar_snapshot(workspace_root=options["workspace_root"]) == snapshot.read_calendar_snapshot(path, **options)
-    assert web.validate_trusted_calendar_snapshot is snapshot.validate_trusted_calendar_snapshot
 
 
 @pytest.mark.parametrize("claim,controls", [
@@ -141,8 +127,6 @@ def test_old_console_entry_uses_new_calendar_service(tmp_path, monkeypatch):
     ("unknown", []),
 ])
 def test_evaluation_fields_units_and_timing_unchanged(claim, controls):
-    from factor_factory.console.web_research_plan import build_web_evaluation_contract as old
-    assert old is build_web_evaluation_contract
     plan = {
         "research_object": {"rebalance_frequency": "daily"},
         "data_plan": {"availability_lags": {"close": 0}, "missing_data_policy": "skip_missing"},
@@ -174,8 +158,6 @@ def test_evaluation_fields_units_and_timing_unchanged(claim, controls):
 
 
 def test_evaluation_hash_retains_utf8_not_ascii_escape_serialization():
-    from factor_factory.console.web_research_plan import stable_json_hash as old
-    assert old is stable_json_hash
     assert stable_json_hash({"é": "中文", "a": 1}) == hashlib.sha256('{"a":1,"é":"中文"}'.encode()).hexdigest()
 
 
@@ -210,30 +192,3 @@ if sys.argv[2] == "factor_factory.knowledge_context":
     result = subprocess.run([sys.executable, "-I", "-B", "-c", script, str(root), module],
                             cwd=tmp_path, capture_output=True, text=True, timeout=30)
     assert result.returncode == 0, result.stderr
-
-
-def test_hosted_compatibility_signatures_and_arguments(monkeypatch):
-    import inspect
-    from factor_factory import evo_memory_retrieval as hosted, knowledge_context as generic
-    names = (
-        "validate_evo_v2_cold_start_search_receipt", "prepare_evo_v2_cold_start_search_session",
-        "build_evo_v2_cold_start_search_prompt", "complete_evo_v2_cold_start_search_session",
-        "retrieve_evo_v2_memory_projection",
-    )
-    for name in names:
-        wrapper, implementation = getattr(generic, name), getattr(hosted, name)
-        assert inspect.signature(wrapper) == inspect.signature(implementation)
-        positional, kwargs = [], {}
-        for parameter in inspect.signature(wrapper).parameters.values():
-            if parameter.kind == inspect.Parameter.KEYWORD_ONLY:
-                kwargs[parameter.name] = object()
-            else:
-                positional.append(object())
-        observed = []
-        def probe(*args, **kw):
-            observed.append((args, kw))
-            return "forwarded"
-        with monkeypatch.context() as patch:
-            patch.setattr(hosted, name, probe)
-            assert wrapper(*positional, **kwargs) == "forwarded"
-        assert observed == [(tuple(positional), kwargs)]

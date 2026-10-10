@@ -45,6 +45,8 @@ class Boundary:
     def find_spec(self, fullname, path=None, target=None):
         forbidden = (
             "factor_factory.console", "factor_factory.research_org.runtime",
+            "factor_factory.research_org.director", "factor_factory.research_org.registry",
+            "factor_factory.research_org.router", "factor_factory.ultimate_loop.hosted",
             "factor_factory.researcher_memory", "factor_factory.evo_memory_runtime",
             "factor_factory.evo_terminal_closure",
         )

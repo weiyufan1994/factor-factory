@@ -26,7 +26,7 @@ from factor_factory.research_conjecture import validate_research_conjecture
 from factor_factory.revision_council.validator import (
     validate_revision_council_proposal,
 )
-from scripts.run_factorforge_research_protocol_smoke import valid_conjecture
+from tests.helpers.research_protocol import valid_conjecture
 from scripts.step12_intake_common import (
     attach_agent_authored_measurement_program,
     build_canonical_formula_step1,

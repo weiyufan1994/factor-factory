@@ -65,6 +65,10 @@ no Host identity. Its pre-result records and reviewed-code checkpoint remain
 necessary. The execution reference gives the exact commands and resume points.
 OOS and official promotion are separate operations, not ordinary IS completion.
 
+The standard research distribution contains the local research path. Hosted
+execution and optional Miner/hosted-memory services belong to the full source
+distribution; their reference pages are navigation, not installed capabilities.
+
 Inspect current deliveries, API fields and calendar/valuation conventions
 before escalating a data gap. Ask the data owner only for the missing dependency.
 Keep an appropriate research approximation explicit.

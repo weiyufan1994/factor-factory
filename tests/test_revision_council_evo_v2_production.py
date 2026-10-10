@@ -26,7 +26,7 @@ from factor_factory.revision_council.production import (
     validate_formal_evo_packet,
     validate_result_evo_identity,
 )
-from scripts.run_factorforge_research_protocol_smoke import valid_conjecture
+from tests.helpers.research_protocol import valid_conjecture
 from tests.test_factorforge_evo_v2 import REPORT_ID, _build_bundle
 from tests.test_factorforge_measurement_program_pipeline import _program
 from tests.test_revision_council_evo_v2 import _proposal_and_payload

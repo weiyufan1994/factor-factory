@@ -22,7 +22,7 @@ def _repo(tmp_path: Path) -> Path:
     (root / "AGENTS.md").write_text("# Project instructions\n")
     (root / "docs/quickstart-publish.zh-CN.md").write_text("# Quickstart\n")
     (root / "scripts/run.py").write_text("print('ok')\n")
-    (root / "factor_factory/core.py").write_text("x = 1\n")
+    (root / "factor_factory/factors.py").write_text("x = 1\n")
     (root / "dist").mkdir()
     (root / "dist/bad.txt").write_text("omit\n")
     for report_id in publisher.ALLOWED_EXPORT_IDS:
@@ -53,7 +53,7 @@ def test_bounded_bundle_and_inventory(tmp_path: Path, monkeypatch: pytest.Monkey
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text("\n".join(json.dumps({"source_path": (publisher.EXPORT_ROOT / f"knowledge_record__{report_id}.json").as_posix()}) for report_id in publisher.ALLOWED_EXPORT_IDS) + "\n")
     monkeypatch.setattr(publisher, "_rebuild_staging_index", fake_rebuild)
-    monkeypatch.setattr(publisher, "_git_metadata", lambda root: (["AGENTS.md", "README.md", "README.zh-CN.md", "scripts/run.py", "factor_factory/core.py", "dist/bad.txt"], "abc", "main"))
+    monkeypatch.setattr(publisher, "_git_metadata", lambda root: (["AGENTS.md", "README.md", "README.zh-CN.md", "scripts/run.py", "factor_factory/factors.py", "dist/bad.txt"], "abc", "main"))
     out = publisher._build_tree_bundle(source_root=root, output=tmp_path / "out")
     inventory = json.loads((out / "bundle_inventory.json").read_text())
     assert "dist/bad.txt" in inventory["excluded_paths"]
@@ -129,13 +129,13 @@ def test_git_snapshot_ignores_dirty_untracked_and_historical_sources(tmp_path):
     excluded = root / 'factor_factory/epistemic_host_bootstrap_expectation_proposal.py'
     excluded.write_text('historical = True\n')
     head = _commit_repo(root)
-    (root / 'factor_factory/core.py').write_text('dirty = True\n')
+    (root / 'factor_factory/factors.py').write_text('dirty = True\n')
     (root / 'factor_factory/untracked.py').write_text('untracked = True\n')
     (root / 'packaging/research-files.toml').write_text('invalid draft selector\n')
     target = tmp_path / 'snapshot'
     identity = publisher._snapshot_source(root, head, target)
     assert identity['commit'] == head
-    assert (target / 'factor_factory/core.py').read_text() == 'x = 1\n'
+    assert (target / 'factor_factory/factors.py').read_text() == 'x = 1\n'
     assert not (target / excluded.relative_to(root)).exists()
     assert not (target / 'factor_factory/untracked.py').exists()
     assert not (target / 'dist').exists()
@@ -145,7 +145,7 @@ def test_git_snapshot_ignores_dirty_untracked_and_historical_sources(tmp_path):
 def test_selected_git_symlink_is_rejected_without_following_it(tmp_path):
     root = _repo(tmp_path)
     _selection(root)
-    (root / 'factor_factory/escape.py').symlink_to('/outside-package/read-is-not-allowed')
+    (root / 'factor_factory/evaluation_contract.py').symlink_to('/outside-package/read-is-not-allowed')
     head = _commit_repo(root)
     with pytest.raises(ValueError, match='unsafe selected Git member'):
         publisher._snapshot_source(root, head, tmp_path / 'snapshot')
@@ -170,12 +170,12 @@ def test_public_builder_hands_only_commit_bytes_to_staging(tmp_path, monkeypatch
     root = _repo(tmp_path)
     _selection(root)
     head = _commit_repo(root)
-    (root / 'factor_factory/core.py').write_text('dirty = True\n')
+    (root / 'factor_factory/factors.py').write_text('dirty = True\n')
     calls = []
 
     def inspect_staging(**kwargs):
         assert kwargs['source_identity']['commit'] == head
-        assert (kwargs['source_root'] / 'factor_factory/core.py').read_text() == 'x = 1\n'
+        assert (kwargs['source_root'] / 'factor_factory/factors.py').read_text() == 'x = 1\n'
         assert kwargs['build_python'] == 'explicit-build-python'
         calls.append(kwargs['source_identity'])
         return kwargs['output']

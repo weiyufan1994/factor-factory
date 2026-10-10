@@ -11,7 +11,7 @@ from factor_factory.research_conjecture import (
     validate_research_conjecture,
     write_json,
 )
-from scripts.run_factorforge_research_protocol_smoke import (
+from tests.helpers.research_protocol import (
     valid_approaches,
     valid_conjecture,
     valid_state,

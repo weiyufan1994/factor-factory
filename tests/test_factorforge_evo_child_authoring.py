@@ -16,7 +16,7 @@ from factor_factory.evo_v2 import canonical_json_bytes, sha256_file
 from factor_factory.research_org.runtime import build_research_org_session_prompt
 from factor_factory.research_org.runtime_trust import ensure_runtime_trust_store
 from factor_factory.research_release import SEARCH_TRIAL_LEDGER_VERSION
-from scripts.run_factorforge_research_protocol_smoke import (
+from tests.helpers.research_protocol import (
     valid_approaches,
     valid_conjecture,
     valid_state,

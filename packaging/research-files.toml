@@ -309,6 +309,7 @@ include = [
   "tests/test_ultimate_library_boundary.py",
   "tests/test_workspace_experience_corrections.py",
   "tests/test_workspace_experience_export.py",
+  "tests/installed_wheel_import_check.py",
   # Readable examples, documentation and reproducible build inputs.
   "examples/*",
   "fixtures/*",

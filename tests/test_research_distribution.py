@@ -67,6 +67,7 @@ def test_build_selection_does_not_ship_historical_services(selected_tree):
         "scripts/build_report_qlib_provider.py", "scripts/publish_qlib_daily_provider.py",
         "factor_factory/research_search/controller.py", "factor_factory/research_search/planner.py",
         "scripts/manage_factor_search.py",
+        "tests/installed_wheel_import_check.py",
     ):
         assert (selected_tree / rel).is_file(), rel
 

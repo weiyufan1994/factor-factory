@@ -93,6 +93,9 @@ python query_knowledge.py --query 'zzuncoveredq42' --json
 
 已有 GP/MCTS 的合成测试在离线清单中，研究增益只有真实研究记录才能支持。这里没有另外启动搜索预算、OOS、训练或知识库发布。
 
+完整可运行例子和输入/返回说明见 [两层搜索最小入口](research-search-quickstart.zh-CN.md)。
+R36 的实际 Step6 和独立自写因子验收见 [发布记录](release-r36.zh-CN.md)。
+
 ## 构建与排除范围
 
 唯一完整包构建入口仍为 `scripts/build_factorforge_publish_bundle.py`。开发者先提交改动，再执行：
@@ -113,4 +116,4 @@ Console 全栈、托管组织执行/记忆/Miner、历史部署与生产补数�
 
 研究实际使用的数学、数据边界、代码评审、Step6/Council、知识和修订消费者继续保留。旧实现数值对照放在测试 fixture 中，不进入运行 wheel。具体减少量和剩余长函数见 `docs/cleanup-maintainability.zh-CN.md`；全仓库保留历史源码不等于普通研究仍要安装它们。
 
-本轮本地候选不自动推送 GitHub或切换研究环境。公开发布前仍需所有者确认代码/参考资料许可；当前定位是私有研究试用。
+本包构建/解压不自动推送 GitHub 或切换研究环境。R36 本机默认环境由维护者在独立验收后显式切换，已运行研究的版本锁定保留。公开发布前仍需所有者确认代码/参考资料许可；可移交包不包含作者的历史 Git 对象库。

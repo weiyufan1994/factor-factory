@@ -605,7 +605,3 @@ def test_unknown_contract_version_is_not_coerced_to_v1_or_v2() -> None:
 
     program["contract_version"] = {"caller_selected": "v2"}
     assert "measurement_program.contract_version" in _validate(program)
-
-
-
-

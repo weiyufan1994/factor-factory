@@ -1,6 +1,6 @@
 # 人工可复现的因子研究接口
 
-本次工程源：`factorforge-it-hybrid-integration-20261002`。以所选 checkout 的实现为准；
+接口始于 `factorforge-it-hybrid-integration-20261002`，R36 保持四个公开 SDK 文件不变。以所选 checkout 的实现为准；
 源码修改不会自动升级 `current` release。本文例子完全离线。
 
 ## 1. 职责只有五段

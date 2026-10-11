@@ -6,7 +6,7 @@
 
 总入口与自改进负责人确认两层任务：机制/数学对象/响应结构/区分实验，以及真正的公式 AST 搜索。每个新响应结构做本轮前向 induction；参数域内复用需范围核对。Step3/4/5 及标准 Factor/metrics 接口不变。
 
-历史 D0.4 保持不变；本版由 `a7449bb387b12872f7cd2900678255732edcb4ef` 新建隔离分支。现有 R3 review 包、安装中的 Skill、runtime pin、因子研究工作区和知识根均不在本轮编辑范围。
+历史 D0.4 保持不变；本版由 `a7449bb387b12872f7cd2900678255732edcb4ef` 新建隔离分支。最初施工不改安装环境；2026-10-11 用户另授权验收后发布并切换默认环境，既有研究 pin、结果和知识根保持不动。
 
 ## 批次进展
 
@@ -15,8 +15,8 @@
 | 架构/施工图 | 已对齐并提交 | `06d0d9fa`；负责人完整回读后确认与代码无实质冲突 |
 | B1 可运行公式切片 | 已提交并独立复核 | `c6f9f6c5`；synthetic causal-affine 范围内真生成、变异/交叉与标准 Factor；31 项新检查通过 |
 | B2 两层树 | 已实现并独立定向复核 | `84690442` + `552c10b6` + `ba33da5c`；机制动作树、多代 GP、公式空位 MCTS；B1/B2 共 54 项定向检查通过 |
-| B3 原生闭环 | 合成原生3–5、反思与下一轮数学 STOP 已验收；正式Step6未验证 | `38387225`；标准因子表864行，真实原生执行与审后测试通过；子式先回Step2推导，再停止，不伪称正式Step6完成 |
-| B4 独立使用/比较/交付 | 未开始 | 未做新市场测试，未发布 |
+| B3 原生闭环 | 合成原生3–6及下一轮数学 STOP 已验收 | `38387225`；Step6 五个实际命令 PASS，真实独立 reviewer，最终 reject/stop；不是市场 alpha |
+| B4 独立使用/比较/交付 | 自写因子/GP 使用通过，进入 R36 交付；同预算市场比较未做 | 16 行字面量手算一致、6 个 GP 唯一评价；新响应结构回 Step2，拒绝把合成分数当收益 |
 
 ## 后续报告原则
 
@@ -100,3 +100,26 @@ V7 的独立代码复核、审后字面量数值 oracle、真实 Step3/4/5 均�
 该分支合法 STOP：原 baseline 保留为工程回归；child未进入原生Step3/4/5，score/reward/cost均为null，票据为BLOCKED且活动票据为0；另一未选子式保留为未审提案。这里已有真实研究反思和Step2推导，但 `formal_step6_completed=false`、`native_step6_executed=false`；不将材料写入冒充正式Step6运行。尚待正式Step6集成验证，以及B4独立使用、同预算比较与发布。
 
 本次验收读取的实际结果位于 `/Users/humphrey/projects/factorforge-two-level-search-b3-native-20261010/native-success-final-evidence-v7.json`，其 `research_closeout` 指向判断、推导、handoff与journal。V1–V6失败/中间记录保留；未改市场研究、全局Skill、OOS或知识库。该文件记录可验证进度，不新增运行入口或审批服务。
+
+## R36：正式 Step6 与独立使用补充
+
+上节“formal_step6_completed=false”保留为当时状态。后来实际运行的正式证明为
+V7 工作区 `objects/runtime_context/step6-ultimate-proof.json`：五项原生命令 PASS，
+作者与真实独立 reviewer 一致 reject，下一动作 stop，未签发因子结论。新增
+`native-step6-final-evidence-v7.json` 的十项 bytes/SHA 已由总入口复算；早期 paused
+attempt 不改写。执行源码仍精确为 `38387225`，不回贴后来的发布版本号。
+
+后续 `fb672f02` 修复成功结束后残留的同研究暂停提示：只清除已解决的暂停文件，
+保留外部研究和失败历史。该改动连同 SDK/阶段入口由总入口复跑 122 项通过。
+
+独立测试员使用自己的数学规格、合成数据、PriceVolumeFactor 和字面量手算，
+16 行全匹配，含 8 NaN 与 1 真零；标签单独生成，metrics 正确给出 partial。
+GP 实际评价 6 个新 AST、复用 2 次、拒绝重复 3 次；最优 `close-close` 不符合原
+估计对象，返回 Step2 后 STOP。新响应家族在数值回调前拒绝（调用数 0）。没有
+使用作者 tests/examples 作为预期答案，也没有将这次 SDK 使用称为整轮原生研究。
+
+发行树复验修正了三项 Console 专属测试的归属，移入历史套件；两个 hosted
+入口测试按实际安装组件检查明确错误。没有补回 Console、删数值测试或新加 skip。
+删减包完整回归 2514 passed、5 skipped、2 deselected；其中 Polars 检查后来补跑。
+最终发布包仍单独复跑并记录外层结果；真实市场比较、Linux 和通用 self-improvement
+效果仍待验证。使用缺口已补到 [最小调用说明](../../research-search-quickstart.zh-CN.md)。

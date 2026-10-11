@@ -60,6 +60,10 @@ permissions, signatures or a data-production approval loop.
 
 ## Common analysis modules
 
+For copyable class, label and metric calls, use the selected checkout's
+[interface guide](../../../docs/research-interface.zh-CN.md) and
+[data/operator SDK guide](../../../docs/research-api-data-and-operators.zh-CN.md).
+
 Use `factor_factory.research_api` in checkouts that include it. IC, event-return
 analysis and Fama–MacBeth are separate preliminary analyses over explicit
 labels. Qlib and the self-account engine are account backends with explicit

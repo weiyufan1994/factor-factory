@@ -1324,5 +1324,3 @@ def test_jump_words_without_threshold_state_structure_still_block() -> None:
             failure["code"] == "BLOCK_MECHANISM_FORMULA_SPECIFIC_DERIVATION_MISSING"
             for failure in failures
         )
-
-

@@ -62,6 +62,10 @@ claim to have migrated or reproduced a separate Tutor system.
 
 ## Two search levels (D0.5 construction)
 
+For the concrete call contract and executable examples, read the
+[two-level search quickstart](../../../docs/research-search-quickstart.zh-CN.md).
+The examples are synthetic use cases, not independent review or market evidence.
+
 Use one research loop with two distinct search spaces:
 
 - **Mechanism/research search:** explore economic assumptions, mathematical

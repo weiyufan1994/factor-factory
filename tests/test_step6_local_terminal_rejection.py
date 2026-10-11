@@ -124,6 +124,57 @@ def test_terminal_rejection_preserves_unresolved_evidence_quality():
         assert strategy["revision_needed"] is False
 
 
+def test_successful_step6_clears_resolved_pause_diagnostics(tmp_path):
+    module = _module()
+    status = tmp_path / "main_agent_mechanism_memo_status__R.json"
+    block = tmp_path / "step6_prewrite_block__R.json"
+    unrelated = tmp_path / "researcher_memo__R.json"
+    status.write_text(
+        '{"report_id":"R","status":"awaiting_main_agent_mechanism_memo_revision"}'
+    )
+    block.write_text('{"report_id":"R","prewrite_blocked":true}')
+    unrelated.write_text('{"researcher_decision":"reject"}')
+
+    module.clear_resolved_step6_pause_artifacts(
+        report_id="R",
+        main_agent_status_path=status,
+        prewrite_block_path=block,
+    )
+
+    assert not status.exists()
+    assert not block.exists()
+    assert unrelated.exists()
+
+
+def test_successful_step6_does_not_clear_foreign_or_nonpause_diagnostics(tmp_path):
+    module = _module()
+    foreign_status = tmp_path / "foreign_status.json"
+    foreign_block = tmp_path / "foreign_block.json"
+    completed_status = tmp_path / "completed_status.json"
+    foreign_status.write_text(
+        '{"report_id":"OTHER","status":"awaiting_main_agent_mechanism_memo_revision"}'
+    )
+    foreign_block.write_text(
+        '{"report_id":"OTHER","prewrite_blocked":true}'
+    )
+    completed_status.write_text('{"report_id":"R","status":"completed"}')
+
+    module.clear_resolved_step6_pause_artifacts(
+        report_id="R",
+        main_agent_status_path=foreign_status,
+        prewrite_block_path=foreign_block,
+    )
+    module.clear_resolved_step6_pause_artifacts(
+        report_id="R",
+        main_agent_status_path=completed_status,
+        prewrite_block_path=tmp_path / "missing_block.json",
+    )
+
+    assert foreign_status.exists()
+    assert foreign_block.exists()
+    assert completed_status.exists()
+
+
 def _actual_authored_terminal_memo():
     return {
         "evidence_comparison": {

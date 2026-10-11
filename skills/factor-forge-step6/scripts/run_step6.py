@@ -6116,6 +6116,50 @@ def handle_step6_prewrite_failure(
         raise SystemExit('STEP6_PREWRITE_BLOCK: ' + '; '.join(prewrite_failures))
 
 
+def clear_resolved_step6_pause_artifacts(
+    *,
+    report_id: str,
+    main_agent_status_path: Path,
+    prewrite_block_path: Path,
+) -> None:
+    """Remove pause diagnostics after the replacement memo completes Step6.
+
+    These files describe an interrupted prewrite attempt.  Leaving them beside
+    a subsequently validated iteration makes readers report a stale
+    ``awaiting_*`` state even though the native Step6 lifecycle finished.
+    The failed wrapper proof remains the audit record for the prior attempt.
+    """
+    stale_statuses = {
+        'awaiting_main_agent_mechanism_memo',
+        'awaiting_main_agent_mechanism_memo_revision',
+        'awaiting_main_agent_mechanism_manual_review',
+        'blocked_invalid_main_agent_mechanism_memo',
+    }
+    if main_agent_status_path.exists():
+        try:
+            status = load_json(main_agent_status_path)
+        except Exception:
+            status = None
+        if (
+            isinstance(status, dict)
+            and status.get('report_id') == report_id
+            and status.get('status') in stale_statuses
+        ):
+            main_agent_status_path.unlink()
+
+    if prewrite_block_path.exists():
+        try:
+            block = load_json(prewrite_block_path)
+        except Exception:
+            block = None
+        if (
+            isinstance(block, dict)
+            and block.get('report_id') == report_id
+            and block.get('prewrite_blocked') is True
+        ):
+            prewrite_block_path.unlink()
+
+
 def main() -> None:
     global FF, OBJ, EVAL
     ap = argparse.ArgumentParser()
@@ -6428,6 +6472,14 @@ def main() -> None:
         print(f'[WRITE] {step3b_handoff_path}')
     elif step3b_handoff_path.exists():
         step3b_handoff_path.unlink()
+
+    clear_resolved_step6_pause_artifacts(
+        report_id=str(report_id),
+        main_agent_status_path=main_agent_status_path,
+        prewrite_block_path=(
+            OBJ / 'validation' / f'step6_prewrite_block__{report_id}.json'
+        ),
+    )
 
 
 if __name__ == '__main__':

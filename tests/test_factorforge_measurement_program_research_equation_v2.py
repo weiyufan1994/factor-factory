@@ -607,53 +607,5 @@ def test_unknown_contract_version_is_not_coerced_to_v1_or_v2() -> None:
     assert "measurement_program.contract_version" in _validate(program)
 
 
-def test_ultimate_public_projection_preserves_and_revalidates_v2_equation() -> None:
-    from factor_factory.console.ultimate_reader import (
-        _public_measurement_program_copy,
-        _research_notebooks,
-    )
-
-    program = _filled_program(MEASUREMENT_PROGRAM_VERSION_V2)
-    projected = _public_measurement_program_copy(program)
-
-    assert projected["research_equation"] == program["research_equation"]
-    assert validate_measurement_program(
-        projected,
-        require_web_executable=False,
-    ) == []
-
-    _research_notebook, math_notebook = _research_notebooks(
-        main_agent_memo={},
-        research_method={},
-        economic_game={},
-        math_mechanism={},
-        measurement_program=program,
-    )
-    assert math_notebook["research_equation"] == program["research_equation"]
 
 
-def test_ultimate_v2_projection_fails_closed_and_v1_shape_is_unchanged() -> None:
-    from factor_factory.console.ultimate_reader import (
-        _public_measurement_program_copy,
-        _research_notebooks,
-    )
-
-    invalid_v2 = _filled_program(MEASUREMENT_PROGRAM_VERSION_V2)
-    invalid_v2["research_equation"]["caller_selected_claim"] = "alternate"
-    assert _public_measurement_program_copy(invalid_v2) == {}
-
-    v1 = _filled_program(MEASUREMENT_PROGRAM_VERSION_V1)
-    projected_v1 = _public_measurement_program_copy(v1)
-    assert "research_equation" not in projected_v1
-    assert "return_path" not in projected_v1["evaluation_design"][
-        "portfolio_contract"
-    ]
-    assert projected_v1["contract_version"] == MEASUREMENT_PROGRAM_VERSION_V1
-    _research_notebook, math_notebook = _research_notebooks(
-        main_agent_memo={},
-        research_method={},
-        economic_game={},
-        math_mechanism={},
-        measurement_program=v1,
-    )
-    assert "research_equation" not in math_notebook

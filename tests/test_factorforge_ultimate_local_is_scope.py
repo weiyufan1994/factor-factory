@@ -599,10 +599,18 @@ def test_hosted_runs_still_require_complete_host_pair(
     workspace = _workspace(tmp_path)
     for key in HOST_ENV_KEYS:
         monkeypatch.delenv(key, raising=False)
-    _install_local_runtime_stubs(monkeypatch)
+    calls = _install_local_runtime_stubs(monkeypatch)
 
     assert ultimate._run_formal_ultimate(_args(monkeypatch, workspace)) == 1
-    assert "BLOCK_FACTORFORGE_OOS_INCIDENT_HOST_CONTEXT_REQUIRED" in capsys.readouterr().out
+    # Research-only distributions report the absent service before credentials.
+    # Full source retains the original hosted restriction and its regression.
+    token = (
+        "BLOCK_FACTORFORGE_OOS_INCIDENT_HOST_CONTEXT_REQUIRED"
+        if (REPO_ROOT / "factor_factory/ultimate_loop/hosted.py").is_file()
+        else "BLOCK_FACTORFORGE_HOSTED_COMPONENTS_NOT_INSTALLED"
+    )
+    assert token in capsys.readouterr().out
+    assert not calls
 
 
 @pytest.mark.parametrize("scope", [(), ("--local-is-only",)])
@@ -615,10 +623,16 @@ def test_partial_host_pair_remains_rejected(
     monkeypatch.delenv(ultimate.OOS_HOST_INSTALLATION_ID_ENV, raising=False)
     monkeypatch.delenv(ultimate.EVO_CHILD_CONTAINER_STATE_ROOT_ENV, raising=False)
     monkeypatch.delenv(ultimate.EVO_CHILD_CONTAINER_JOB_ID_ENV, raising=False)
-    _install_local_runtime_stubs(monkeypatch)
+    calls = _install_local_runtime_stubs(monkeypatch)
 
     assert ultimate._run_formal_ultimate(_args(monkeypatch, workspace, *scope)) == 1
-    assert "BLOCK_FACTORFORGE_WEB_OOS_HOST_FINALIZER_CREDENTIALS_PARTIAL" in capsys.readouterr().out
+    token = (
+        "BLOCK_FACTORFORGE_WEB_OOS_HOST_FINALIZER_CREDENTIALS_PARTIAL"
+        if scope or (REPO_ROOT / "factor_factory/ultimate_loop/hosted.py").is_file()
+        else "BLOCK_FACTORFORGE_HOSTED_COMPONENTS_NOT_INSTALLED"
+    )
+    assert token in capsys.readouterr().out
+    assert not calls
 
 
 def test_complete_incidental_host_pair_is_not_opened_in_local_scope(tmp_path, monkeypatch):

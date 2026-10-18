@@ -2873,7 +2873,14 @@ def main():
 
     if real_impl_abs.exists():
         implementation_plan['step4_contract']['runner_entry'] = real_impl_rel
-    code_hash = hashlib.sha256(python_stub.encode('utf-8')).hexdigest()
+    # A direct-code controller may be the executable binding while the stub
+    # retains the authored factor source. Bind execution artifacts to the same
+    # file that first-run dispatch and the validator actually consume.
+    code_hash = (
+        sha256_file(executable_impl_abs)
+        if spec_identity.get('implementation_mode') == 'direct_code' and real_impl_abs.exists()
+        else hashlib.sha256(python_stub.encode('utf-8')).hexdigest()
+    )
     implementation_identity = derive_child_identity(
         spec_identity,
         artifact_role='implementation_plan_master',

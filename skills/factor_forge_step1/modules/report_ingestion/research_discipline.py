@@ -600,8 +600,23 @@ def attach_step1_research_discipline(
         math_review.setdefault("mathematical_object", mathematical_object)
     if discipline.get("target_statistic_hint"):
         math_review.setdefault("target_statistic", discipline["target_statistic_hint"])
-    if discipline.get("information_set_hint"):
-        math_review.setdefault("information_set_legality", discipline["information_set_hint"])
+    information_set_hint = discipline.get("information_set_hint")
+    existing_information_set = math_review.get("information_set_legality")
+    if authored_only and existing_information_set not in (None, "") and (
+        existing_information_set != information_set_hint
+    ):
+        raise ValueError(
+            "agent_authored_only math_discipline_review.information_set_legality "
+            "differs from research_discipline.information_set_hint"
+        )
+    if information_set_hint:
+        if authored_only:
+            # The authored discipline is the sole information-time authority.
+            # A missing mirror may be projected; an existing conflict was
+            # rejected above and must never be silently selected.
+            math_review["information_set_legality"] = information_set_hint
+        else:
+            math_review.setdefault("information_set_legality", information_set_hint)
     out["math_discipline_review"] = math_review
     learning = dict(out.get("learning_and_innovation") or {})
     learning.setdefault("similar_case_lessons_imported", discipline["similar_case_lessons_imported"])

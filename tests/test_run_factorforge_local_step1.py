@@ -365,6 +365,21 @@ def test_step2_local_authored_research_contract_never_uses_old_thesis_or_templat
         step2._master_evaluation_contract({}, missing_evaluation)
 
 
+def test_step2_local_authored_contract_blocks_conflicting_information_set_mirror() -> None:
+    step2 = load_step2_module()
+    discipline = authored_discipline()
+    aim = {
+        "local_agent_spec_inputs": {"declared": "authored route marker"},
+        "research_discipline": discipline,
+        "math_discipline_review": {
+            "information_set_legality": "CONFLICTING_FUTURE_INFORMATION_ALLOWED"
+        },
+    }
+
+    with pytest.raises(SystemExit, match="information_set_legality differs"):
+        step2.build_step2_research_contract({}, {}, aim, {})
+
+
 def test_step2_measurement_program_accepts_explicit_carried_context_node_ids_only() -> None:
     validator = load_step2_validator_module()
     program = valid_measurement_program()
@@ -539,6 +554,63 @@ def test_authored_semantics_survive_repeated_attach_aim_and_handoff_writers(
     standardized = standardizer.attach_factor_knowledge_context(handoff["objects"]["alpha_idea_master"])
     assert standardized == handoff["objects"]["alpha_idea_master"]
     assert standardized is not handoff["objects"]["alpha_idea_master"]
+
+
+def test_existing_authored_aim_information_set_mirror_conflict_blocks_writers(
+    tmp_path: Path,
+) -> None:
+    discipline = authored_discipline()
+    chief = {
+        "final_factor": {"name": "Distinct", "assembly_steps": ["authored"]},
+        "chief_decision_summary": "authored",
+        "chief_confidence": "low",
+        "chief_rationale": "preserve authored information timing",
+        "research_discipline": deepcopy(discipline),
+    }
+    alpha = merge_module.merge_to_alpha_idea_master(
+        StructuredIntake(report_id=REPORT_ID, report_meta={"title": "source"}),
+        StructuredIntake(report_id=REPORT_ID),
+        {},
+        {},
+        chief,
+        agent_authored_only=True,
+    )
+    alpha["math_discipline_review"] = {
+        "information_set_legality": "CONFLICTING_FUTURE_INFORMATION_ALLOWED"
+    }
+
+    with pytest.raises(ValueError, match="information_set_legality differs"):
+        discipline_module.attach_step1_research_discipline(alpha, tmp_path)
+    with pytest.raises(ValueError, match="information_set_legality differs"):
+        AlphaIdeaMasterWriter(tmp_path / "objects" / "alpha_idea_master").write(
+            REPORT_ID, alpha
+        )
+    with pytest.raises(ValueError, match="information_set_legality differs"):
+        HandoffToStep2(tmp_path / "objects" / "handoff").write_handoff(
+            REPORT_ID, alpha
+        )
+
+
+def test_local_step1_blocks_conflicting_authored_information_set_mirror(
+    tmp_path: Path,
+) -> None:
+    workspace = make_workspace(tmp_path)
+    files = inputs(tmp_path)
+    chief = json.loads(files["chief"].read_text())
+    chief["chief_merge"]["math_discipline_review"] = {
+        "information_set_legality": "CONFLICTING_FUTURE_INFORMATION_ALLOWED"
+    }
+    write_json(files["chief"], chief)
+
+    result = invoke(workspace, files)
+
+    assert result.returncode == 1
+    assert "BLOCK_LOCAL_STEP1_AUTHORED_DISCIPLINE_INCONSISTENT" in result.stderr
+    assert "information_set_legality differs" in result.stderr
+    assert not (
+        workspace / "objects" / "alpha_idea_master"
+        / f"alpha_idea_master__{REPORT_ID}.json"
+    ).exists()
 
 
 def test_local_step1_blocks_conflicting_authored_projection_before_writing_aim(

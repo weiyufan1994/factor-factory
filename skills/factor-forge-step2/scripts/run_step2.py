@@ -2592,6 +2592,22 @@ def _local_agent_authored_research_contract_inputs(
     knowledge_reference_contract = discipline.get('knowledge_reference_contract')
     if not isinstance(knowledge_reference_contract, dict) or not knowledge_reference_contract:
         _block_local_agent_spec_inputs('research_discipline.knowledge_reference_contract must be explicitly carried; no Step2 KB reconstruction exists')
+    math_review = aim.get('math_discipline_review')
+    if math_review is not None and not isinstance(math_review, dict):
+        _block_local_agent_spec_inputs('AIM.math_discipline_review must be an object when supplied')
+    information_set_hint = discipline.get('information_set_hint')
+    information_set_mirror = (math_review or {}).get('information_set_legality')
+    if information_set_mirror not in (None, ''):
+        if not isinstance(information_set_hint, str) or not information_set_hint.strip():
+            _block_local_agent_spec_inputs(
+                'AIM.math_discipline_review.information_set_legality has no authored '
+                'research_discipline.information_set_hint authority'
+            )
+        if information_set_mirror != information_set_hint:
+            _block_local_agent_spec_inputs(
+                'AIM.math_discipline_review.information_set_legality differs from '
+                'research_discipline.information_set_hint'
+            )
     return {
         'discipline': discipline,
         'economic_mechanism': economic_mechanism,
@@ -3386,7 +3402,7 @@ def build_factor_spec_master(
         'math_discipline_review': {
             'mathematical_object': research_contract.get('step1_mathematical_object'),
             'target_statistic': research_contract['target_statistic'],
-            'information_set_legality': (aim.get('math_discipline_review') or {}).get('information_set_legality') or (aim.get('research_discipline') or {}).get('information_set_hint') or 'requires_researcher_confirmation_no_forward_leakage',
+            'information_set_legality': (aim.get('research_discipline') or {}).get('information_set_hint') or 'requires_researcher_confirmation_no_forward_leakage',
             'expected_failure_modes': research_contract['expected_failure_modes'],
         },
         'learning_and_innovation': {

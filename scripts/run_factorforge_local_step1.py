@@ -295,6 +295,22 @@ def validate_authored_research_discipline(chief: dict[str, Any]) -> None:
             f"{BLOCK_PREFIX}_AUTHORED_DISCIPLINE_INCONSISTENT: "
             "research_discipline.market_outcome_projection differs from measurement program"
         )
+    math_review = chief.get("math_discipline_review")
+    if math_review is not None:
+        if not isinstance(math_review, dict):
+            raise LocalStep1Error(
+                f"{BLOCK_PREFIX}_AUTHORED_DISCIPLINE_INVALID: "
+                "chief.math_discipline_review must be an object when supplied"
+            )
+        information_set_mirror = math_review.get("information_set_legality")
+        if information_set_mirror not in (None, "") and information_set_mirror != discipline.get(
+            "information_set_hint"
+        ):
+            raise LocalStep1Error(
+                f"{BLOCK_PREFIX}_AUTHORED_DISCIPLINE_INCONSISTENT: "
+                "chief.math_discipline_review.information_set_legality differs from "
+                "research_discipline.information_set_hint"
+            )
     top_level_program = chief.get("mechanism_conditioned_measurement_program")
     if top_level_program is not None and top_level_program != program:
         raise LocalStep1Error(f"{BLOCK_PREFIX}_AUTHORED_DISCIPLINE_INCONSISTENT: top-level measurement program differs")

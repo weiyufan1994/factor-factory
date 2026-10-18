@@ -36,7 +36,9 @@ neither alone identifies the process that generates it.
 Use a relevant null or counterexample to derive what changes when the proposed
 mechanism is removed. Keep initial conditions, other payoff channels and
 observation error explicit where material; removing one channel need not remove
-all predictability. Separate assumed sign restrictions from derived implications
+all predictability. A simplified prediction retains remaining terms unless an
+explicit assumption sets them to zero or a defined adjustment subtracts them.
+Separate assumed sign restrictions from derived implications
 and unresolved identification. A candidate observable is not a sufficient
 statistic unless sufficiency is established for the stated model and target.
 

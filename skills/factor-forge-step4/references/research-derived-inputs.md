@@ -20,6 +20,13 @@ semantic decision. For a different state use the existing prepared route below
 and regenerate the Step3A/handoff binding after review; do not delete a blocker
 from an old handoff or enable generic raw streaming in Step4.
 
+In the new prepared declaration, `local_inputs.step4_data_contract` must not
+inherit an inapplicable `minute_derived_state_requirements` from the old route.
+That field describes shared catalog dependencies, not controller-owned local
+state. Bind the local schema and provenance in the reviewed controller config.
+With no shared dependencies the resolver emits `no_state_required`; this does
+not validate the prepared state or waive its consumer checks.
+
 ## Bind and review the adapter
 
 Record the following in the existing spec, data preparation/handoff and
@@ -49,7 +56,9 @@ using the state; fail on unbound/mismatched fields or stale artifacts. Retain
 the existing Step2-independent code review and post-review tests for the actual
 adapter and helpers. Schema labels and `no_future=true` declarations alone are
 not proof. Test reference-versus-derived parity, future-data mutation, rolling
-and chunk boundaries, and relevant missing/invalid-input counterexamples.
+overlap and chunk boundaries, row/index reordering invariance, and relevant
+missing/invalid-input counterexamples. Row labels must not change numeric
+alignment or the measurement cross-section when partitions are combined.
 If the observation map, estimator or timing changes, resolve it in Step2; a
 storage refactor does not authorize a different factor.
 

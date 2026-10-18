@@ -878,8 +878,17 @@ if __name__ == '__main__':
     standard_contract = fsm.get('standard_formula_fields_contract') or canonical.get('standard_formula_fields_contract')
     standard_failures = validate_standard_formula_fields_contract(
         standard_contract,
-        formula_text=canonical.get('formula_text') or '',
-        required_fields=formula_ir.get('required_fields') or canonical.get('required_fields') or canonical.get('required_inputs') or [],
+        # Match Step2's existing mode decision; a plan alone cannot exempt DSL.
+        formula_text=(
+            '' if impl_mode == fsm.get('implementation_mode') == 'direct_code'
+            else canonical.get('formula_text') or ''
+        ),
+        required_fields=[
+            *(formula_ir.get('required_fields') or []),
+            *(canonical.get('required_fields') or []),
+            *(canonical.get('required_inputs') or []),
+            *(direct_code_contract_from_plan(impl).get('required_fields') or []),
+        ],
     )
     assert not standard_failures, f'standard_formula_fields_contract invalid: {standard_failures}'
     required_standard_fields = list((standard_contract or {}).get('required_standard_formula_fields') or [])

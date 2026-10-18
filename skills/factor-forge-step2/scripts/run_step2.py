@@ -3239,8 +3239,14 @@ def build_factor_spec_master(
     )
     canonical_construction_id = _primary_construction_id(primary)
     standard_formula_fields_contract = build_standard_formula_fields_contract(
-        formula_text=formula_text,
-        required_fields=canonical_required_fields,
+        # Direct-code formula_text explains the estimator; it is not a DSL.
+        # Explicit dependencies still participate even when prose is excluded.
+        formula_text='' if implementation_mode == 'direct_code' else formula_text,
+        required_fields=[
+            *(canonical_required_fields or []),
+            *(primary.get('required_inputs') or []),
+            *(direct_code_source_contract.get('required_fields') or []),
+        ],
         available_source_fields=[
             'amount',
             'close',

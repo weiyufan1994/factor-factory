@@ -467,9 +467,10 @@ def build_step4_reuse_identity(
 
 def fill_runtime_implementation_identity(base_identity: dict[str, Any], fsm: dict[str, Any], impl_path: Path) -> dict[str, Any]:
     effective = dict(base_identity or {})
+    # A source contract can stay unchanged while the executable wrapper changes.
+    # Keep its hash separate so formal reuse follows the executable identity.
     effective['code_hash'] = (
         effective.get('code_hash')
-        or effective.get('code_contract_hash')
         or sha256_file(impl_path)
     )
     canonical = fsm.get('canonical_spec') if isinstance(fsm.get('canonical_spec'), dict) else {}

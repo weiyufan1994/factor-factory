@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 
@@ -247,6 +248,86 @@ def _prior_step4_metadata(identity: dict[str, object]) -> dict[str, object]:
         },
         "step4_formal_factor_identity": identity,
     }
+
+
+@pytest.mark.parametrize("contract_hash", [None, "source-contract-v1"])
+@pytest.mark.parametrize("declared_code_hash", [False, True])
+def test_effective_identity_keeps_executable_and_contract_hashes_separate(
+    tmp_path: Path, contract_hash: str | None, declared_code_hash: bool
+) -> None:
+    run_step4 = _load_run_step4()
+    impl = tmp_path / "factor_impl.py"
+    impl.write_text("def factor():\n    return 1.0\n")
+    actual_hash = hashlib.sha256(impl.read_bytes()).hexdigest()
+    base = {
+        "implementation_mode": "direct_code",
+        "code_hash": actual_hash if declared_code_hash else None,
+        "code_contract_hash": contract_hash,
+    }
+
+    effective = run_step4.fill_runtime_implementation_identity(base, {}, impl)
+
+    assert effective["code_hash"] == actual_hash
+    assert effective["code_contract_hash"] == contract_hash
+    assert base["code_hash"] == (actual_hash if declared_code_hash else None)
+
+
+@pytest.mark.parametrize("mode", ["direct_code", "hybrid"])
+def test_changed_executable_under_same_contract_rejects_formal_reuse(
+    tmp_path: Path, mode: str
+) -> None:
+    run_step4 = _load_run_step4()
+    impl = tmp_path / "factor_impl.py"
+    impl.write_text("def factor():\n    return 1.0\n")
+    parquet = tmp_path / "formal_factor.parquet"
+    daily = _factor_parquet(parquet)
+    original_output = parquet.read_bytes()
+    base = {
+        "implementation_mode": mode,
+        "spec_hash": "same-spec",
+        "code_hash": None,
+        "code_contract_hash": "same-source-contract",
+        "formula_hash": "same-formula",
+    }
+
+    def current_identity():
+        effective = run_step4.fill_runtime_implementation_identity(base, {}, impl)
+        return run_step4.build_step4_reuse_identity(
+            report_id="EXECUTABLE_REUSE_REGRESSION",
+            factor_id="EXECUTABLE_REUSE_REGRESSION",
+            base_identity=effective,
+            dpm={},
+            daily_df=daily,
+        )
+
+    prior_identity = current_identity()
+    metadata = _prior_step4_metadata(prior_identity)
+    _, same_gate, reusable = run_step4.resolve_existing_step4_formal_reuse(
+        metadata, current_identity(), source_artifact=str(parquet)
+    )
+    assert reusable is True
+    assert same_gate["decision"] == "reuse_allowed"
+
+    impl.write_text("def factor():\n    return 2.0\n")
+    changed_identity = current_identity()
+    _, changed_gate, reusable = run_step4.resolve_existing_step4_formal_reuse(
+        metadata, changed_identity, source_artifact=str(parquet)
+    )
+    assert reusable is False
+    assert changed_gate["decision"] == "recompute_required"
+    assert changed_gate["mismatched_fields"] == ["code_hash"]
+    assert prior_identity["code_hash"] != changed_identity["code_hash"]
+    with pytest.raises(SystemExit, match="BLOCK_STEP4_EXISTING_FORMAL_PARQUET_REUSE_REJECTED:code_hash"):
+        run_step4.check_step4_formal_reuse(
+            parquet_existed_before_step4=True,
+            existing_meta=metadata,
+            expected_reuse_identity=changed_identity,
+            parquet_path=parquet,
+            existing_factor_source={},
+            may_reuse_existing_factor=False,
+            prepared_derived_state=True,
+        )
+    assert parquet.read_bytes() == original_output
 
 
 def test_matching_step4_formal_parquet_reuses_current_readback_without_full_frame(

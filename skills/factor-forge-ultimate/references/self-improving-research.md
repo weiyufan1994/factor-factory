@@ -25,6 +25,28 @@ universal template. A derived property, contradiction, non-identification or
 inability to infer a return direction is a valid outcome. Completing an
 induction and establishing that the candidate is consistent are separate facts.
 
+## Conditional mechanism benchmark
+
+When claiming that information arrival, shocks, participant constraints or
+transient correction generates a payoff, give the smallest suitable model of
+that claimed effect, its information set and observation map. A measurement
+identity describes the statistic; a predictive restriction states an association;
+neither alone identifies the process that generates it.
+
+Use a relevant null or counterexample to derive what changes when the proposed
+mechanism is removed. Keep initial conditions, other payoff channels and
+observation error explicit where material; removing one channel need not remove
+all predictability. Separate assumed sign restrictions from derived implications
+and unresolved identification. A candidate observable is not a sufficient
+statistic unless sufficiency is established for the stated model and target.
+
+Choose continuous-time, discrete-time or non-dynamic mathematics to fit the
+question. No particular SDE, latent-state decomposition or process family is
+required. Source-faithful replication may retain an unverified reduced-form
+explanation; it does not become mechanism proof or bypass the existing
+completeness rules. Record the argument in `public_derivation_record`,
+`model_selection` and `observation_and_estimation`, without a new checklist field.
+
 ## Candidate changes and action advice
 
 Classify each candidate before code or evaluation:
@@ -85,6 +107,13 @@ refute its economic mechanism, and a high score cannot repair inconsistent
 mathematics. Use comparable evidence and cost to select the next experiment;
 unknown rewards stay unknown. Derivation, identification, prediction and
 trading performance answer different questions.
+
+A Council brainstorm or proposed branch list is not an executed search. Report
+MCTS/GP execution only with its actual call, tree/population and parent-child
+trace, evaluator, budget and bound evidence; distinguish attempted, rejected,
+evaluated and reused candidates. Research utility (including refutation) and
+return fitness are different objectives. Neither a search label nor a high IC
+supplies the missing economic-to-mathematical bridge.
 
 Generated expressions use the existing Factor class, Formula engine and standard
 Step3/4/5 inputs, outputs and metrics. New search code does not replace those

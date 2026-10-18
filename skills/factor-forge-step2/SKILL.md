@@ -20,6 +20,13 @@ reconstruction assumptions and new ideas. `source_extension` is a separately
 identified estimator; `independent_hypothesis` needs no paper baseline. A high
 consistency score or valid JSON cannot establish source fidelity.
 
+Distinguish a measurement identity, a predictive restriction and a generative
+mechanism. A factor formula plus an expected association does not establish the
+third. When explaining a payoff through a market process, use the
+[conditional mechanism benchmark](../factor-forge-ultimate/references/self-improving-research.md#conditional-mechanism-benchmark).
+Preserve source replication and explicit reduced-form uncertainty; a missing
+mechanism limits the claim, rather than licensing an invented process.
+
 Keep economic hypotheses, mathematical mechanisms, alternative explanations and
 unknowns visible. Open tool search permits new objects/methods absent from the
 knowledge base. Choose the smallest appropriate tool set, without forcing

@@ -15,7 +15,8 @@ Use the study's pinned Ultimate entry and manifest-selected workspace.
    Step3 deterministic/parity tests. Resolve stale/missing review through
    [Ultimate's checkpoint](../factor-forge-ultimate/references/local-code-review.md).
 2. Read the Step3 data contract, frozen window and evaluation settings.
-   Consume existing Data API inputs, derived fields and state resolutions.
+   Consume existing Data API inputs or explicitly prepared, reviewed research
+   derivatives, together with their field mappings and state resolutions.
    Keep units, calendar, price basis, information time and missing/zero semantics.
 3. Run the factor class and standard frame validator. Inspect coverage, warmup,
    duplicates, ties, missingness and variation before/after material transforms.
@@ -31,6 +32,8 @@ Read [inputs](references/input-contract.md) and
 [outputs/backend timing](references/output-contract.md) for execution.
 For large/minute/state-dependent data also read
 [batching and state](references/batching-and-state.md).
+When the required estimator state is built by research from standard Data API
+fields, read [research-derived inputs](references/research-derived-inputs.md).
 Explicit Qlib use reads [backend details](references/backend-details.md);
 Qlib interoperability alone is not native-account parity.
 Formal OOS/certificate work additionally reads [formal proof](references/formal-proof.md);

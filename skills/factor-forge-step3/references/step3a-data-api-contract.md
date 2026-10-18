@@ -18,6 +18,13 @@ Step 4 should consume Step 3A output objects:
 - proxy rules
 - qlib-compatible field mapping
 
+For a research-side transformation of supported Data API inputs, use the
+[research-derived input route](../../factor-forge-step4/references/research-derived-inputs.md).
+Bind the transformation's actual observation schema and reviewed code, rather
+than selecting a generic derived dataset because the factor uses minute bars.
+The source API catalog remains the data authority; a study-local derived
+artifact need not be published as a shared Data API product.
+
 ## qlib-normalized field expectations
 - instrument -> `ts_code`
 - datetime/date -> `trade_date`

@@ -29,11 +29,16 @@ Missing exact data returns to Step2/Data Liaison for explicit proxy-error review
 a data request or BLOCK. Never let a convenient proxy change the estimand.
 
 State-dependent factors declare `factorforge_state_dependency_contract_v1` and
-write `state_resolution__<report_id>.json`. A missing/not-ready datamart produces
-`data_request_v1`, not a raw-minute scan. No-state factors explicitly declare
-`no_state_required=true`. Minute-derived contracts bind cutoff time, data/schema/
-producer version, coverage and artifact identity. Keep the frozen study window;
-the existing minute-research IS default ends `2025-07-11`.
+write `state_resolution__<report_id>.json`. First check that a published state
+preserves the estimator's actual observations. If standard Data API fields are
+sufficient, a reviewed research-side adapter may explicitly prepare the needed
+state; a missing named datamart alone is not missing source data. Read
+[research-derived inputs](../factor-forge-step4/references/research-derived-inputs.md)
+for that route. Request data or BLOCK when the required observations are truly
+unavailable; do not substitute unrelated aggregates or start an implicit raw
+scan. No-state factors explicitly declare `no_state_required=true`. Bind the
+study's information cutoff, data/schema/producer identity and coverage, keeping
+the frozen window; the current minute-research IS default ends `2025-07-11`.
 
 Write `data_prep_master`, `qlib_adapter_config`, feasibility validation and the
 Step4 Data API contract. A blocked Step3A clears stale readiness, generated-code

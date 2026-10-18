@@ -3,7 +3,7 @@
 # Step 4 contract
 
 ## Purpose
-Step 4 executes a generated factor on full formal data fetched through the independent `factorforge_data_api` contract and emits standard evaluation evidence for Step 5/6. It must not rely on ad hoc screenshots, notebook-only plots, or one-off temporary scripts as official evidence.
+Step 4 executes a reviewed factor on declared full-window inputs from the independent `factorforge_data_api`, or on reviewed research-side derivatives of those inputs, and emits standard evaluation evidence for Step 5/6. It must not rely on ad hoc screenshots, notebook-only plots, or one-off temporary scripts as official evidence.
 
 ## Inputs
 - `factor_spec_master__{report_id}.json`
@@ -11,7 +11,7 @@ Step 4 executes a generated factor on full formal data fetched through the indep
 - `handoff_to_step4__{report_id}.json`
 - runnable factor implementation from Step 3B
 - `step4_data_contract.version=factorforge_step4_data_contract_v1` from Step3A/Step3B handoff when legacy local inputs are absent
-- published Data API catalog entries prepared by the authorized data steward workflow
+- published source Data API catalog entries; local IS may instead consume their explicitly prepared research-side derivatives under the [research-derived input contract](../../skills/factor-forge-step4/references/research-derived-inputs.md)
 
 ## Mandatory outputs
 - `factor_run_master__{report_id}.json`
@@ -23,7 +23,8 @@ Step 4 executes a generated factor on full formal data fetched through the indep
 
 Step3B `step3b_sample_factor_values__{report_id}` artifacts are not formal
 inputs. If present, they prove code executability only; Step4 must recompute
-formal factor values from the Step4 Data API full query contract unless
+formal factor values from the Step4 Data API full query contract or the reviewed
+full-window prepared-state controller binding unless
 existing metadata proves the formal parquet was already written by Step4.
 
 ## Mandatory self-quant evidence pack

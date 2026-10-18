@@ -23,22 +23,26 @@ static joins should come from reusable `backtest_base_dataset` artifacts instead
 of being rebuilt for every factor, child, or sibling branch when identity and
 data-window lineage match.
 
-Full-window minute production must not fall back to generic raw-minute
-streaming. For formal 2016-2026-style windows, Step4 must first consume a
-declared `minute_derived_state_requirements[]` contract, currently including
-`minute_derived_flow_state_v1` for signed-flow / pressure / concentration /
-intraday-noise factors. The derived datamart is partitioned by `trade_date` and
-must carry source data version, cutoff time, schema version, producer version,
-and artifact hash. Step4 may load the derived parquet and then run only the
-factor expression and evaluation. If the required derived state is absent,
-incomplete, or identity-mismatched, Step4 must BLOCK with one of:
-`BLOCK_STEP4_MINUTE_DERIVED_STATE_REQUIRED`,
-`BLOCK_STEP4_MINUTE_GENERIC_STREAMING_FULL_WINDOW_FORBIDDEN`,
-`BLOCK_MINUTE_DERIVED_STATE_COVERAGE_INCOMPLETE`, or
-`BLOCK_MINUTE_DERIVED_STATE_IDENTITY_MISMATCH`. Building or refreshing the
-derived state is an explicit backfill task
-(`scripts/build_minute_derived_datamart.py`), not an implicit side effect of
-Step4.
+Full-window minute execution must use a declared, bounded input route. A
+published derived dataset is suitable only if its fields preserve the reviewed
+estimator's observations; `minute_derived_flow_state_v1` is one flow-state
+implementation, not a universal minute-factor schema. Its cutoff is not a
+universal signal cutoff either.
+
+When standard Data API minute fields suffice, research may explicitly build
+and reuse its own reviewed state before Step4. Follow
+[research-derived inputs](research-derived-inputs.md): this is a formal local-IS
+adapter route, not a fallback around a missing datamart. Both routes bind source
+and catalog identity, schema, producer code, information cutoff, coverage and
+artifact hashes. Step4 consumes the prepared state and executes the factor and
+evaluation; it does not secretly fetch or rebuild raw minute history.
+
+Keep the existing block on undeclared generic raw-minute full-window streaming
+and on incomplete or mismatched declared inputs. A failed published-state
+request does not automatically select research-side preparation. Preparation
+is an explicit bounded task with replay evidence; subsequent revisions reuse
+matching partitions rather than repeating the minute read. Do not turn off
+these checks to make an incompatible table run.
 
 Daily controls are also reusable infrastructure, not per-run cold IO. Step4
 must prefer the `daily_basic` parquet datamart / persistent warm cache over S3

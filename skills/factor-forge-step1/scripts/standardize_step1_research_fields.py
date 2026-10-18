@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from copy import deepcopy
 import json
 import os
 import sys
@@ -71,6 +72,16 @@ def summarize_factor_knowledge_context(context: dict) -> list[str]:
 
 
 def attach_factor_knowledge_context(aim: dict) -> dict:
+    provenance = aim.get('provenance') or {}
+    if (
+        isinstance(provenance, dict)
+        and provenance.get('merge_mode') == 'agent_authored_only'
+    ):
+        # The local authored intake already carries a validated knowledge
+        # reference and explicit absence/uncertainty.  A repeated legacy
+        # standardization pass must not replace that provenance with a fresh
+        # retrieval or infer a new semantic context.
+        return deepcopy(aim)
     query_text = build_step1_factor_knowledge_query(aim)
     try:
         context = retrieve_factor_knowledge_context(text=query_text, top_k=5)

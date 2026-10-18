@@ -536,19 +536,53 @@ def attach_step1_research_discipline(
     repo_root: Path | None = None,
     *context: Any,
 ) -> Dict[str, Any]:
-    out = dict(alpha_idea_master)
-    discipline = build_step1_research_discipline(out, repo_root, *context)
+    out = deepcopy(alpha_idea_master)
     existing_discipline = out.get("research_discipline") or {}
-    out["research_discipline"] = {
-        **existing_discipline,
-        **discipline,
-    }
+    provenance = out.get("provenance") or {}
+    authored_only = (
+        isinstance(provenance, dict)
+        and provenance.get("merge_mode") == "agent_authored_only"
+    )
+    if authored_only:
+        if not isinstance(existing_discipline, dict) or not existing_discipline:
+            raise ValueError(
+                "agent_authored_only alpha_idea_master requires an authored research_discipline"
+            )
+        # The local authored route has already validated and chief-adjudicated
+        # these semantics.  Re-running the legacy normalizer here would replace
+        # them with keyword-derived return sources, payers, or model families.
+        # Writers and repeated standardization may mirror the exact authored
+        # object, but they must never infer a second research object.
+        out["research_discipline"] = deepcopy(existing_discipline)
+        discipline = out["research_discipline"]
+    else:
+        discipline = build_step1_research_discipline(out, repo_root, *context)
+        out["research_discipline"] = {
+            **existing_discipline,
+            **discipline,
+        }
     measurement_program = out.get("mechanism_conditioned_measurement_program")
     if not isinstance(measurement_program, dict) or not measurement_program:
         measurement_program = existing_discipline.get(
             "mechanism_conditioned_measurement_program"
         )
     if isinstance(measurement_program, dict) and measurement_program:
+        authored_program = existing_discipline.get(
+            "mechanism_conditioned_measurement_program"
+        )
+        if authored_only and (
+            not isinstance(authored_program, dict)
+            or authored_program != measurement_program
+        ):
+            raise ValueError(
+                "agent_authored_only measurement program differs between AIM and research_discipline"
+            )
+        if authored_only and existing_discipline.get(
+            "market_outcome_projection"
+        ) != measurement_program.get("market_outcome_projection"):
+            raise ValueError(
+                "agent_authored_only market outcome projection differs from measurement program"
+            )
         out["mechanism_conditioned_measurement_program"] = deepcopy(
             measurement_program
         )
@@ -558,17 +592,16 @@ def attach_step1_research_discipline(
         out["research_discipline"]["market_outcome_projection"] = deepcopy(
             measurement_program.get("market_outcome_projection") or {}
         )
-    out.setdefault(
-        "step1_mathematical_object",
-        discipline["step1_mathematical_object"],
-    )
+    mathematical_object = discipline.get("step1_mathematical_object")
+    if mathematical_object:
+        out.setdefault("step1_mathematical_object", mathematical_object)
     math_review = dict(out.get("math_discipline_review") or {})
-    math_review.setdefault(
-        "mathematical_object",
-        discipline["step1_mathematical_object"],
-    )
-    math_review.setdefault("target_statistic", discipline["target_statistic_hint"])
-    math_review.setdefault("information_set_legality", discipline["information_set_hint"])
+    if mathematical_object:
+        math_review.setdefault("mathematical_object", mathematical_object)
+    if discipline.get("target_statistic_hint"):
+        math_review.setdefault("target_statistic", discipline["target_statistic_hint"])
+    if discipline.get("information_set_hint"):
+        math_review.setdefault("information_set_legality", discipline["information_set_hint"])
     out["math_discipline_review"] = math_review
     learning = dict(out.get("learning_and_innovation") or {})
     learning.setdefault("similar_case_lessons_imported", discipline["similar_case_lessons_imported"])

@@ -288,6 +288,13 @@ def validate_authored_research_discipline(chief: dict[str, Any]) -> None:
         raise LocalStep1Error(
             f"{BLOCK_PREFIX}_AUTHORED_MEASUREMENT_PROGRAM_INVALID: {'; '.join(program_errors)}"
         )
+    authored_projection = discipline.get("market_outcome_projection")
+    program_projection = program.get("market_outcome_projection")
+    if authored_projection != program_projection:
+        raise LocalStep1Error(
+            f"{BLOCK_PREFIX}_AUTHORED_DISCIPLINE_INCONSISTENT: "
+            "research_discipline.market_outcome_projection differs from measurement program"
+        )
     top_level_program = chief.get("mechanism_conditioned_measurement_program")
     if top_level_program is not None and top_level_program != program:
         raise LocalStep1Error(f"{BLOCK_PREFIX}_AUTHORED_DISCIPLINE_INCONSISTENT: top-level measurement program differs")

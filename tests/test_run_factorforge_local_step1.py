@@ -13,6 +13,9 @@ from factor_factory.measurement_program import measurement_program_template, val
 from factor_factory.research_workspace import build_workspace_manifest, write_workspace_manifest
 from skills.factor_forge_step1.modules.report_ingestion.intake.structured_intake_contract import StructuredIntake
 import skills.factor_forge_step1.modules.report_ingestion.merge.merge_to_alpha_idea_master as merge_module
+import skills.factor_forge_step1.modules.report_ingestion.research_discipline as discipline_module
+from skills.factor_forge_step1.modules.report_ingestion.finalizers.alpha_idea_master_writer import AlphaIdeaMasterWriter
+from skills.factor_forge_step1.modules.report_ingestion.finalizers.handoff_to_step2 import HandoffToStep2
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -33,6 +36,18 @@ def load_step2_module():
 def load_step2_validator_module():
     spec = importlib.util.spec_from_file_location(
         "local_step1_test_step2_validator", ROOT / "skills" / "factor-forge-step2" / "scripts" / "validate_step2.py"
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def load_step1_standardizer_module():
+    spec = importlib.util.spec_from_file_location(
+        "local_step1_standardizer",
+        ROOT / "skills" / "factor-forge-step1" / "scripts"
+        / "standardize_step1_research_fields.py",
     )
     assert spec and spec.loader
     module = importlib.util.module_from_spec(spec)
@@ -147,14 +162,16 @@ def authored_discipline() -> dict:
         "target_statistic_hint": "DISTINCT_CHIEF_TARGET_STATISTIC",
         "information_set_hint": "DISTINCT_CHIEF_LEGAL_INFORMATION_SET",
         "initial_return_source_hypothesis": "mixed",
+        "formula_understanding": {"chief": "distinct formula understanding"},
         "economic_hypothesis": {"chief": "distinct economics"},
+        "economic_to_math_modelling": {"chief": "distinct economic to math bridge"},
         "math_hypothesis_candidates": [{"chief": "distinct math candidate"}],
         "market_process_thesis": market_thesis,
         "expected_failure_modes": ["DISTINCT_CHIEF_FAILURE_MODE"],
         "innovative_idea_seeds": ["DISTINCT_CHIEF_INNOVATION_SEED"],
         "reuse_instruction_for_future_agents": ["DISTINCT_CHIEF_REUSE_INSTRUCTION"],
         "primary_mechanism_model_candidates": [{"chief": "distinct model candidate"}],
-        "market_outcome_projection": {"chief": "distinct market projection"},
+        "market_outcome_projection": deepcopy(program["market_outcome_projection"]),
         "what_must_be_true": ["DISTINCT_CHIEF_ASSUMPTION"],
         "what_would_break_it": ["DISTINCT_CHIEF_FALSIFIER"],
         "similar_case_lessons_imported": ["DISTINCT_CHIEF_KB_LESSON"],
@@ -327,6 +344,10 @@ def test_step2_local_authored_research_contract_never_uses_old_thesis_or_templat
         },
     )
     assert contract["economic_mechanism"] == "DISTINCT_CHIEF_ECONOMIC_MECHANISM"
+    assert contract["formula_understanding"] == discipline["formula_understanding"]
+    assert contract["economic_hypothesis"] == discipline["economic_hypothesis"]
+    assert contract["economic_to_math_modelling"] == discipline["economic_to_math_modelling"]
+    assert contract["math_hypothesis_candidates"] == discipline["math_hypothesis_candidates"]
     assert contract["expected_failure_modes"] == ["DISTINCT_CHIEF_FAILURE_MODE"]
     assert contract["innovative_idea_seeds"] == ["DISTINCT_CHIEF_INNOVATION_SEED"]
     assert contract["reuse_instruction_for_future_agents"] == ["DISTINCT_CHIEF_REUSE_INSTRUCTION"]
@@ -465,3 +486,77 @@ def test_agent_authored_only_merge_never_calls_automatic_discipline_builder(monk
     assert alpha["mechanism_conditioned_measurement_program"] == program
     assert alpha["factor_id"] == "DISTINCT_FACTOR"
     assert alpha["market_process_thesis_provenance"]["derivation_policy"] == "chief_authored_only_no_inference_or_knowledge_retrieval"
+
+
+def test_authored_semantics_survive_repeated_attach_aim_and_handoff_writers(
+    tmp_path: Path, monkeypatch,
+) -> None:
+    discipline = authored_discipline()
+    chief = {
+        "final_factor": {"name": "Distinct", "assembly_steps": ["authored"]},
+        "chief_decision_summary": "authored",
+        "chief_confidence": "low",
+        "chief_rationale": "preserve authored uncertainty",
+        "market_process_thesis": deepcopy(discipline["market_process_thesis"]),
+        "research_discipline": deepcopy(discipline),
+    }
+    primary = StructuredIntake(report_id=REPORT_ID, report_meta={"title": "source"})
+    challenger = StructuredIntake(report_id=REPORT_ID)
+    alpha = merge_module.merge_to_alpha_idea_master(
+        primary, challenger, {}, {}, chief, agent_authored_only=True,
+    )
+
+    def fail_if_called(*_args, **_kwargs):
+        raise AssertionError("authored semantics must never re-enter keyword inference")
+
+    monkeypatch.setattr(
+        discipline_module, "build_step1_research_discipline", fail_if_called,
+    )
+    once = discipline_module.attach_step1_research_discipline(alpha, tmp_path)
+    twice = discipline_module.attach_step1_research_discipline(once, tmp_path)
+    assert once["research_discipline"] == discipline
+    assert twice["research_discipline"] == discipline
+    assert alpha["research_discipline"] == discipline
+
+    aim_path = AlphaIdeaMasterWriter(
+        tmp_path / "objects" / "alpha_idea_master"
+    ).write(REPORT_ID, twice)
+    handoff_path = HandoffToStep2(
+        tmp_path / "objects" / "handoff"
+    ).write_handoff(REPORT_ID, json.loads(aim_path.read_text()))
+    written_aim = json.loads(aim_path.read_text())
+    handoff = json.loads(handoff_path.read_text())
+    assert written_aim["research_discipline"] == discipline
+    assert handoff["research_discipline"] == discipline
+    assert handoff["objects"]["alpha_idea_master"]["research_discipline"] == discipline
+
+    standardizer = load_step1_standardizer_module()
+    monkeypatch.setattr(
+        standardizer,
+        "retrieve_factor_knowledge_context",
+        fail_if_called,
+    )
+    standardized = standardizer.attach_factor_knowledge_context(handoff["objects"]["alpha_idea_master"])
+    assert standardized == handoff["objects"]["alpha_idea_master"]
+    assert standardized is not handoff["objects"]["alpha_idea_master"]
+
+
+def test_local_step1_blocks_conflicting_authored_projection_before_writing_aim(
+    tmp_path: Path,
+) -> None:
+    workspace = make_workspace(tmp_path)
+    files = inputs(tmp_path)
+    chief = json.loads(files["chief"].read_text())
+    chief["chief_merge"]["research_discipline"]["market_outcome_projection"] = {
+        "conflict": "must be chief-adjudicated before Step1"
+    }
+    write_json(files["chief"], chief)
+
+    result = invoke(workspace, files)
+
+    assert result.returncode == 1
+    assert "BLOCK_LOCAL_STEP1_AUTHORED_DISCIPLINE_INCONSISTENT" in result.stderr
+    assert not (
+        workspace / "objects" / "alpha_idea_master"
+        / f"alpha_idea_master__{REPORT_ID}.json"
+    ).exists()

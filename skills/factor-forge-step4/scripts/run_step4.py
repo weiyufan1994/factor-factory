@@ -5443,6 +5443,38 @@ def build_recomputed_factor_io_profile(
     return step4_factor_io_profile
 
 
+def enforce_step4_minute_scan_policy(*, local_inputs, state_reuse_required, state_datamart_reuse):
+    """Permit the validated bounded engineering baseline, never a production scan."""
+    if local_inputs.get('input_mode') == 'raw_local_snapshot':
+        from factor_factory.raw_local_inputs import validate_raw_local_inputs
+        verified = validate_raw_local_inputs(local_inputs)
+        if state_reuse_required and not (
+            isinstance(state_datamart_reuse, dict)
+            and state_datamart_reuse.get('no_state_required') is True
+        ):
+            raise ValueError('raw engineering baseline requires an explicit no-derived-state resolution')
+        return {
+            'raw_minute_full_window_scan': True,
+            'bounded_smoke': False,
+            'bounded_local_is_engineering': {
+                'snapshot_manifest_path': verified['snapshot_manifest_path'],
+                'snapshot_manifest_sha256': verified['snapshot_manifest_sha256'],
+                'production_raw_scan_authorized': False,
+            },
+        }
+    if state_reuse_required:
+        assert_no_raw_minute_full_window_scan(
+            input_paths=[
+                *(str(value) for value in local_inputs.values() if isinstance(value, str)),
+                *(json.dumps(value, ensure_ascii=False, sort_keys=True)
+                  for value in local_inputs.values() if isinstance(value, dict)),
+            ],
+            production=True,
+            explicit_data_production_context=False,
+        )
+    return {}
+
+
 def resolve_step4_state_provenance(
     *,
     state_resolution_path,
@@ -5991,18 +6023,15 @@ def main() -> None:
             or minute_streaming_query
             or input_mode in {'price_volume_minute', 'minute_and_daily'}
         )
-        if state_reuse_required:
-            try:
-                assert_no_raw_minute_full_window_scan(
-                    input_paths=[
-                        *(str(value) for value in local_inputs.values() if isinstance(value, str)),
-                        *(json.dumps(value, ensure_ascii=False, sort_keys=True) for value in local_inputs.values() if isinstance(value, dict)),
-                    ],
-                    production=True,
-                    explicit_data_production_context=False,
-                )
-            except StateReuseBlock as exc:
-                raise SystemExit(str(exc)) from exc
+        try:
+            minute_scan_policy = enforce_step4_minute_scan_policy(
+                local_inputs=local_inputs, state_reuse_required=state_reuse_required,
+                state_datamart_reuse=state_datamart_reuse,
+            )
+            if minute_scan_policy:
+                state_datamart_reuse = {**(state_datamart_reuse or {}), **minute_scan_policy}
+        except StateReuseBlock as exc:
+            raise SystemExit(str(exc)) from exc
 
         import pandas as pd  # local import to keep hard dependency only for real execution path
         minute_file = Path(minute_path) if minute_path else None

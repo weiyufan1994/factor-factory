@@ -13,6 +13,9 @@ from pathlib import Path
 
 MODE = 'raw_local_snapshot'
 VERSION = 'factorforge_raw_local_snapshot_v1'
+MAX_SYMBOLS = 20
+MAX_SESSIONS = 60
+MAX_MINUTE_ROWS = 500_000
 
 
 def digest(path):
@@ -41,6 +44,8 @@ def _scope(value):
             raise ValueError(f'raw snapshot requires explicit {name}')
         if items != sorted(set(items)):
             raise ValueError(f'raw snapshot {name} must be sorted and unique')
+    if len(symbols) > MAX_SYMBOLS or len(dates) > MAX_SESSIONS:
+        raise ValueError('raw snapshot exceeds bounded engineering symbol/session limits')
     for day in dates:
         if len(day) != 8 or datetime.strptime(day, '%Y%m%d').strftime('%Y%m%d') != day:
             raise ValueError('invalid raw snapshot calendar date')
@@ -49,8 +54,15 @@ def _scope(value):
 
 def _frames(section, symbols, dates):
     import pandas as pd
+    import pyarrow.parquet as pq
     paths = {role: _bound_file(section[role]) for role in ('daily', 'minute')}
+    if pq.read_metadata(paths['daily']).num_rows != len(symbols) * len(dates):
+        raise ValueError('raw daily snapshot row count differs from bounded declared grid')
+    if pq.read_metadata(paths['minute']).num_rows > MAX_MINUTE_ROWS:
+        raise ValueError('raw snapshot exceeds bounded engineering minute row limit')
     daily, minute = (pd.read_parquet(paths[role]) for role in ('daily', 'minute'))
+    if len(minute) > MAX_MINUTE_ROWS:
+        raise ValueError('raw snapshot exceeds bounded engineering minute row limit')
     expected = {(symbol, day) for symbol in symbols for day in dates}
     for role, frame, columns in (
         ('daily', daily, {'ts_code', 'trade_date', 'close'}),

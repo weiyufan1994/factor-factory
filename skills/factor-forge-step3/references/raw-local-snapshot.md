@@ -22,6 +22,8 @@ The frozen manifest uses `schema: factorforge_raw_local_snapshot_v1` and
 - `symbols` and `calendar_dates`: sorted, nonempty, unique string lists. Dates
   use YYYYMMDD. Both daily and minute data must cover exactly their product.
   This coverage requirement does not establish a legal investment universe.
+  This route enforces at most 20 symbols, 60 sessions and 500,000 minute rows;
+  it cannot authorize a production full-universe raw scan.
 - `daily` and `minute`: each an object with an absolute existing `path` and
   `sha256`. Daily requires ts_code, trade_date, close; minute additionally
   requires trade_time and vol. Other factor/evaluator requirements still apply.
@@ -48,6 +50,12 @@ handoff. Step4 rechecks the complete snapshot before consuming its existing raw
 daily/minute path. File mutation, missing files, scope drift and attempts to mix
 API or derived-state selectors fail without a fetch. Keep the manifest and
 declaration immutable; do not patch generated DPM/handoff objects to inject data.
+
+The normal state-resolution gate remains required. Its explicit no-derived-state
+resolution can accompany this bounded engineering baseline; a declared derived
+state dependency cannot be silently replaced by raw computation. Step4 records
+that the bounded window was read as raw input. Ordinary production raw-minute
+scan restrictions remain in force.
 
 This is a local engineering input route. It is not a provider publication,
 native Qlib account certificate, OOS grant, or architecture release decision.

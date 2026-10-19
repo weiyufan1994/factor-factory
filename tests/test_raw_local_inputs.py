@@ -161,6 +161,53 @@ def test_step4_consumes_same_frozen_inputs_and_never_fetches(snapshot, tmp_path)
         step4.materialize_step4_contract_inputs_if_required(**kwargs)
 
 
+@pytest.mark.parametrize('limit', ['symbols', 'sessions', 'minute_rows'])
+def test_hard_engineering_limits(snapshot, monkeypatch, limit):
+    import factor_factory.raw_local_inputs as raw
+    manifest, bind = snapshot
+    if limit == 'symbols':
+        manifest['symbols'] = [f'SYN{i:03d}' for i in range(21)]
+    elif limit == 'sessions':
+        manifest['calendar_dates'] = pd.bdate_range('2026-01-01', periods=61).strftime('%Y%m%d').tolist()
+    else:
+        # Verify the physical Parquet metadata count, not a claimed count.
+        monkeypatch.setattr(raw, 'MAX_MINUTE_ROWS', 5)
+    with pytest.raises(ValueError, match='bounded engineering'):
+        raw.validate_raw_local_inputs(bind())
+
+
+def test_step4_bounded_raw_policy_retains_production_block(snapshot, tmp_path, monkeypatch):
+    from factor_factory.state_reuse import StateReuseBlock, assert_no_raw_minute_full_window_scan
+    manifest, bind = snapshot
+    # Deliberately use a recognizable raw-minute filename; no renaming bypass.
+    original = Path(manifest['minute']['path'])
+    raw_path = tmp_path / 'minute_bar_raw_v1.parquet'
+    raw_path.write_bytes(original.read_bytes())
+    manifest['minute']['path'] = str(raw_path)
+    with pytest.raises(StateReuseBlock, match='BLOCK_FACTORFORGE_RAW_MINUTE_FULL_WINDOW_FORBIDDEN'):
+        assert_no_raw_minute_full_window_scan(input_paths=[str(raw_path)], production=True)
+    local = validate_raw_local_inputs(bind())
+    step4 = load('skills/factor-forge-step4/scripts/run_step4.py', 'raw_guard_step4')
+    kwargs = dict(local_inputs=local, state_reuse_required=True,
+                  state_datamart_reuse={'no_state_required': True, 'reuse_hit': False})
+    result = step4.enforce_step4_minute_scan_policy(**kwargs)
+    assert result['raw_minute_full_window_scan'] is True
+    assert result['bounded_local_is_engineering']['production_raw_scan_authorized'] is False
+    for resolution in [None, {'no_state_required': False}, {'reuse_hit': True}]:
+        with pytest.raises(ValueError, match='no-derived-state resolution'):
+            step4.enforce_step4_minute_scan_policy(**{**kwargs, 'state_datamart_reuse': resolution})
+    with pytest.raises(StateReuseBlock, match='BLOCK_FACTORFORGE_RAW_MINUTE_FULL_WINDOW_FORBIDDEN'):
+        step4.enforce_step4_minute_scan_policy(**{**kwargs, 'local_inputs': {
+            'input_mode': 'minute_and_daily', 'minute_df_parquet': str(raw_path)}})
+    monkeypatch.delenv('FACTORFORGE_LOCAL_IS_ONLY')
+    with pytest.raises(ValueError, match='local_is_only'):
+        step4.enforce_step4_minute_scan_policy(**kwargs)
+    monkeypatch.setenv('FACTORFORGE_LOCAL_IS_ONLY', '1')
+    raw_path.write_bytes(b'changed')
+    with pytest.raises(ValueError, match='sha256 mismatch'):
+        step4.enforce_step4_minute_scan_policy(**kwargs)
+
+
 def test_real_step3b_uses_sample_and_preserves_full_handoff(snapshot, tmp_path):
     manifest, bind = snapshot
     rid = 'RAW_SNAPSHOT_EXECUTION_TEST'
@@ -202,6 +249,60 @@ FACTOR = Example()
     assert handoff['local_input_paths'] == local
     assert handoff['first_run_outputs']['status'] == 'ready'
     assert handoff['local_input_paths']['minute_df_parquet'] == manifest['minute']['path']
+
+
+def test_real_step4_main_consumes_full_raw_with_required_state_gate(snapshot, tmp_path, monkeypatch):
+    """Native main and real factor execution; backend evaluation is out of scope."""
+    from factor_factory.state_reuse import build_state_dependency_contract_from_data_prep, resolve_state_dependencies
+    manifest, bind = snapshot
+    study, canonical = tmp_path / 'study-main', tmp_path / 'canonical-main'
+    study.mkdir(); canonical.mkdir()
+    rid = 'RAW_NATIVE_STEP4_SYNTHETIC'
+    raw = tmp_path / 'minute_bar_raw_v1.parquet'
+    raw.write_bytes(Path(manifest['minute']['path']).read_bytes())
+    manifest['minute']['path'] = str(raw)
+    local = validate_raw_local_inputs(bind())
+    impl = study / 'synthetic_factor.py'
+    impl.write_text('''def compute_factor(daily_df, minute_df=None):
+    assert len(daily_df) == len(minute_df) == 6
+    return minute_df[['ts_code', 'trade_date']].assign(factor_value=minute_df['close'] / 10.)
+''')
+    fsm = {'report_id': rid, 'factor_id': rid, 'implementation_mode': 'direct_code',
+           'artifact_identity': {'implementation_mode': 'direct_code', 'spec_hash': 'synthetic'},
+           'implementation_contract': {'mode': 'direct_code', 'code_contract': {
+               'performance_scope': {'formal_step4_full_window_execution_allowed': True}}},
+           'canonical_spec': {'standard_formula_fields_contract': {'required_standard_formula_fields': []}}}
+    dpm = {'report_id': rid, 'factor_id': rid, 'sample_window': local['sample_window_actual'],
+           'field_mapping': {'close': 'close'}, 'data_sources': ['synthetic'], 'local_input_paths': local}
+    handoff = {'report_id': rid, 'implementation_path': str(impl), 'local_input_paths': local,
+               'evaluation_plan': {'backends': [{'name': 'self_quant_analyzer'}]}}
+    for folder, name, value in [('factor_spec_master', 'factor_spec_master', fsm),
+                                ('data_prep_master', 'data_prep_master', dpm),
+                                ('handoff', 'handoff_to_step4', handoff)]:
+        write(study / f'objects/{folder}/{name}__{rid}.json', value)
+    contract = build_state_dependency_contract_from_data_prep(dpm, producer='synthetic_step3')
+    resolution = resolve_state_dependencies(contract=contract, catalog={}, report_id=rid, factor_id=rid)
+    state_path = study / 'state_resolution.json'
+    write(state_path, resolution)
+    for key, value in {'FACTORFORGE_ROOT': str(canonical), 'FACTORFORGE_DEBUG_ROOT': str(study),
+                       'FACTORFORGE_ALLOW_DIRECT_STEP': '1', 'FACTORFORGE_LOCAL_IS_ONLY': '1',
+                       'FACTORFORGE_REQUIRE_STATE_REUSE_CONTRACT': '1',
+                       'FACTORFORGE_STATE_RESOLUTION': str(state_path)}.items():
+        monkeypatch.setenv(key, value)
+    module = load('skills/factor-forge-step4/scripts/run_step4.py', 'raw_native_step4')
+    monkeypatch.setattr(sys, 'argv', [str(ROOT / 'skills/factor-forge-step4/scripts/run_step4.py'), '--report-id', rid])
+    # No backend success is fabricated. This test covers actual main/scan gate/
+    # factor/outputs; real selected-backend acceptance belongs to the later E2E.
+    monkeypatch.setattr(module, 'write_backend_payloads', lambda _id, runs, **kwargs: (runs, {}))
+    module.main()
+    values = pd.read_parquet(study / f'runs/{rid}/factor_values__{rid}.parquet')
+    assert len(values) == 6
+    assert sorted(values.factor_value) == [1.0, 1.0, 1.1, 1.1, 1.2, 1.2]
+    metadata = json.loads((study / f'runs/{rid}/run_metadata__{rid}.json').read_text())
+    provenance = metadata['state_datamart_reuse']
+    assert provenance['no_state_required'] is True
+    assert provenance['raw_minute_full_window_scan'] is True
+    assert provenance['bounded_local_is_engineering']['snapshot_manifest_sha256'] == local['snapshot_manifest_sha256']
 
 
 def test_ultimate_cli_exposes_explicit_raw_route():

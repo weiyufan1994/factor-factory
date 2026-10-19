@@ -73,7 +73,8 @@ def test_scope_hash_and_real_sample_is_separate(snapshot, monkeypatch):
     assert sample['minute_df_parquet'] == manifest['step3b_sample']['minute']['path']
 
 
-@pytest.mark.parametrize('mutation', ['hash', 'future', 'late', 'scope', 'budget', 'sample_values'])
+@pytest.mark.parametrize('mutation', ['hash', 'future', 'late', 'late_nanosecond',
+                                    'timezone', 'scope', 'budget', 'sample_values'])
 def test_frozen_raw_rejects_invalid_data(snapshot, mutation):
     manifest, bind = snapshot
     if mutation == 'budget':
@@ -86,6 +87,10 @@ def test_frozen_raw_rejects_invalid_data(snapshot, mutation):
             frame.loc[0, 'trade_time'] = '2026-01-06 15:00:00'
         elif mutation == 'late':
             frame.loc[0, 'trade_time'] = '15:01:00'
+        elif mutation == 'late_nanosecond':
+            frame.loc[0, 'trade_time'] = '2026-01-05 15:00:00.000000001'
+        elif mutation == 'timezone':
+            frame['trade_time'] = frame.trade_date.astype(str) + ' 15:00:00+08:00'
         elif mutation == 'scope':
             frame = frame.iloc[1:]
         else:

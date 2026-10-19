@@ -67,12 +67,17 @@ def _frames(section, symbols, dates):
     raw_time = minute.trade_time.astype(str).str.strip()
     clock_only = raw_time.str.fullmatch(r'\d{2}:\d{2}:\d{2}')
     full = pd.to_datetime(raw_time.where(~clock_only), errors='coerce', format='mixed')
+    # The contract uses exchange-local wall time, with no implicit timezone
+    # conversion or mixed-offset interpretation.
+    if not pd.api.types.is_datetime64_dtype(full.dtype):
+        raise ValueError('raw minute timestamp must be timezone-naive exchange-local time')
     clock = pd.to_datetime(raw_date + ' ' + raw_time.where(clock_only),
                            format='%Y%m%d %H:%M:%S', errors='coerce')
     observed = full.where(~clock_only, clock)
     if observed.isna().any() or observed.dt.strftime('%Y%m%d').ne(raw_date).any():
         raise ValueError('raw minute timestamp date mismatch or invalid timestamp')
-    if observed.dt.strftime('%H:%M:%S').gt('15:00:00').any():
+    session_close = pd.to_datetime(raw_date, format='%Y%m%d') + pd.Timedelta(hours=15)
+    if observed.gt(session_close).any():
         raise ValueError('raw minute observation after session close')
     if minute.assign(_observed=observed).duplicated(['ts_code', '_observed']).any():
         raise ValueError('duplicate raw minute observation keys')

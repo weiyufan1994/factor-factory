@@ -29,7 +29,9 @@ The frozen manifest uses `schema: factorforge_raw_local_snapshot_v1` and
   minute_dataset_version and daily_price_basis, preserving the actual release
   and price semantics. Additional provenance may be recorded in this object.
 - `signal_timing: after_close_next_session`. Minute timestamps must parse, agree
-  with trade_date and be no later than 15:00:00. Daily keys and normalized minute
+  with trade_date and be no later than 15:00:00, including subsecond precision.
+  Timestamps use timezone-naive exchange-local time; timezone-aware inputs are
+  rejected because this route does not define a timezone conversion. Daily keys and normalized minute
   observation keys must be unique. No source clock/date fallback is permitted.
 - `step3b_sample`: separate daily/minute file objects, subset symbols/dates and
   an explicit budget with positive integer max_symbols, max_calendar_days and

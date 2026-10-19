@@ -1589,6 +1589,9 @@ def generate_first_run_factor_values(
     executability of the factor implementation, not IC/NAV/backtest evidence.
     """
     input_mode = str(local_inputs.get('input_mode') or '')
+    if input_mode == 'raw_local_snapshot':
+        from factor_factory.raw_local_inputs import validate_raw_local_inputs
+        local_inputs = validate_raw_local_inputs(local_inputs, sample=True)
     from factor_factory.implementation_runtime import named_input_bindings
     if input_mode == 'derived_state_with_daily' and named_input_bindings(local_inputs):
         raise ValueError('BLOCK_FACTOR_IMPLEMENTATION_ADDITIONAL_INPUT_ROUTE_UNSUPPORTED: partitioned controller')

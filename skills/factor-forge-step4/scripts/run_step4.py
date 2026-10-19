@@ -4217,7 +4217,11 @@ def materialize_step4_contract_inputs_if_required(
     materializer: Any | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
     """Materialize only outside an EVO receipt-backed Agent execution."""
-
+    if local_inputs.get('input_mode') == 'raw_local_snapshot':
+        from factor_factory.raw_local_inputs import validate_raw_local_inputs
+        if force_contract_inputs or evo_pre_release or contract.get('full_queries'):
+            raise ValueError('raw snapshot forbids implicit API/EVO materialization')
+        return validate_raw_local_inputs(local_inputs), existing_profile
     minute_path = local_inputs.get('minute_df_parquet') or local_inputs.get(
         'minute_df_csv'
     )
@@ -5267,6 +5271,11 @@ def resolve_step4_input_selection(
     """Select declared local/API inputs and modes before physical materialization."""
     local_inputs = handoff.get('local_input_paths') or dpm.get('local_input_paths') or {}
     step4_contract = _step4_data_contract(dpm, handoff)
+    if local_inputs.get('input_mode') == 'raw_local_snapshot':
+        from factor_factory.raw_local_inputs import validate_raw_local_inputs
+        if isinstance(dpm.get('research_windows'), dict) or step4_contract.get('full_queries'):
+            raise ValueError('raw snapshot cannot mix with API/EVO data access')
+        local_inputs = validate_raw_local_inputs(local_inputs)
     validate_pre_release_step4_data_access(dpm, handoff)
     evo_pre_release = isinstance(dpm.get('research_windows'), dict)
     if evo_pre_release:

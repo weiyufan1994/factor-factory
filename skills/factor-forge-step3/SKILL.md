@@ -28,6 +28,11 @@ availability times, coverage, sample scope, proxies and qlib-facing
 Missing exact data returns to Step2/Data Liaison for explicit proxy-error review,
 a data request or BLOCK. Never let a convenient proxy change the estimand.
 
+For an explicitly reviewed, bounded local-IS engineering comparison using the
+same frozen raw minute/daily files, use the [raw snapshot input contract](references/raw-local-snapshot.md).
+It keeps separate Step3B sample files and repeats content checks at Step4;
+it does not fetch missing inputs or infer a point-in-time investment universe.
+
 State-dependent factors declare `factorforge_state_dependency_contract_v1` and
 write `state_resolution__<report_id>.json`. First check that a published state
 preserves the estimator's actual observations. If standard Data API fields are

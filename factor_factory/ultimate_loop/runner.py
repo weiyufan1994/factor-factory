@@ -2508,6 +2508,10 @@ def _plan_commands(
             )
         )
 
+    raw_local_inputs = getattr(args, 'raw_local_inputs', None)
+    if raw_local_inputs and (not local_is_only or args.prepared_local_inputs or '3' not in steps or args.skip_step3a):
+        print('BLOCK_FACTORFORGE_RAW_LOCAL_INPUTS_REQUIRE_EXCLUSIVE_LOCAL_IS_STEP3A')
+        return 1
     if '3' in steps and not args.skip_step3a:
         step3_command = [py, 'skills/factor-forge-step3/scripts/run_step3.py', '--manifest', str(manifest_path)]
         if args.prepared_local_inputs:
@@ -2515,6 +2519,8 @@ def _plan_commands(
                 print('BLOCK_FACTORFORGE_PREPARED_LOCAL_INPUTS_REQUIRE_LOCAL_IS_ONLY')
                 return 1
             step3_command.extend(['--prepared-local-inputs', args.prepared_local_inputs])
+        if raw_local_inputs:
+            step3_command.extend(['--raw-local-inputs', raw_local_inputs])
         commands.append(('run_step3', step3_command))
         commands.append(('validate_step3', [py, 'skills/factor-forge-step3/scripts/validate_step3.py', '--manifest', str(manifest_path), '--require-ready']))
 

@@ -2707,7 +2707,16 @@ def build_step3_implementation_plan(
     return implementation_plan_stub
 
 
-def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_local_inputs: dict | None = None):
+def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_local_inputs: dict | None = None, raw_local_inputs: dict | None = None):
+    if raw_local_inputs is not None:
+        from factor_factory.raw_local_inputs import validate_raw_local_inputs
+        if prepared_local_inputs is not None:
+            raise ValueError('raw and prepared local inputs are mutually exclusive')
+        raw_local_inputs = validate_raw_local_inputs(raw_local_inputs)
+        if raw_local_inputs.get('evaluation_plan') is not None:
+            errors = validate_primary_evaluator_plan(raw_local_inputs['evaluation_plan'])
+            if errors:
+                raise ValueError('; '.join(errors))
     fsm = load_json(OBJ / 'factor_spec_master' / f'factor_spec_master__{report_id}.json')
     _aim = load_json(OBJ / 'alpha_idea_master' / f'alpha_idea_master__{report_id}.json')
     handoff_to_step3 = read_existing_json(OBJ / 'handoff' / f'handoff_to_step3__{report_id}.json')
@@ -2779,6 +2788,12 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
         infer_sample_window(factor_id, required_text),
         alpha_idea=_aim,
     )
+    if raw_local_inputs is not None:
+        if need_moneyflow or retained_chip_state or explicitly_required_intraday_proxy_datasets:
+            raise ValueError('raw snapshot cannot replace alternative dataset requirements')
+        if any(str(sample_window.get(k)) != raw_local_inputs['sample_window_actual'][k] for k in ('start', 'end')):
+            raise ValueError('raw snapshot window must equal the declared research window')
+        need_minute = need_daily = need_moneyflow = need_daily_basic = False
     if prepared_local_inputs is not None:
         prepared_local_inputs = validate_prepared_local_inputs(prepared_local_inputs)
         if prepared_local_inputs['input_mode'] == 'daily_only' and os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1':
@@ -2794,6 +2809,8 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     if evo_research_windows is not None:
+        if raw_local_inputs is not None:
+            raise ValueError('raw local engineering snapshot cannot replace EVO data evidence')
         sample_window = {
             'start': evo_research_windows['is_start'],
             'end': evo_research_windows['is_end'],
@@ -2813,7 +2830,15 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
     )
 
     local_input_paths = {}
-    if prepared_local_inputs is not None:
+    if raw_local_inputs is not None:
+        local_input_paths = raw_local_inputs
+        data_sources.extend([
+            {'name': 'frozen_raw_daily', 'kind': 'content_bound_local_snapshot', 'path': local_input_paths['daily_df_parquet'], 'fields': [], 'normalized_dataset': 'clean_daily_bar'},
+            {'name': 'frozen_raw_minute', 'kind': 'content_bound_local_snapshot', 'path': local_input_paths['minute_df_parquet'], 'fields': [], 'normalized_dataset': 'minute_bar'},
+        ])
+        coverage.append({'name': 'raw_local_inputs', 'status': 'pass', 'detail': 'Manifest/file hashes, explicit full and separate bounded sample grids and observation timing verified; no API fallback.'})
+        notes.append('Frozen raw engineering snapshot: Step3B consumes only the declared sample; Step4 verifies the full snapshot again. No PIT investment-universe claim.')
+    elif prepared_local_inputs is not None:
         local_input_paths = prepared_local_inputs
         data_sources.extend([
             {'name': 'prepared_daily_control_input', 'kind': 'study_local_prepared_input', 'path': local_input_paths['daily_df_parquet'], 'fields': [], 'normalized_dataset': 'prepared_daily_raw_or_control'},
@@ -3074,6 +3099,7 @@ def main():
     ap.add_argument('--manifest', help='Runtime context manifest built by the skill/agent orchestrator.')
     ap.add_argument('--csv-output-policy', help='Step3A daily CSV audit output policy. Defaults to full_csv.')
     ap.add_argument('--prepared-local-inputs', help='Study-local JSON declaring daily_only or derived_state_with_daily inputs, with separate Step3B sample selectors.')
+    ap.add_argument('--raw-local-inputs', help='Content-bound raw minute/daily snapshot declaration for local-IS engineering.')
     args = ap.parse_args()
     csv_policy = resolve_csv_policy(args.csv_output_policy)
     maybe_reexec_from_step3_template_copy(args.report_id, args.manifest)
@@ -3084,7 +3110,9 @@ def main():
         raise SystemExit('run_step3.py requires --report-id or --manifest')
 
     prepared_local_inputs = load_prepared_local_inputs(args.prepared_local_inputs)
-    data_prep_master, qlib_adapter_config, implementation_plan_stub = build_step3a(report_id, csv_output_policy=csv_policy, prepared_local_inputs=prepared_local_inputs)
+    from factor_factory.raw_local_inputs import load_raw_local_inputs
+    raw_local_inputs = load_raw_local_inputs(args.raw_local_inputs)
+    data_prep_master, qlib_adapter_config, implementation_plan_stub = build_step3a(report_id, csv_output_policy=csv_policy, prepared_local_inputs=prepared_local_inputs, raw_local_inputs=raw_local_inputs)
     state_reuse_contract = write_step3_state_reuse_contracts(
         manifest=_manifest,
         report_id=report_id,
@@ -3133,7 +3161,7 @@ def main():
         'implementation_plan_master_ref': impl_path.name,
         'factor_spec_master_ref': f'factor_spec_master__{report_id}.json',
         'local_input_paths': data_prep_master['local_input_paths'],
-        'evaluation_plan': prepared_local_inputs.get('evaluation_plan') if prepared_local_inputs is not None else None,
+        'evaluation_plan': (raw_local_inputs or prepared_local_inputs or {}).get('evaluation_plan'),
         'step4_data_contract': data_prep_master.get('step4_data_contract') or {},
         'state_reuse_contract': state_reuse_contract,
     })

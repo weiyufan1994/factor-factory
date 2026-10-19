@@ -624,7 +624,12 @@ def validate_step3_readiness_contract(
         assert not isinstance(prep.get('research_windows'), dict), 'prepared daily cannot replace EVO data evidence'
         validate_paths(local_inputs, workspace, additional_workspace=implementation_workspace_root(
             factorforge_root, manifest=_RUNTIME_MANIFEST, legacy_workspace=workspace))
-    prepared_local = prepared_derived_state or prepared_daily
+    raw_local = local_inputs.get('input_mode') == 'raw_local_snapshot'
+    if raw_local:
+        from factor_factory.raw_local_inputs import validate_raw_local_inputs
+        assert not isinstance(prep.get('research_windows'), dict), 'raw snapshot cannot replace EVO data evidence'
+        validate_raw_local_inputs(local_inputs)
+    prepared_local = prepared_derived_state or prepared_daily or raw_local
     snapshot_source = str(local_inputs.get('snapshot_source') or '')
     if isinstance(prep.get('research_windows'), dict) and not prepared_derived_state:
         report_id = str(prep.get('report_id') or '')
@@ -913,7 +918,10 @@ if __name__ == '__main__':
         assert not missing_snapshot_fields, (
             f'BLOCK_STANDARD_FORMULA_DERIVED_FIELD_NOT_IN_SNAPSHOT: missing fields in Step3A local snapshot {missing_snapshot_fields}'
         )
-        if input_mode == 'daily_only':
+        if input_mode == 'raw_local_snapshot':
+            from factor_factory.raw_local_inputs import validate_raw_local_inputs
+            validate_raw_local_inputs(prep['local_input_paths'])
+        elif input_mode == 'daily_only':
             from factor_factory.prepared_daily_inputs import is_prepared_daily, validate_paths
             if is_prepared_daily(prep['local_input_paths']):
                 validate_paths(prep['local_input_paths'], WORKSPACE, additional_workspace=implementation_workspace_root(

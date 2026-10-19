@@ -21,12 +21,17 @@ def build_parser(*, show_all: bool = False) -> argparse.ArgumentParser:
         '--local-is-only', action='store_true',
         help='Run local IS research without Host identity; never release OOS or issue hosted proof.',
     )
-    groups["Research"].add_argument(
+    local_inputs = groups["Research"].add_mutually_exclusive_group()
+    local_inputs.add_argument(
         '--prepared-local-inputs',
         default=None,
         help='Explicit study-local daily/derived-state input JSON for the local-IS Step3 route.',
     )
     groups["Research"].add_argument('--factorforge-root', default=None)
+    local_inputs.add_argument(
+        '--raw-local-inputs', default=None,
+        help='Content-bound raw minute/daily snapshot JSON for bounded local-IS engineering.',
+    )
     groups["Research"].add_argument('--branch-id', default=None)
     groups["Research"].add_argument('--manifest', default=None, help='Use an existing runtime manifest instead of creating a new one.')
     groups["Research"].add_argument('--factor-id', default=None)

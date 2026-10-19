@@ -51,7 +51,8 @@ def _calendar(values, window, role):
         datetime.strptime(day, '%Y%m%d')
         if len(day) != 8:
             raise ValueError(f'prepared {role}: YYYYMMDD dates required')
-    if days != sorted(set(days)) or window != {'start': days[0], 'end': days[-1]}:
+    if (days != sorted(set(days)) or not isinstance(window, dict)
+            or {key: window.get(key) for key in ('start', 'end')} != {'start': days[0], 'end': days[-1]}):
         raise ValueError(f'prepared {role}: calendar/window mismatch')
     return days
 

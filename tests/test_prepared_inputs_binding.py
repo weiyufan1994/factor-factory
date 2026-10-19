@@ -118,3 +118,10 @@ def test_rejects_incomplete_evaluation_window(prepared):
 
 def test_legacy_inputs_keep_existing_controller_validation():
     verify_prepared_binding({'input_mode': 'derived_state_with_daily'}, base_dir=Path('/'))
+
+
+def test_preserves_existing_window_annotation(prepared):
+    full, kwargs = prepared
+    full['sample_window_actual']['calendar'] = 'A-share trading days'
+    bound = bind_prepared_inputs(full, **kwargs)
+    assert bound['sample_window_actual']['calendar'] == 'A-share trading days'

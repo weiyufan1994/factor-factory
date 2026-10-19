@@ -2785,6 +2785,18 @@ def _execute_commands(
     epistemic_failure_artifact_snapshot: dict[str, Any] | None = None
     for name, command in commands:
         manifest = refresh_runtime_manifest_for_command(name)
+        if local_is_only and name == 'run_step2' and not args.dry_run and ctx.factor_workspace:
+            from factor_factory.startup_experience import require_recorded_use
+            try:
+                proof['startup_experience_use'] = require_recorded_use(ctx.factor_workspace, args.report_id)
+            except (OSError, ValueError, TypeError, KeyError) as exc:
+                proof['status'] = 'FAIL'
+                proof['failure'] = {'command': 'startup_experience_use', 'returncode': 1,
+                                    'detail': str(exc), 'blocked_before': name, 'executed': False}
+                proof['finished_at_utc'] = utc_now()
+                write_json_atomic(proof_path, proof)
+                print(f'BLOCK_STARTUP_EXPERIENCE_USE:{exc}')
+                return (finish_local_maintenance(1), epistemic_failure_artifact_snapshot)
         pre_step5_validation_snapshot: dict[str, Any] | None = None
         if (
             name == 'validate_step5'

@@ -164,7 +164,17 @@ def create_required_dirs(workspace_root: Path) -> None:
 def write_workspace_manifest(path: Path, manifest: dict[str, Any]) -> Path:
     path = Path(path).expanduser()
     workspace_root = Path(str(manifest.get("workspace_root") or path.parent)).expanduser()
+    is_new = not path.exists()
     create_required_dirs(workspace_root)
+    # Record new source intake even when the documented selected Python entry
+    # is called directly. Only the local Ultimate runner enforces this marker.
+    if is_new:
+        from factor_factory.startup_experience import save, VERSION
+        save(workspace_root / 'candidate_startup_experience' / 'startup_required.json', {
+            'version': VERSION, 'report_id': manifest.get('root_report_id'),
+            'required': 'validated source-only freeze followed by default method delivery and author case decisions',
+            'repo_root': str(Path(__file__).resolve().parents[1]),
+        })
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     return path

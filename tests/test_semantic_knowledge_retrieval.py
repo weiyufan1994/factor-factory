@@ -109,3 +109,116 @@ def test_missing_model_dependency_returns_visible_fallback(tmp_path, monkeypatch
     result = semantic.retrieve_configured('压力', rows, config)
     assert result['semantic_available'] is False
     assert result['fallback'] == 'index_or_encoder_unavailable'
+
+
+def test_tail_recall_and_one_hit_per_document(tmp_path):
+    path = tmp_path/'chunks.json'
+    text = 'unrelated padding ' * 90 + ' pressure'
+    build_semantic_index([{'id':'long','text':text},{'id':'other','text':'value'}], enc, path)
+    result = retrieve_semantic('压力',path,enc,allowed_ids={'long','other'})
+    assert [x['id'] for x in result['hits']] == ['long']
+    assert result['hits'][0]['matched_chunk'] > 0
+    assert result['hits'][0]['chunk_count'] > 1
+    stale=retrieve_semantic('压力',path,enc,expected_text_hashes={'long':semantic.text_hash(text+'x')})
+    assert stale['fallback']=='stale_source_text'
+
+
+def test_v1_index_remains_readable(tmp_path):
+    path=tmp_path/'old.json'
+    path.write_text(json.dumps({'schema':'factorforge_semantic_index_v1','model_id':semantic.MODEL_ID,
+      'dimension':2,'row_count':1,'rows':[{'id':'old','text_sha256':semantic.text_hash('pressure'),'vector':[1,0]}]}))
+    assert retrieve_semantic('压力',path,enc)['hits'][0]['id']=='old'
+
+
+def test_chunk_coverage_and_boundaries():
+    text=''.join(chr(0x4e00+i) for i in range(1700))
+    chunks=semantic.text_chunks(text)
+    assert max(map(len,chunks))<=384
+    assert all(char in ''.join(chunks) for char in text)
+
+
+def test_reranker_rejects_nonlocal_endpoint():
+    with pytest.raises(ValueError,match='local'):
+        semantic.rerank_local('q',[],{'endpoint':'https://remote.example/chat'},top_k=3)
+
+
+@pytest.mark.parametrize('matches', [[{'ordinal':8,'reason':'x'}], [{'ordinal':True,'reason':'x'}],
+    [{'ordinal':0,'reason':'x'},{'ordinal':0,'reason':'x'}], [{'ordinal':0,'reason':''}]])
+def test_reranker_rejects_invalid_output(monkeypatch,matches):
+    import io
+    def response(*args,**kwargs):
+        return io.BytesIO(json.dumps({'message':{'content':json.dumps({'matches':matches})}}).encode())
+    monkeypatch.setattr(semantic.urllib.request,'urlopen',response)
+    with pytest.raises(ValueError):
+        semantic.rerank_local('q',[{'id':'x','text':'hello'}],{'model':'local'},top_k=3)
+
+
+def test_reranker_sees_full_visible_corpus_not_dense_shortlist(tmp_path,monkeypatch):
+    rows=[{'id':str(i),'search_text':'pressure'} for i in range(12)]
+    build_semantic_index(rows,enc,tmp_path/'dense.json')
+    config=tmp_path/'semantic_config.json'
+    config.write_text(json.dumps({'enabled':True,'model_path':'unused','index_path':'dense.json',
+      'reranker':{'enabled':True,'model':'test'}}))
+    monkeypatch.setattr(semantic,'configured_encoder',lambda _:enc)
+    def rank(q,visible,c,*,top_k):
+        assert len(visible)==12
+        return {'hits':[{'id':'11','semantic_only':True,'similarity_is_evidence':False}], 'trace':{}}
+    monkeypatch.setattr(semantic,'rerank_local',rank)
+    result=semantic.retrieve_configured('压力',rows,config,top_k=3)
+    assert result['hits'][0]['id']=='11' and result['reranker_used']
+    assert len(result['dense_hits'])==3
+
+
+def test_reranker_failure_is_explicit_and_preserves_dense(tmp_path,monkeypatch):
+    rows=[{'id':'a','search_text':'pressure'}]
+    build_semantic_index(rows,enc,tmp_path/'dense.json')
+    config=tmp_path/'semantic_config.json'
+    config.write_text(json.dumps({'enabled':True,'model_path':'unused','index_path':'dense.json',
+      'reranker':{'enabled':True,'model':'test'}}))
+    monkeypatch.setattr(semantic,'configured_encoder',lambda _:enc)
+    def fail(*a,**kw): raise TimeoutError('offline')
+    monkeypatch.setattr(semantic,'rerank_local',fail)
+    result=semantic.retrieve_configured('压力',rows,config)
+    assert result['hits'][0]['id']=='a'
+    assert result['reranker_used'] is False and result['reranker_fallback']
+    config_data=json.loads(config.read_text())
+    # Stale sources must fail closed before invoking any ranking model.
+    result=semantic.retrieve_configured('压力',[{'id':'a','search_text':'changed'}],config)
+    assert result['fallback']=='stale_source_text' and 'reranker_used' not in result
+
+
+def test_method_fingerprint_is_source_projection_not_identity_or_outcome():
+    row={'id':'SPECIAL_ID','decision':'promote','search_text':'fallback',
+         'advisory_projection':{'mathematical_object':'variance projection',
+         'return_source_hypothesis':'unidentified pressure',
+         'reuse_constraints':['full source remains in delivery']}}
+    card=semantic.method_fingerprint(row)
+    assert 'variance projection' in card and 'unidentified pressure' in card
+    assert 'SPECIAL_ID' not in card and 'promote' not in card
+    assert semantic.method_fingerprint({'search_text':'unstructured method'})=='unstructured method'
+
+
+def test_chunk_sidecar_does_not_replace_legacy_cache(tmp_path,monkeypatch):
+    rows=[{'id':'a','search_text':'pressure'}]
+    legacy=tmp_path/'legacy.json';legacy.write_text('legacy bytes unchanged')
+    build_semantic_index(rows,enc,tmp_path/'chunks.json')
+    config=tmp_path/'semantic_config.json'
+    config.write_text(json.dumps({'enabled':True,'model_path':'unused','index_path':'legacy.json',
+                                 'chunk_index_path':'chunks.json'}))
+    monkeypatch.setattr(semantic,'configured_encoder',lambda _:enc)
+    assert semantic.retrieve_configured('压力',rows,config)['hits'][0]['id']=='a'
+    assert legacy.read_text()=='legacy bytes unchanged'
+
+
+def test_bulk_encoder_budget_does_not_change_query_budget(monkeypatch):
+    import types
+    calls=[]
+    def run(*args,**kwargs):
+        calls.append(kwargs['timeout'])
+        texts=json.loads(kwargs['input'])
+        return types.SimpleNamespace(stdout=json.dumps([[1,0] for _ in texts]))
+    monkeypatch.setattr(semantic.subprocess,'run',run)
+    encode=semantic.configured_encoder({'model_path':'local','python_path':'/different/python'})
+    assert len(encode(['query']))==1
+    assert len(encode(['first','second']))==2
+    assert calls==[60,600]

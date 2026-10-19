@@ -64,6 +64,50 @@ storage refactor does not authorize a different factor.
 
 ## Prepare once and use the existing entrypoints
 
+For existing partition manifests (`calendar_dates`, `partitions` with
+`relative_path` and `sha256`), use the shared
+`factor_factory.prepared_inputs.bind_prepared_inputs` helper or
+`scripts/bind_factorforge_prepared_inputs.py`. Supply the full prepared input
+object, bounded sample controller, explicit evaluation price daily file, and
+reviewed producer/consumer/helper dependency files. It returns the existing
+`--prepared-local-inputs` format, references the original files without copying
+them, and checks full/sample security-date keys, price columns, partition hashes
+and sample budget. Changed files or input selectors fail at Step3/4. The existing
+controller remains responsible for estimator-specific semantics and state schema.
+
+Normal research uses one installed `run-ultimate`, one Data API catalog/cache,
+and a workspace containing authored code/spec and new outputs. Do not copy the
+framework or ask IT/Data to implement each factor's Step3. The research agent
+authors its transformation and invokes existing SDK snapshot/day APIs with the
+declared resource budget. Reuse matching state; prepare only missing or
+invalidated inputs. The binder never fetches data or runs a producer.
+
+After the source/controller review, resolve the framework's script from the
+installed `run-ultimate --runtime-info` and call:
+
+```sh
+run-ultimate --python /installed/framework/scripts/bind_factorforge_prepared_inputs.py \
+  --inputs /absolute/full-prepared.json --base-dir /absolute/research-root \
+  --sample-controller /absolute/sample-controller.json \
+  --evaluation-daily /absolute/prices.parquet \
+  --dependency /absolute/reviewed-producer.py \
+  --dependency /absolute/reviewed-consumer.py \
+  --output /absolute/study/prepared-inputs.json
+```
+
+Include every invoked helper as a dependency. The output is create-only; reuse
+the same declaration on subsequent runs. `--check --inputs ... --base-dir ...`
+checks an existing binding without materialization. There is no additional
+registry or publication step. Custom partition formats retain their existing
+controller route; do not rename their fields to pretend compatibility.
+
+For new runs omit `--manifest` so Ultimate generates and refreshes the runtime
+manifest using the standard factor/report/research identity and workspace.
+Stop at Step3B for independent review, then resume at Step4. An explicitly
+selected old manifest stays pinned. Research protocol content remains authored
+by the researcher; initialization does not create an artificial approval.
+New release defaults do not migrate old study pins or overwrite results.
+
 Perform source reads and state preparation as an explicit bounded research
 task outside the factor class and Step4 evaluator. Use the standard Data API,
 the declared sample/window, date partitions, selected columns, checkpoint/resume

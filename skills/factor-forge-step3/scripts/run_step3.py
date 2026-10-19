@@ -640,6 +640,8 @@ def load_prepared_local_inputs(path_value: str | None) -> dict | None:
         payload = json.loads(Path(path_value).expanduser().read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError) as exc:
         raise SystemExit(f'BLOCK_STEP3_PREPARED_LOCAL_INPUTS_UNREADABLE: {path_value}: {exc}') from exc
+    from factor_factory.prepared_inputs import verify_prepared_binding
+    verify_prepared_binding(payload, base_dir=Path(path_value).expanduser().resolve().parent)
     return validate_prepared_local_inputs(payload)
 
 
@@ -2796,6 +2798,12 @@ def build_step3a(report_id: str, csv_output_policy: str | None = None, prepared_
         need_minute = need_daily = need_moneyflow = need_daily_basic = False
     if prepared_local_inputs is not None:
         prepared_local_inputs = validate_prepared_local_inputs(prepared_local_inputs)
+        if prepared_local_inputs.get('prepared_input_hashes'):
+            from factor_factory.prepared_inputs import verify_prepared_binding
+            verify_prepared_binding(prepared_local_inputs, base_dir=WORKSPACE)
+            if any(str(sample_window.get(k)) != prepared_local_inputs['sample_window_actual'][k]
+                   for k in ('start', 'end')):
+                raise ValueError('prepared input window differs from the frozen research window')
         if prepared_local_inputs['input_mode'] == 'daily_only' and os.getenv('FACTORFORGE_LOCAL_IS_ONLY') != '1':
             raise SystemExit('BLOCK_STEP3_PREPARED_DAILY_LOCAL_IS_ONLY')
         sample_window = dict(prepared_local_inputs['sample_window_actual'])

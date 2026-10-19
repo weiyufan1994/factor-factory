@@ -5515,6 +5515,8 @@ def read_step4_evaluation_inputs(
     step4_contract,
 ):
     """Read signal and evaluation inputs once, or retain bounded parent diagnostics."""
+    from factor_factory.prepared_inputs import verify_prepared_binding
+    verify_prepared_binding(local_inputs, base_dir=WORKSPACE)
     import pandas as pd
     evaluation_daily_file = Path(local_inputs.get('evaluation_daily_df_parquet') or daily_file)
     if not evaluation_daily_file.is_absolute():

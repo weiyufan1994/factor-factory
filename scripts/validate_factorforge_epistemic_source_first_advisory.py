@@ -15,6 +15,9 @@ from factor_factory.epistemic_ultimate_source_first_bridge import (  # noqa: E40
 )
 
 
+from factor_factory.startup_experience import emit_startup_advisory
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -38,7 +41,7 @@ def main(argv: list[str] | None = None) -> int:
             file=sys.stderr,
         )
         return 2
-    sys.stdout.buffer.write(validated.chief_advisory_raw)
+    sys.stdout.buffer.write(emit_startup_advisory(validated, REPO_ROOT))
     sys.stdout.buffer.flush()
     return 0
 

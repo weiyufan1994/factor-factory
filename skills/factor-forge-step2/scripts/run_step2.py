@@ -2643,6 +2643,22 @@ def _local_agent_authored_research_contract_inputs(
     }
 
 
+def _factor_spec_information_set_legality(aim: Dict[str, Any]) -> str:
+    """Resolve timing authority without changing retained legacy routes."""
+    discipline_hint = (aim.get('research_discipline') or {}).get(
+        'information_set_hint'
+    )
+    if LOCAL_AGENT_SPEC_INPUTS_KEY in aim:
+        return discipline_hint or 'requires_researcher_confirmation_no_forward_leakage'
+    return (
+        (aim.get('math_discipline_review') or {}).get(
+            'information_set_legality'
+        )
+        or discipline_hint
+        or 'requires_researcher_confirmation_no_forward_leakage'
+    )
+
+
 def _master_evaluation_contract(primary: Dict[str, Any], aim: Dict[str, Any]) -> Dict[str, Any]:
     """Use an explicit AIM contract for the local route; never manufacture one."""
     if LOCAL_AGENT_SPEC_INPUTS_KEY not in aim:
@@ -3402,7 +3418,7 @@ def build_factor_spec_master(
         'math_discipline_review': {
             'mathematical_object': research_contract.get('step1_mathematical_object'),
             'target_statistic': research_contract['target_statistic'],
-            'information_set_legality': (aim.get('research_discipline') or {}).get('information_set_hint') or 'requires_researcher_confirmation_no_forward_leakage',
+            'information_set_legality': _factor_spec_information_set_legality(aim),
             'expected_failure_modes': research_contract['expected_failure_modes'],
         },
         'learning_and_innovation': {

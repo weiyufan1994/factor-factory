@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 import sys
 from copy import deepcopy
@@ -378,6 +379,79 @@ def test_step2_local_authored_contract_blocks_conflicting_information_set_mirror
 
     with pytest.raises(SystemExit, match="information_set_legality differs"):
         step2.build_step2_research_contract({}, {}, aim, {})
+
+
+def test_step2_legacy_route_preserves_existing_information_set_mirror_on_disk(
+    tmp_path: Path,
+) -> None:
+    workspace = make_workspace(tmp_path)
+    files = inputs(tmp_path)
+    step1 = invoke(workspace, files)
+    assert step1.returncode == 0, step1.stderr
+
+    aim_path = (
+        workspace / "objects" / "alpha_idea_master"
+        / f"alpha_idea_master__{REPORT_ID}.json"
+    )
+    aim = json.loads(aim_path.read_text())
+    aim.pop("local_agent_spec_inputs")
+    aim.pop("source_baseline_reference", None)
+    aim.pop("source_semantic_review", None)
+    aim.update(
+        source_type="natural_language_hypothesis",
+        producer="step12_hypothesis_intake",
+        research_subject_mode="independent_hypothesis",
+        raw_user_hypothesis=(
+            "Synthetic retained-route timing transport probe, not an approved "
+            "research hypothesis"
+        ),
+        provenance={"merge_mode": "legacy_compatibility_probe"},
+    )
+    generic_hint = "requires_researcher_confirmation_no_forward_leakage"
+    detailed_mirror = (
+        "LEGACY_TIMING::only completed session-t auction messages are features; "
+        "next-session open is strictly an evaluation label"
+    )
+    aim["research_discipline"]["information_set_hint"] = generic_hint
+    aim["math_discipline_review"] = {
+        "information_set_legality": detailed_mirror,
+    }
+    write_json(aim_path, aim)
+    before = aim_path.read_bytes()
+
+    env = {
+        **os.environ,
+        "FACTORFORGE_ROOT": str(workspace),
+        "FACTORFORGE_LOCAL_IS_ONLY": "1",
+        "FACTORFORGE_ULTIMATE_RUN": "1",
+        "FACTORFORGE_DISABLE_EMBEDDING_RETRIEVAL": "1",
+        "FACTORFORGE_DISABLE_GRAPH_KNOWLEDGE_CONTEXT": "1",
+    }
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "skills/factor-forge-step2/scripts/run_step2.py"),
+            "--report-id",
+            REPORT_ID,
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert aim_path.read_bytes() == before
+
+    master = json.loads((
+        workspace / "objects" / "factor_spec_master"
+        / f"factor_spec_master__{REPORT_ID}.json"
+    ).read_text())
+    handoff = json.loads((
+        workspace / "objects" / "handoff"
+        / f"handoff_to_step3__{REPORT_ID}.json"
+    ).read_text())
+    assert master["math_discipline_review"]["information_set_legality"] == detailed_mirror
+    assert handoff["math_discipline_review"]["information_set_legality"] == detailed_mirror
 
 
 def test_step2_measurement_program_accepts_explicit_carried_context_node_ids_only() -> None:
